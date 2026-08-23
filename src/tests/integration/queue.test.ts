@@ -27,17 +27,28 @@ describe("Background job queue", () => {
     const queue = new BullMQQueue(process.env.REDIS_URL || "redis://localhost:6379");
     const payload = { hello: "world" };
     let received: unknown;
-
-    queue.process("integration_test", async (job) => {
-      received = job.payload;
+    const processed = new Promise<void>((resolve) => {
+      queue.process("integration_test", async (job) => {
+        received = job.payload;
+        resolve();
+      });
     });
 
-    await queue.enqueue({ id: "integration-test-1", type: "integration_test", payload });
+    try {
+      await queue.enqueue({ id: `integration-test-${Date.now()}`, type: "integration_test", payload });
 
-    // Wait for the worker to pick up the job.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+      // Wait for the worker to pick up the job, bounded by a timeout so a slow
+      // or dead worker fails the test instead of hanging the process.
+      await Promise.race([
+        processed,
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
 
-    assert.deepStrictEqual(received, payload);
-    await queue.close();
+      assert.deepStrictEqual(received, payload);
+    } finally {
+      // Always release the worker + Redis connection, even on assertion failure,
+      // or open handles keep the node:test process alive indefinitely.
+      await queue.close();
+    }
   });
 });
