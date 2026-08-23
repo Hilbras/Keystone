@@ -1,0 +1,49 @@
+name: 🐞 Bug report
+description: Report a defect in Hilbras Keystone
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search existing issues first.
+        For security vulnerabilities, use [private vulnerability reporting](https://github.com/Hilbras/Keystone/security/advisories/new) instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Core auth (password, sessions, tokens)
+        - OAuth2 / OIDC provider
+        - Social / enterprise SSO (SAML, OIDC connectors)
+        - MFA (WebAuthn, TOTP, SMS)
+        - Admin API
+        - SCIM
+        - Setup wizard / dashboard frontend
+        - SDKs & examples
+        - Deployment (Docker/K8s/systemd)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Expected vs actual behavior, with steps to reproduce.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

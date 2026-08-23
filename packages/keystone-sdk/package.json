@@ -1,0 +1,22 @@
+{
+  "name": "@hilbras/keystone-sdk",
+  "version": "1.0.0",
+  "description": "Drop-in JavaScript SDK for Hilbras Keystone identity platform",
+  "type": "module",
+  "main": "dist/keystone-sdk.cjs",
+  "module": "dist/keystone-sdk.mjs",
+  "browser": "dist/keystone-sdk.iife.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsx build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: keystone-prod
+
+resources:
+  - ../../base
+
+namePrefix: prod-
+
+configMapGenerator:
+  - name: keystone-config
+    behavior: merge
+    literals:
+      - NODE_ENV=production
+      - KEYSTONE_QUEUE_PROVIDER=bullmq
+      - EMAIL_PROVIDER=smtp
+      - AUDIT_CONSOLE_EXPORT=false
+
+replicas:
+  - name: keystone
+    count: 3
+
+patches:
+  - target:
+      kind: Ingress
+      name: keystone
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: keystone.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: keystone.example.com
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: keystone-prod-tls
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: keystone
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 20

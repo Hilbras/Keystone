@@ -1,0 +1,121 @@
+# Production Docker Compose for Hilbras Keystone.
+#
+# Usage:
+#   cp .env.example .env
+#   # edit .env with real secrets and URLs
+#   docker compose up -d
+#
+# This compose file runs Keystone together with PostgreSQL and Redis.
+# For high-availability deployments, replace the bundled PostgreSQL/Redis
+# with managed services and update DATABASE_URL / REDIS_URL accordingly.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: keystone-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hilbras}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-env}
+      POSTGRES_DB: ${POSTGRES_DB:-hilbras}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-hilbras}", "-d", "${POSTGRES_DB:-hilbras}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - keystone
+
+  redis:
+    image: redis:7-alpine
+    container_name: keystone-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - keystone
+
+  keystone:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keystone-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${KEYSTONE_PORT:-4001}:4001"
+    environment:
+      NODE_ENV: production
+      PORT: 4001
+      HOST: 0.0.0.0
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-hilbras}:${POSTGRES_PASSWORD:-change-me-in-env}@postgres:5432/${POSTGRES_DB:-hilbras}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      AUTH_API_PUBLIC_URL: ${AUTH_API_PUBLIC_URL:-http://localhost:4001}
+      CLIENT_APP_URL: ${CLIENT_APP_URL:-http://localhost:5173}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      KEYSTONE_INTERNAL_API_KEY: ${KEYSTONE_INTERNAL_API_KEY}
+      KEYSTONE_ENCRYPTION_KEY: ${KEYSTONE_ENCRYPTION_KEY}
+      KEYSTONE_SETUP_MODE: ${KEYSTONE_SETUP_MODE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-none}
+      EMAIL_FROM: ${EMAIL_FROM:-keystone@local.hilbras.ai}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      SMS_PROVIDER: ${SMS_PROVIDER:-none}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      ZITADEL_DOMAIN: ${ZITADEL_DOMAIN:-}
+      ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID:-}
+      ZITADEL_CLIENT_SECRET: ${ZITADEL_CLIENT_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      OKTA_ISSUER: ${OKTA_ISSUER:-}
+      OKTA_CLIENT_ID: ${OKTA_CLIENT_ID:-}
+      OKTA_CLIENT_SECRET: ${OKTA_CLIENT_SECRET:-}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      KEYSTONE_QUEUE_PROVIDER: ${KEYSTONE_QUEUE_PROVIDER:-bullmq}
+      KEYSTONE_SECRETS_PROVIDER: ${KEYSTONE_SECRETS_PROVIDER:-database}
+      AUDIT_CONSOLE_EXPORT: ${AUDIT_CONSOLE_EXPORT:-false}
+      AUDIT_WEBHOOK_URL: ${AUDIT_WEBHOOK_URL:-}
+    volumes:
+      - ./.env:/app/.env:ro
+    networks:
+      - keystone
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4001/health').then(r => { if (!r.ok) throw new Error('unhealthy') }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  keystone:
+    driver: bridge

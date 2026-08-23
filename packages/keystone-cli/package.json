@@ -1,0 +1,21 @@
+{
+  "name": "@hilbras/keystone-cli",
+  "version": "1.0.0",
+  "description": "Command-line interface for the Hilbras Keystone identity platform",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "keystone": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

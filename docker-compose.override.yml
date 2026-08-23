@@ -1,0 +1,23 @@
+# Development override for docker compose.
+#
+# This file is automatically picked up by docker compose in development.
+# It mounts the source code and runs the dev server with hot reload.
+# In production, keep only docker-compose.yml and a .env file.
+
+services:
+  keystone:
+    build:
+      target: builder
+    command: ["npm", "run", "dev"]
+    environment:
+      NODE_ENV: development
+      KEYSTONE_SETUP_MODE: "true"
+    volumes:
+      - ./src:/app/src:ro
+      - ./frontend:/app/frontend:ro
+      - ./package.json:/app/package.json:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./drizzle.config.ts:/app/drizzle.config.ts:ro
+    ports:
+      - "4001:4001"
+      - "5173:5173"

@@ -1,0 +1,62 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1783974654299,
+      "tag": "0000_skinny_ben_parker",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783983868584,
+      "tag": "0001_brief_joseph",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784140800000,
+      "tag": "0002_add_account_lockout",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784217093813,
+      "tag": "0003_steep_rachel_grey",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784219489338,
+      "tag": "0004_clever_bill_hollister",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784221274343,
+      "tag": "0005_steep_the_call",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784222220916,
+      "tag": "0006_ambitious_boomer",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784223453577,
+      "tag": "0007_greedy_vindicator",
+      "breakpoints": true
+    }
+  ]
+}

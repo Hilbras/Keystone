@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keystone-config
+  namespace: keystone
+  labels:
+    app.kubernetes.io/name: keystone
+data:
+  NODE_ENV: "production"
+  PORT: "4001"
+  HOST: "0.0.0.0"
+  KEYSTONE_QUEUE_PROVIDER: "bullmq"
+  KEYSTONE_SECRETS_PROVIDER: "database"
+  EMAIL_PROVIDER: "smtp"
+  SMS_PROVIDER: "none"
+  AUDIT_CONSOLE_EXPORT: "false"

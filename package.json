@@ -1,0 +1,63 @@
+{
+  "name": "@hilbras/keystone",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "keystone": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:setup": "KEYSTONE_SETUP_MODE=true tsx watch src/setup-server.ts",
+    "dev:all": "./start.sh",
+    "build": "tsc && npm run copy:migrations",
+    "build:sdk": "cd packages/keystone-sdk && npm run build",
+    "build:all": "npm run build:sdk && npm run build && cd frontend && npm run build",
+    "copy:migrations": "mkdir -p dist/db/migrations && cp -r src/db/migrations/* dist/db/migrations/",
+    "start": "node dist/index.js",
+    "start:setup": "KEYSTONE_SETUP_MODE=true node dist/setup-server.js",
+    "typecheck": "tsc --noEmit",
+    "typecheck:all": "npm run typecheck && cd frontend && npm run build",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "db:seed": "tsx src/db/seed.ts",
+    "test": "node --test dist/tests/*.test.js dist/tests/**/*.test.js",
+    "test:all": "npm test && cd frontend && npm run test:e2e",
+    "setup": "./install.sh",
+    "start:all": "./start.sh"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^10.0.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/static": "^8.3.0",
+    "@fastify/swagger": "^9.0.0",
+    "@fastify/swagger-ui": "^5.0.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.78.0",
+    "@opentelemetry/sdk-node": "^0.220.0",
+    "@simplewebauthn/server": "^13.3.2",
+    "argon2": "^0.44.0",
+    "bullmq": "^5.80.2",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.31.2",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.4.0",
+    "jose": "^5.6.0",
+    "nodemailer": "^9.0.3",
+    "otpauth": "^9.5.1",
+    "postgres": "^3.4.4",
+    "prom-client": "^15.1.3",
+    "samlify": "^2.13.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/nodemailer": "^8.0.1",
+    "drizzle-kit": "^0.22.0",
+    "light-my-request": "^6.0.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.0"
+  }
+}

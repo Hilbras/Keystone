@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: keystone-dev
+
+resources:
+  - ../../base
+
+namePrefix: dev-
+
+configMapGenerator:
+  - name: keystone-config
+    behavior: merge
+    literals:
+      - NODE_ENV=development
+      - KEYSTONE_QUEUE_PROVIDER=in-process
+      - EMAIL_PROVIDER=console
+      - AUDIT_CONSOLE_EXPORT=true
+
+replicas:
+  - name: keystone
+    count: 1
+
+patches:
+  - target:
+      kind: Ingress
+      name: keystone
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: keystone-dev.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: keystone-dev.example.com
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: keystone-dev-tls

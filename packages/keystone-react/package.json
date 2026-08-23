@@ -1,0 +1,23 @@
+{
+  "name": "@hilbras/keystone-react",
+  "version": "1.0.0",
+  "description": "React hooks for the Hilbras Keystone identity platform",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=17"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.0",
+    "typescript": "^5.4.0"
+  }
+}

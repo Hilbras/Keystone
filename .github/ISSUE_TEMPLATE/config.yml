@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/Hilbras/Keystone/discussions
+    about: Ask usage questions and propose ideas before filing an issue.
+  - name: Security vulnerability
+    url: https://github.com/Hilbras/Keystone/security/advisories/new
+    about: Report vulnerabilities privately — never in a public issue.

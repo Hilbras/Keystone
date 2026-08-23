@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Keystone Drop-in Login Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 360px; margin: 48px auto; padding: 0 16px; }
+    form, .box { display: grid; gap: 12px; margin-bottom: 24px; }
+    input, button { padding: 10px; font-size: 16px; }
+    button { cursor: pointer; }
+    .keystone-message { font-size: 14px; min-height: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Login</h1>
+
+  <form id="keystone-login-form">
+    <input class="keystone-email" type="email" placeholder="Email" required />
+    <input class="keystone-password" type="password" placeholder="Password" required />
+    <button type="submit">Login</button>
+  </form>
+
+  <hr />
+
+  <h1>Sign up</h1>
+
+  <form id="keystone-register-form">
+    <input class="keystone-username" placeholder="Username" required />
+    <input class="keystone-email" type="email" placeholder="Email" required />
+    <input class="keystone-password" type="password" placeholder="Password" required />
+    <input class="keystone-name" placeholder="Full name (optional)" />
+    <button type="submit">Create account</button>
+  </form>
+
+  <hr />
+
+  <button id="keystone-google-btn">Login with Google</button>
+
+  <script>
+    window.KEYSTONE_URL = "http://localhost:4001";
+    window.KEYSTONE_AFTER_LOGIN = "http://localhost:5173/dashboard";
+  </script>
+  <script src="./dropin.js"></script>
+</body>
+</html>

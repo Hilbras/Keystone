@@ -1,0 +1,2 @@
+ALTER TABLE "applications" ADD COLUMN "allowed_ips" text[] DEFAULT '{}'::text[] NOT NULL;--> statement-breakpoint
+ALTER TABLE "applications" ADD COLUMN "blocked_ips" text[] DEFAULT '{}'::text[] NOT NULL;

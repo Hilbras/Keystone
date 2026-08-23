@@ -1,0 +1,33 @@
+name: ✨ Feature request
+description: Suggest an enhancement for Hilbras Keystone
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What are you trying to achieve? What blocks you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: API shape, behavior, or workflow you envision.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Affected areas
+      options:
+        - label: Core auth / sessions
+        - label: OAuth2 / OIDC provider
+        - label: Admin API or dashboard
+        - label: SDKs
+        - label: Deployment / operations
+        - label: Documentation
