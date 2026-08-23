@@ -82,7 +82,7 @@ jobs:
           tar -czf "hilbras-keystone-sdk-${VERSION}.tar.gz" -C packages/keystone-sdk dist
           sha256sum hilbras-keystone-*.tar.gz > SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
           path: |
