@@ -4,7 +4,7 @@ import { createConfigWriter } from "../services/setup/configWriter.js";
 import { queue } from "../services/queue/index.js";
 
 const UpdateConfigSchema = z.object({
-  values: z.record(z.string()),
+  values: z.record(z.string(), z.string()),
 });
 
 async function requireOwner(request: FastifyRequest, reply: FastifyReply) {

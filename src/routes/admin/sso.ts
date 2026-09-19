@@ -11,7 +11,7 @@ const SamlConnectionSchema = z.object({
   idpCertificate: z.string().optional(),
   spEntityId: z.string().min(1),
   spAcsUrl: z.string().url(),
-  attributeMapping: z.record(z.array(z.string())).optional(),
+  attributeMapping: z.record(z.string(), z.array(z.string())).optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -25,7 +25,7 @@ const OidcConnectionSchema = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().min(1),
   scopes: z.array(z.string()).optional(),
-  attributeMapping: z.record(z.array(z.string())).optional(),
+  attributeMapping: z.record(z.string(), z.array(z.string())).optional(),
   isActive: z.boolean().optional(),
 });
 

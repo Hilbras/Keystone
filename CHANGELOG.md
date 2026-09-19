@@ -66,6 +66,24 @@ Dependency updates — safe patches and minor versions.
 - **lucide-react** 1.24.0 → latest 1.x (frontend)
 - **@playwright/test** 1.61.1 → latest 1.x (frontend)
 
+## [1.3.0] - 2026-09-20
+
+Core tooling upgrades — TypeScript 7, Zod 4, Drizzle latest, Commander 15, Dotenv 18.
+
+### Changed
+
+- **TypeScript** 5.9.3 → 7.0.2 — new major version with stricter type checking.
+- **Zod** 3.25.76 → 4.6.5 — API redesign: `z.record()` now requires explicit key type. Updated 7 call sites across 6 route files.
+- **Drizzle ORM** 0.31.4 → 0.45.2
+- **Drizzle Kit** 0.22.8 → 0.31.10
+- **Commander** 12.1.0 → 15.0.0
+- **Dotenv** 16.6.1 → 18.0.1
+
+### Fixed
+
+- **Zod 4 migration** — Updated all `z.record()` calls to include explicit `z.string()` key type parameter (sso.ts, auth.ts, config.ts, profile.ts, setup.ts, webauthn.ts, workflows.ts).
+
+[1.3.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.0.0

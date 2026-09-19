@@ -57,7 +57,7 @@ const ValidateSmsSchema = z.object({
 });
 
 const SetupConfigSchema = z.object({
-  env: z.record(z.string()),
+  env: z.record(z.string(), z.string()),
 });
 
 function parseBody<T>(schema: z.ZodSchema<T>, body: unknown, reply: FastifyReply): T | null {

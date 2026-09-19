@@ -20,6 +20,10 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 
 ---
 
+## What's new in v1.3.0
+
+- **Core tooling upgrades** — TypeScript 7, Zod 4, Drizzle ORM 0.45, Commander 15, Dotenv 18. Updated all `z.record()` calls for Zod 4 compatibility.
+
 ## What's new in v1.2.0
 
 - **Dependency updates** — All root and frontend packages updated to latest safe patch/minor versions (fastify, argon2, otpauth, OpenTelemetry, autoprefixer, postcss, lucide-react, Playwright).

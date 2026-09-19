@@ -41,7 +41,7 @@ const RegisterSchema = z.object({
   password: z.string().min(8).max(128),
   name: z.string().max(255).optional(),
   client_id: z.string().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 const LoginSchema = z.object({

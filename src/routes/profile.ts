@@ -6,7 +6,7 @@ const UpdateProfileSchema = z.object({
   name: z.string().max(255).optional(),
   avatarUrl: z.string().url().max(2048).nullable().optional(),
   phoneNumber: z.string().max(32).nullable().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export default async function profileRoutes(app: FastifyInstance) {

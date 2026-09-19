@@ -37,7 +37,7 @@ function clearChallengeCookie(reply: FastifyReply): void {
 }
 
 const RegisterVerifySchema = z.object({
-  response: z.record(z.unknown()),
+  response: z.record(z.string(), z.unknown()),
   deviceName: z.string().max(100).optional(),
 });
 
@@ -46,7 +46,7 @@ const AuthenticateOptionsSchema = z.object({
 });
 
 const AuthenticateVerifySchema = z.object({
-  response: z.record(z.unknown()),
+  response: z.record(z.string(), z.unknown()),
 });
 
 export default async function webauthnRoutes(app: FastifyInstance) {

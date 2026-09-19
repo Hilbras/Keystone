@@ -15,7 +15,7 @@ const CreateWorkflowSchema = z.object({
   name: z.string().min(1).max(255),
   trigger: z.enum(["user_registered", "user_login", "organization_created"]),
   definition: z.object({
-    steps: z.array(WorkflowStepSchema.and(z.record(z.unknown()))),
+    steps: z.array(WorkflowStepSchema.and(z.record(z.string(), z.unknown()))),
   }),
   isActive: z.boolean().optional(),
 });
