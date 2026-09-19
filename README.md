@@ -20,6 +20,10 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 
 ---
 
+## What's new in v1.5.0
+
+- **Auth & infrastructure upgrades** — jose 6, ioredis 6, bullmq 6, @simplewebauthn/server 14, nodemailer 10. Updated KeyLike→CryptoKey for jose 6 and AuthenticatorTransportFuture→AuthenticatorTransport for simplewebauthn 14.
+
 ## What's new in v1.4.0
 
 - **Fastify ecosystem upgrades** — fastify-plugin 6, @fastify/cookie 11, @fastify/cors 11, @fastify/static 10, @fastify/swagger-ui 6. All plugins updated to latest major versions with no code changes required.

@@ -1,9 +1,7 @@
-import type { KeyLike } from "jose";
-
 export interface SigningKeyPair {
   keyId: string;
-  privateKey: KeyLike | Uint8Array;
-  publicKey: KeyLike;
+  privateKey: CryptoKey | Uint8Array;
+  publicKey: CryptoKey;
 }
 
 export interface SecretsProvider {

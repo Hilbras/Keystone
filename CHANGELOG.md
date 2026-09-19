@@ -95,6 +95,24 @@ Fastify ecosystem upgrades — all plugins updated to latest major versions.
 - **@fastify/static** 8.3.0 → 10.1.4
 - **@fastify/swagger-ui** 5.2.6 → 6.1.1
 
+## [1.5.0] - 2026-09-20
+
+Auth & infrastructure upgrades — jose 6, ioredis 6, bullmq 6, simplewebauthn 14, nodemailer 10.
+
+### Changed
+
+- **jose** 5.10.0 → 6.2.12 — `KeyLike` type removed, replaced with `CryptoKey`.
+- **ioredis** 5.11.1 → 6.0.0
+- **bullmq** 5.80.2 → 6.3.8
+- **@simplewebauthn/server** 13.3.2 → 14.0.2 — `AuthenticatorTransportFuture` renamed to `AuthenticatorTransport`.
+- **nodemailer** 9.0.3 → 10.0.10
+
+### Fixed
+
+- **jose 6 migration** — Replaced `KeyLike` with `CryptoKey` in secrets provider, tokens service, and database/environment secrets providers.
+- **simplewebauthn 14 migration** — Renamed `AuthenticatorTransportFuture` to `AuthenticatorTransport` in webauthn service.
+
+[1.5.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.2.0

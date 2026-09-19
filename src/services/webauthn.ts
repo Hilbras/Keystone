@@ -7,7 +7,7 @@ import {
   verifyAuthenticationResponse,
   type RegistrationResponseJSON,
   type AuthenticationResponseJSON,
-  type AuthenticatorTransportFuture,
+  type AuthenticatorTransport,
 } from "@simplewebauthn/server";
 import { db } from "../db/index.js";
 import {
@@ -114,7 +114,7 @@ export async function verifyAndStoreRegistration(
     credentialId: credential.id,
     publicKey: Buffer.from(credential.publicKey).toString("base64url"),
     counter: credential.counter,
-    transports: (credential.transports || []) as AuthenticatorTransportFuture[],
+    transports: (credential.transports || []) as AuthenticatorTransport[],
     aaguid: info.aaguid || null,
     deviceName: deviceName || null,
   });
@@ -124,7 +124,7 @@ export async function verifyAndStoreRegistration(
 
 export async function buildAuthenticationOptions(email?: string) {
   let allowCredentials:
-    | { id: string; type: "public-key"; transports?: AuthenticatorTransportFuture[] }[]
+    | { id: string; type: "public-key"; transports?: AuthenticatorTransport[] }[]
     | undefined;
   let userId: string | undefined;
 
@@ -136,7 +136,7 @@ export async function buildAuthenticationOptions(email?: string) {
       allowCredentials = credentials.map((c) => ({
         id: c.credentialId,
         type: "public-key" as const,
-        transports: (c.transports || []) as AuthenticatorTransportFuture[],
+        transports: (c.transports || []) as AuthenticatorTransport[],
       }));
     }
   }
@@ -167,7 +167,7 @@ export async function verifyAuthentication(response: AuthenticationResponseJSON,
       id: credential.credentialId,
       publicKey: Buffer.from(credential.publicKey, "base64url"),
       counter: credential.counter,
-      transports: (credential.transports || []) as AuthenticatorTransportFuture[],
+      transports: (credential.transports || []) as AuthenticatorTransport[],
     },
     requireUserVerification: false,
   });

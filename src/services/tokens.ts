@@ -7,7 +7,6 @@ import {
   decodeProtectedHeader,
   exportJWK,
   type JWTPayload,
-  type KeyLike,
 } from "jose";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
