@@ -112,6 +112,39 @@ Auth & infrastructure upgrades — jose 6, ioredis 6, bullmq 6, simplewebauthn 1
 - **jose 6 migration** — Replaced `KeyLike` with `CryptoKey` in secrets provider, tokens service, and database/environment secrets providers.
 - **simplewebauthn 14 migration** — Renamed `AuthenticatorTransportFuture` to `AuthenticatorTransport` in webauthn service.
 
+## [1.6.0] - 2026-09-20
+
+Frontend upgrades — React 19, Vite 8, Tailwind 4, TypeScript 7.
+
+### Changed
+
+- **React** 18.3.1 → 19.3.0
+- **React DOM** 18.3.1 → 19.3.0
+- **Vite** 5.4.21 → 8.3.0
+- **@vitejs/plugin-react** 4.7.0 → 6.1.1
+- **Tailwind CSS** 3.4.19 → 4.3.3 — complete rewrite: config moved from JS to CSS `@theme` directive, PostCSS plugin replaced with `@tailwindcss/vite`.
+- **@simplewebauthn/browser** 13.3.0 → 14.0.0
+- **TypeScript** 5.9.3 → 7.0.2 (frontend)
+- **@types/react** 18.3.31 → 19.0.0
+- **@types/react-dom** 18.3.7 → 19.0.0
+
+### Removed
+
+- **autoprefixer** — not needed with Tailwind 4.
+- **postcss** — not needed with Tailwind 4.
+- **tailwindcss-animate** — animations built into Tailwind 4.
+
+### Added
+
+- **@tailwindcss/vite** — replaces PostCSS plugin approach.
+
+### Migration notes
+
+- `tailwind.config.js` deleted — config now lives in `src/tailwind.css` using `@theme` directive.
+- `postcss.config.js` deleted — Tailwind 4 uses Vite plugin directly.
+- `src/index.css` updated to use `@import "./tailwind.css"` instead of `@tailwind base/components/utilities`.
+
+[1.6.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.3.0

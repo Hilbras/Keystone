@@ -20,6 +20,10 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 
 ---
 
+## What's new in v1.6.0
+
+- **Frontend overhaul** — React 19, Vite 8, Tailwind 4 (config migrated from JS to CSS `@theme` directive), TypeScript 7. Removed autoprefixer, postcss, tailwindcss-animate in favor of Tailwind 4 built-in features.
+
 ## What's new in v1.5.0
 
 - **Auth & infrastructure upgrades** — jose 6, ioredis 6, bullmq 6, @simplewebauthn/server 14, nodemailer 10. Updated KeyLike→CryptoKey for jose 6 and AuthenticatorTransportFuture→AuthenticatorTransport for simplewebauthn 14.
