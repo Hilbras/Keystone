@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { db, initDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { AuthenticationDomainService } from "../services/domain/authentication.js";
-import { DrizzleUserRepository } from "../repositories/index.js";
+import { DrizzleUserRepository, DrizzleApplicationRepository } from "../repositories/index.js";
 import { validateDatabase, validateRedis, validateEmail, validateSms } from "../services/setup/validation.js";
 import { createConfigWriter } from "../services/setup/configWriter.js";
 import { getSetupToken, validateSetupToken } from "../services/setup/token.js";
@@ -275,7 +275,7 @@ export default async function setupRoutes(app: FastifyInstance) {
       await db.update(users).set({ role: "owner" }).where(eq(users.id, existing.id));
       ownerUser = existing;
     } else {
-      const authService = new AuthenticationDomainService(new DrizzleUserRepository());
+      const authService = new AuthenticationDomainService(new DrizzleUserRepository(), new DrizzleApplicationRepository());
       const result = await authService.register({
         email: body.email,
         password: body.password,

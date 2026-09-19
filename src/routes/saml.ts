@@ -1,15 +1,14 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { eq, and } from "drizzle-orm";
 import { ServiceProvider, IdentityProvider } from "samlify";
-import { db } from "../db/index.js";
-import { samlConnections, organizations, type SamlConnection } from "../db/schema.js";
+import type { SamlConnection } from "../db/schema.js";
 import { provisionEnterpriseUser, defaultRoleForOrg } from "../services/enterpriseSso.js";
 import { createTokenSet } from "../services/tokens.js";
 import { setSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
 import { toPublicUser } from "../types.js";
 import { config } from "../config.js";
+import { escapeXml } from "./helpers.js";
 
 const RelayStateSchema = z.object({
   connectionId: z.string(),
@@ -100,11 +99,7 @@ function sanitizeSamlError(error: unknown): { statusCode: number; body: { error:
 export default async function samlRoutes(app: FastifyInstance) {
   app.get("/saml/:connectionId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
-    const [connection] = await db
-      .select()
-      .from(samlConnections)
-      .where(and(eq(samlConnections.id, connectionId), eq(samlConnections.isActive, true)))
-      .limit(1);
+    const connection = await app.container.samlConnectionRepository.findActiveById(connectionId);
 
     if (!connection) {
       return reply.status(404).send({ error: "SAML connection not found" });
@@ -146,11 +141,7 @@ export default async function samlRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid RelayState" });
     }
 
-    const [connection] = await db
-      .select()
-      .from(samlConnections)
-      .where(and(eq(samlConnections.id, relayState.connectionId), eq(samlConnections.isActive, true)))
-      .limit(1);
+    const connection = await app.container.samlConnectionRepository.findActiveById(relayState.connectionId);
 
     if (!connection) {
       return reply.status(400).send({ error: "SAML connection not found" });
@@ -165,11 +156,7 @@ export default async function samlRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "SAML response did not contain an email" });
       }
 
-      const [org] = await db
-        .select()
-        .from(organizations)
-        .where(eq(organizations.id, connection.orgId))
-        .limit(1);
+      const org = await app.container.organizationRepository.findById(connection.orgId);
 
       const user = await provisionEnterpriseUser(
         connection.orgId,
@@ -204,20 +191,16 @@ export default async function samlRoutes(app: FastifyInstance) {
 
   app.get("/saml/:connectionId/metadata", async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
-    const [connection] = await db
-      .select()
-      .from(samlConnections)
-      .where(and(eq(samlConnections.id, connectionId), eq(samlConnections.isActive, true)))
-      .limit(1);
+    const connection = await app.container.samlConnectionRepository.findActiveById(connectionId);
 
     if (!connection) {
       return reply.status(404).send({ error: "SAML connection not found" });
     }
 
     const metadata = `
-<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${connection.spEntityId}">
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${escapeXml(connection.spEntityId)}">
   <md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
-    <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${connection.spAcsUrl}" index="0"/>
+    <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${escapeXml(connection.spAcsUrl)}" index="0"/>
   </md:SPSSODescriptor>
 </md:EntityDescriptor>`.trim();
 

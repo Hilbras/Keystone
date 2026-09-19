@@ -95,5 +95,10 @@ export class BullMQQueue implements Queue {
   async close(): Promise<void> {
     await Promise.all(Array.from(this.workers.values()).map((worker) => worker.close()));
     await this.queue.close();
+    // Reset registries so a closed instance (e.g. the shared singleton after a
+    // test's app.close()) can accept process()/enqueue() again with fresh
+    // connections instead of silently reusing dead ones.
+    this.workers.clear();
+    this.handlers.clear();
   }
 }

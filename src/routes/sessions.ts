@@ -1,11 +1,13 @@
+import crypto from "node:crypto";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { config } from "../config.js";
 import { SessionRepository } from "../repositories/session.js";
-import { revokeRefreshToken } from "../services/tokens.js";
-import { db } from "../db/index.js";
-import { refreshTokens } from "../db/schema.js";
-import { eq } from "drizzle-orm";
 
 const sessions = new SessionRepository();
+
+function hashToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
 
 export default async function sessionRoutes(app: FastifyInstance) {
   app.get("/sessions", { preHandler: [app.authenticate] }, async (request: FastifyRequest) => {
@@ -35,10 +37,10 @@ export default async function sessionRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Session not found" });
     }
 
-    // Revoke the associated refresh token.
-    await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.id, session.refreshTokenId));
+    await sessions.revokeRefreshToken(session.refreshTokenId);
     await sessions.deleteById(id, userId);
 
+    await request.audit("session_revoked", { sessionId: id });
     return { success: true };
   });
 
@@ -49,18 +51,12 @@ export default async function sessionRoutes(app: FastifyInstance) {
     const currentRefreshToken = request.cookies?.[config.COOKIE_NAME];
     let currentRefreshTokenId: string | undefined;
     if (currentRefreshToken) {
-      const [row] = await db.select().from(refreshTokens).where(eq(refreshTokens.tokenHash, hashToken(currentRefreshToken))).limit(1);
+      const row = await sessions.findRefreshTokenByHash(hashToken(currentRefreshToken));
       currentRefreshTokenId = row?.id;
     }
 
     await sessions.deleteAllForUser(userId, currentRefreshTokenId);
+    await request.audit("sessions_revoked_all", { exceptSessionId: currentRefreshTokenId });
     return { success: true };
   });
-}
-
-import { config } from "../config.js";
-import crypto from "node:crypto";
-
-function hashToken(token: string): string {
-  return crypto.createHash("sha256").update(token).digest("hex");
 }

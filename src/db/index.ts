@@ -32,6 +32,18 @@ export function getDb(): PostgresJsDatabase<typeof schema> {
   return db;
 }
 
+/**
+ * Close the underlying connection pool. Used on graceful shutdown and in tests
+ * so pooled sockets do not keep the Node process alive after work is done.
+ */
+export async function closeDb(): Promise<void> {
+  if (dbClient) {
+    const client = dbClient;
+    dbClient = null;
+    await client.end({ timeout: 5 });
+  }
+}
+
 export { schema };
 
 // Initialize immediately when DATABASE_URL is available so existing code paths

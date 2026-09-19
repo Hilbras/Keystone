@@ -2,8 +2,7 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, orgMemberships, organizations } from "../db/schema.js";
-import { slugifyUsername, ensureUniqueUsername } from "../services/users.js";
+import { orgMemberships, users } from "../db/schema.js";
 
 const ScimUserSchema = z.object({
   userName: z.string().email(),
@@ -12,7 +11,7 @@ const ScimUserSchema = z.object({
   active: z.boolean().optional(),
 });
 
-function scimUserResponse(user: typeof users.$inferSelect): Record<string, unknown> {
+function scimUserResponse(user: { id: string; email: string; name: string | null }): Record<string, unknown> {
   return {
     schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"],
     id: user.id,
@@ -29,6 +28,22 @@ function scimUserResponse(user: typeof users.$inferSelect): Record<string, unkno
   };
 }
 
+function scimGroupResponse(group: { id: string; displayName: string; members: { value: string; display: string }[] }): Record<string, unknown> {
+  return {
+    schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+    id: group.id,
+    displayName: group.displayName,
+    members: group.members.map((m) => ({
+      value: m.value,
+      display: m.display,
+      $ref: `Users/${m.value}`,
+    })),
+    meta: {
+      resourceType: "Group",
+    },
+  };
+}
+
 function scimError(status: number, detail: string): Record<string, unknown> {
   return {
     schemas: ["urn:ietf:params:scim:api:messages:2.0:Error"],
@@ -38,7 +53,6 @@ function scimError(status: number, detail: string): Record<string, unknown> {
 }
 
 export default async function scimRoutes(app: FastifyInstance) {
-  // Simple bearer-token auth: validate SCIM_BEARER_TOKEN env var.
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = request.headers.authorization;
     const expected = process.env.SCIM_BEARER_TOKEN;
@@ -51,7 +65,7 @@ export default async function scimRoutes(app: FastifyInstance) {
   });
 
   app.get("/scim/v2/Users", async () => {
-    const allUsers = await db.select().from(users);
+    const allUsers = await app.container.userRepository.listAll();
     return {
       schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
       totalResults: allUsers.length,
@@ -61,7 +75,7 @@ export default async function scimRoutes(app: FastifyInstance) {
 
   app.get("/scim/v2/Users/:userId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { userId } = request.params as { userId: string };
-    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    const user = await app.container.userRepository.findById(userId);
     if (!user) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
@@ -72,21 +86,25 @@ export default async function scimRoutes(app: FastifyInstance) {
     const body = ScimUserSchema.parse(request.body);
     const email = body.userName.toLowerCase().trim();
 
-    let [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    let user = await app.container.userRepository.findByEmail(email);
+    let isNewUser = false;
     if (!user) {
-      const username = await ensureUniqueUsername(slugifyUsername(email.split("@")[0]));
-      [user] = await db
-        .insert(users)
-        .values({
-          email,
-          username,
-          name: body.name ? `${body.name.givenName || ""} ${body.name.familyName || ""}`.trim() || username : username,
-          provider: "scim",
-          emailVerified: true,
-        })
-        .returning();
+      const base = email.split("@")[0];
+      const username = await app.container.userRepository.ensureUniqueUsername(base);
+      const name = body.name
+        ? `${body.name.givenName || ""} ${body.name.familyName || ""}`.trim() || username
+        : username;
+      user = await app.container.userRepository.create({
+        email,
+        username,
+        name,
+        provider: "scim",
+        emailVerified: true,
+      });
+      isNewUser = true;
     }
 
+    await request.audit(isNewUser ? "scim_user_created" : "scim_user_updated", { userId: user.id, email: user.email });
     return reply.status(201).send(scimUserResponse(user));
   });
 
@@ -94,33 +112,88 @@ export default async function scimRoutes(app: FastifyInstance) {
     const { userId } = request.params as { userId: string };
     const body = ScimUserSchema.parse(request.body);
 
-    const [updated] = await db
-      .update(users)
-      .set({
-        email: body.userName.toLowerCase().trim(),
-        name: body.name
-          ? `${body.name.givenName || ""} ${body.name.familyName || ""}`.trim()
-          : undefined,
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, userId))
-      .returning();
+    const updated = await app.container.userRepository.update(userId, {
+      email: body.userName.toLowerCase().trim(),
+      name: body.name
+        ? `${body.name.givenName || ""} ${body.name.familyName || ""}`.trim()
+        : undefined,
+    });
 
     if (!updated) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
+    await request.audit("scim_user_updated", { userId: updated.id, email: updated.email });
     return scimUserResponse(updated);
   });
 
   app.delete("/scim/v2/Users/:userId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { userId } = request.params as { userId: string };
-    await db.delete(users).where(eq(users.id, userId));
+    const user = await app.container.userRepository.findById(userId);
+    await app.container.userRepository.deleteById(userId);
+    await request.audit("scim_user_deleted", { userId, email: user?.email });
     return reply.status(204).send();
   });
 
-  app.get("/scim/v2/Groups", async () => ({
-    schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-    totalResults: 0,
-    Resources: [],
-  }));
+  app.get("/scim/v2/Groups", async () => {
+    const memberships = await db
+      .select({ orgId: orgMemberships.orgId, role: orgMemberships.role })
+      .from(orgMemberships);
+
+    const groupMap = new Map<string, { orgId: string; role: string; members: { value: string; display: string }[] }>();
+    for (const m of memberships) {
+      const key = `${m.orgId}:${m.role}`;
+      if (!groupMap.has(key)) {
+        groupMap.set(key, { orgId: m.orgId, role: m.role, members: [] });
+      }
+    }
+
+    const groups: { id: string; displayName: string; members: { value: string; display: string }[] }[] = [];
+    for (const [key, group] of groupMap) {
+      const org = await app.container.organizationRepository.findById(group.orgId);
+      const orgName = org?.name || group.orgId;
+      const members = await db
+        .select({ userId: orgMemberships.userId, email: users.email })
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, group.orgId), eq(orgMemberships.role, group.role)))
+        .innerJoin(users, eq(orgMemberships.userId, users.id));
+
+      groups.push({
+        id: key,
+        displayName: `${orgName}:${group.role}`,
+        members: members.map((m) => ({ value: m.userId, display: m.email })),
+      });
+    }
+
+    return {
+      schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+      totalResults: groups.length,
+      Resources: groups.map(scimGroupResponse),
+    };
+  });
+
+  app.get("/scim/v2/Groups/:groupId", async (request: FastifyRequest, reply: FastifyReply) => {
+    const { groupId } = request.params as { groupId: string };
+    const [orgId, role] = groupId.split(":");
+
+    if (!orgId || !role) {
+      return reply.status(400).send(scimError(400, "Invalid group ID format. Expected orgId:role"));
+    }
+
+    const org = await app.container.organizationRepository.findById(orgId);
+    if (!org) {
+      return reply.status(404).send(scimError(404, "Organization not found"));
+    }
+
+    const members = await db
+      .select({ userId: orgMemberships.userId, email: users.email })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.role, role)))
+      .innerJoin(users, eq(orgMemberships.userId, users.id));
+
+    return scimGroupResponse({
+      id: groupId,
+      displayName: `${org.name}:${role}`,
+      members: members.map((m) => ({ value: m.userId, display: m.email })),
+    });
+  });
 }

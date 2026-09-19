@@ -24,6 +24,7 @@ import { webhookDispatchSubscriber } from "./services/events/subscribers/webhook
 import { startWebhookWorker } from "./services/webhooks.js";
 import { anomalySubscriber } from "./services/events/subscribers/anomaly.js";
 import { queue } from "./services/queue/index.js";
+import { cache } from "./services/cache.js";
 import { emailProvider } from "./services/email.js";
 import { registerPlugin } from "./services/plugins/registry.js";
 import type { KeystonePlugin } from "./services/plugins/types.js";
@@ -177,6 +178,9 @@ export async function buildApp() {
 
   app.addHook("onClose", async () => {
     await queue.close?.();
+    // The cache owns its own Redis connection (opened eagerly when REDIS_URL
+    // is set); without this it keeps a socket open after shutdown.
+    await cache.close().catch(() => {});
   });
 
   // Global API rate limiting to protect the platform from abuse.
@@ -273,35 +277,35 @@ async function start() {
     await migrate(db, { migrationsFolder: path.resolve(__dirname, "./db/migrations") });
     app.log.info("Database migrations applied");
   } catch (err) {
-    app.log.warn({ err }, "Database migration skipped or failed");
+    app.log.error({ err }, "Database migration failed — the application may not work correctly");
   }
 
   try {
     await loadSigningKeys();
     app.log.info("JWT signing keys loaded");
   } catch (err) {
-    app.log.warn({ err }, "JWT signing key loading failed");
+    app.log.error({ err }, "JWT signing key loading failed — token signing will not work");
   }
 
   try {
     generateSetupToken();
     printSetupToken();
   } catch (err) {
-    app.log.warn({ err }, "Could not generate setup token");
+    app.log.warn({ err }, "Could not generate setup token (may already exist)");
   }
 
   try {
     await app.container.permissionRepository.ensureRolePermissionsSeeded();
     app.log.info("Role permissions seeded");
   } catch (err) {
-    app.log.warn({ err }, "Role permission seeding failed");
+    app.log.error({ err }, "Role permission seeding failed — authorization may not work correctly");
   }
 
   try {
     await loadWorkflows();
     app.log.info("Workflows loaded");
   } catch (err) {
-    app.log.warn({ err }, "Workflow loading failed");
+    app.log.warn({ err }, "Workflow loading failed (workflows feature may be unavailable)");
   }
 
   app.addHook("onClose", async () => {

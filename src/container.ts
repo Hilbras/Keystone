@@ -8,6 +8,9 @@ import type {
   IdentityRepository,
   PermissionRepository,
 } from "./repositories/types.js";
+import type { ApiKeyRepository } from "./repositories/apiKey.js";
+import type { SamlConnectionRepository } from "./repositories/samlConnection.js";
+import type { OidcConnectionRepository } from "./repositories/oidcConnection.js";
 import type { SecretsProvider } from "./services/secrets/provider.js";
 import type { Queue } from "./services/queue/types.js";
 
@@ -20,6 +23,9 @@ export interface Container {
   applicationRepository: ApplicationRepository;
   auditRepository: AuditRepository;
   permissionRepository: PermissionRepository;
+  apiKeyRepository: ApiKeyRepository;
+  samlConnectionRepository: SamlConnectionRepository;
+  oidcConnectionRepository: OidcConnectionRepository;
   secretsProvider: SecretsProvider;
   queue: Queue;
 }

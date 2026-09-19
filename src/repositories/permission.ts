@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { permissions, rolePermissions, type Permission } from "../db/schema.js";
+import { permissions, rolePermissions, orgMemberships, type Permission } from "../db/schema.js";
 import type { PermissionRepository } from "./types.js";
 
 const DEFAULT_PERMISSIONS = [
@@ -89,6 +89,28 @@ export class DrizzlePermissionRepository implements PermissionRepository {
 
   async list(): Promise<Permission[]> {
     return db.select().from(permissions).orderBy(permissions.resource, permissions.action);
+  }
+
+  async listDistinctRoles(): Promise<string[]> {
+    const rows = await db.selectDistinct({ role: rolePermissions.role }).from(rolePermissions);
+    const roles = new Set<string>(["owner", "admin", "member", ...rows.map((r) => r.role)]);
+    const memberships = await db.selectDistinct({ role: orgMemberships.role }).from(orgMemberships);
+    for (const m of memberships) roles.add(m.role);
+    return [...roles].sort();
+  }
+
+  async create(input: { resource: string; action: string; description?: string }): Promise<Permission> {
+    const [created] = await db
+      .insert(permissions)
+      .values({ resource: input.resource, action: input.action, description: input.description ?? null })
+      .onConflictDoNothing({ target: [permissions.resource, permissions.action] })
+      .returning();
+    return created;
+  }
+
+  async remove(id: string): Promise<Permission | undefined> {
+    const [removed] = await db.delete(permissions).where(eq(permissions.id, id)).returning();
+    return removed;
   }
 
   async listForRole(role: string): Promise<Permission[]> {

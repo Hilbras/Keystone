@@ -1,5 +1,5 @@
 import type { Organization, Application, OrgMembership } from "../../db/schema.js";
-import type { OrganizationRepository, ApplicationRepository } from "../../repositories/types.js";
+import type { OrganizationRepository, ApplicationRepository, UserRepository } from "../../repositories/types.js";
 import { emit } from "../events/bus.js";
 import { ok, err, type Result } from "../../lib/result.js";
 
@@ -8,7 +8,8 @@ export type OrgRole = "owner" | "admin" | "member";
 export class OrganizationDomainService {
   constructor(
     private readonly organizations: OrganizationRepository,
-    private readonly applications: ApplicationRepository
+    private readonly applications: ApplicationRepository,
+    private readonly users?: UserRepository
   ) {}
 
   async createOrganization(
@@ -74,8 +75,9 @@ export class OrganizationDomainService {
     if (!membership) {
       return err({ code: "MEMBERSHIP_NOT_FOUND", message: "User is not a member of this organization", statusCode: 404 });
     }
-    const { deactivateUser } = await import("../users.js");
-    await deactivateUser(userId);
+    if (this.users) {
+      await this.users.deactivate(userId);
+    }
     await this.organizations.removeMembership(orgId, userId);
     return ok({ success: true });
   }

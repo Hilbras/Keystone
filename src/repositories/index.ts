@@ -4,3 +4,6 @@ export { DrizzleOrganizationRepository } from "./organization.js";
 export { DrizzleApplicationRepository } from "./application.js";
 export { DrizzleAuditRepository } from "./audit.js";
 export { DrizzlePermissionRepository } from "./permission.js";
+export { DrizzleApiKeyRepository, type ApiKeyRepository } from "./apiKey.js";
+export { DrizzleSamlConnectionRepository, type SamlConnectionRepository } from "./samlConnection.js";
+export { DrizzleOidcConnectionRepository, type OidcConnectionRepository } from "./oidcConnection.js";

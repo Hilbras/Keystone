@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { userSessions } from "../db/schema.js";
+import { userSessions, refreshTokens } from "../db/schema.js";
 import { eq, and, lt, desc } from "drizzle-orm";
 
 export interface CreateSessionInput {
@@ -73,5 +73,14 @@ export class SessionRepository {
     } else {
       await db.delete(userSessions).where(eq(userSessions.userId, userId));
     }
+  }
+
+  async revokeRefreshToken(tokenId: string) {
+    await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.id, tokenId));
+  }
+
+  async findRefreshTokenByHash(tokenHash: string) {
+    const [row] = await db.select().from(refreshTokens).where(eq(refreshTokens.tokenHash, tokenHash)).limit(1);
+    return row;
   }
 }

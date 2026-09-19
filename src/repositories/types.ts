@@ -14,9 +14,14 @@ export interface CreateUserInput {
 
 export interface UpdateUserInput {
   name?: string;
+  email?: string;
   username?: string;
   role?: string;
   emailVerified?: boolean;
+  avatarUrl?: string | null;
+  phoneNumber?: string | null;
+  phoneVerified?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export interface UserRepository {
@@ -26,11 +31,16 @@ export interface UserRepository {
   update(id: string, input: UpdateUserInput): Promise<User | undefined>;
   deactivate(id: string): Promise<void>;
   listByOrg(orgId: string): Promise<User[]>;
+  listAll(): Promise<User[]>;
   updateLastSeen(id: string): Promise<void>;
   ensureUniqueUsername(base: string, excludeId?: string): Promise<string>;
   recordFailedLogin(id: string): Promise<User | undefined>;
   resetFailedLogins(id: string): Promise<void>;
   lockAccount(id: string, until: Date): Promise<void>;
+  setTotpSecret(userId: string, totpSecret: string): Promise<void>;
+  enableTotp(userId: string): Promise<void>;
+  disableTotp(userId: string): Promise<void>;
+  deleteById(userId: string): Promise<void>;
 }
 
 export interface CreateOrganizationInput {
@@ -44,6 +54,9 @@ export interface OrganizationRepository {
   findById(id: string): Promise<Organization | undefined>;
   findBySlug(slug: string): Promise<Organization | undefined>;
   listByUserId(userId: string): Promise<Organization[]>;
+  listAll(): Promise<Organization[]>;
+  update(id: string, input: { name?: string; branding?: Record<string, unknown> }): Promise<Organization | undefined>;
+  countMembers(orgId: string): Promise<number>;
   addMembership(input: { orgId: string; userId: string; role: string }): Promise<OrgMembership>;
   findMembership(orgId: string, userId: string): Promise<OrgMembership | undefined>;
   updateMembershipRole(orgId: string, userId: string, role: string): Promise<OrgMembership | undefined>;
@@ -64,6 +77,7 @@ export interface IdentityLinkInput {
 export interface IdentityRepository {
   link(input: IdentityLinkInput): Promise<void>;
   findLinkedByExternalSub(providerId: string, externalSub: string): Promise<User | undefined>;
+  listByUserId(userId: string): Promise<{ identity: any; provider: { id: string; name: string; providerType: string } }[]>;
 }
 
 export interface AuditRepository {
@@ -110,6 +124,9 @@ export interface PermissionRepository {
   list(): Promise<Permission[]>;
   listForRole(role: string): Promise<Permission[]>;
   listKeysForRole(role: string): Promise<Set<string>>;
+  listDistinctRoles(): Promise<string[]>;
+  create(input: { resource: string; action: string; description?: string }): Promise<Permission>;
+  remove(id: string): Promise<Permission | undefined>;
   assignToRole(role: string, permissionId: string): Promise<void>;
   removeFromRole(role: string, permissionId: string): Promise<void>;
   hasPermission(role: string, resource: string, action: string): Promise<boolean>;

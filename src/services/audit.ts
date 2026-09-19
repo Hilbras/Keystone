@@ -1,3 +1,4 @@
+import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { auditLog } from "../db/schema.js";
 import { emit } from "./events/bus.js";
@@ -21,7 +22,6 @@ export async function listAuditLogs(opts: {
   limit?: number;
   offset?: number;
 }): Promise<typeof auditLog.$inferSelect[]> {
-  const { eq, and, desc, sql } = await import("drizzle-orm");
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
 

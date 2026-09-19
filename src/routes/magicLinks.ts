@@ -13,6 +13,7 @@ import { setSessionCookies } from "../plugins/auth.js";
 import { emailProvider } from "../services/email.js";
 import { toPublicUser } from "../types.js";
 import { config } from "../config.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 
 const SendSchema = z.object({
   email: z.string().email(),
@@ -30,7 +31,15 @@ function postLoginRedirect(): string {
 }
 
 export default async function magicLinkRoutes(app: FastifyInstance) {
-  app.post("/magic-link/send", async (request, reply) => {
+  app.post("/magic-link/send", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "magic-link",
+        maxAttempts: 3,
+        windowSeconds: 900,
+      }),
+    ],
+  }, async (request, reply) => {
     const body = SendSchema.parse(request.body);
     const user = await findUserByEmail(body.email);
     if (!user) {

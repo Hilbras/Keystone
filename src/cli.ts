@@ -71,7 +71,7 @@ program
       const { eq } = await import("drizzle-orm");
 
       const container = initializeContainer();
-      const authService = new AuthenticationDomainService(container.userRepository);
+      const authService = new AuthenticationDomainService(container.userRepository, container.applicationRepository);
       const result = await authService.register({
         email: options.email,
         password: options.password,
@@ -110,7 +110,8 @@ program
     const container = initializeContainer();
     const orgService = new OrganizationDomainService(
       container.organizationRepository,
-      container.applicationRepository
+      container.applicationRepository,
+      container.userRepository
     );
     const orgResult = await orgService.createOrganization({
       name: options.name,

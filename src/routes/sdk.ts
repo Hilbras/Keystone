@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { createApplication, findApplicationByClientId } from "../services/applications.js";
-import { createOrganization, findOrganizationBySlug } from "../services/organizations.js";
+import { createOrganization, findOrganizationBySlug, findOrganizationById } from "../services/organizations.js";
 
 const gzipAsync = promisify(gzip);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,7 +68,6 @@ export default async function sdkRoutes(app: FastifyInstance) {
     if (!application) {
       return reply.status(404).send({ error: "Application not found" });
     }
-    const { findOrganizationById } = await import("../services/organizations.js");
     const org = await findOrganizationById(application.orgId);
 
     type Branding = Record<string, unknown>;
