@@ -49,5 +49,23 @@ Security hardening, architecture improvements, and enterprise SSO enhancements.
 - **Information leak removal** — Queue class name no longer exposed in API response.
 - **Input validation** — All route inputs validated with Zod schemas.
 
+## [1.2.0] - 2026-09-20
+
+Dependency updates — safe patches and minor versions.
+
+### Changed
+
+- **fastify** 5.10.0 → latest 5.x
+- **@fastify/swagger** 9.8.0 → latest 9.x
+- **argon2** 0.44.0 → latest 0.x
+- **otpauth** 9.5.1 → latest 9.x
+- **@opentelemetry/sdk-node** 0.220.0 → latest 0.x
+- **@opentelemetry/auto-instrumentations-node** 0.78.0 → latest 0.x
+- **autoprefixer** 10.5.2 → latest 10.x (frontend)
+- **postcss** 8.5.19 → latest 8.x (frontend)
+- **lucide-react** 1.24.0 → latest 1.x (frontend)
+- **@playwright/test** 1.61.1 → latest 1.x (frontend)
+
+[1.2.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.0.0

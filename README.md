@@ -20,6 +20,10 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 
 ---
 
+## What's new in v1.2.0
+
+- **Dependency updates** — All root and frontend packages updated to latest safe patch/minor versions (fastify, argon2, otpauth, OpenTelemetry, autoprefixer, postcss, lucide-react, Playwright).
+
 ## What's new in v1.0.0
 
 - **Simplified browser setup wizard** — choose a profile (Development, Docker Compose, Production), test PostgreSQL/Redis, create the owner account, and connect your first project without editing files.
