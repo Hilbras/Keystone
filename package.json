@@ -1,8 +1,13 @@
 {
   "name": "@hilbras/keystone",
   "version": "1.1.0",
-  "private": true,
   "type": "module",
+  "files": [
+    "dist",
+    "src",
+    "CHANGELOG.md",
+    "README.md"
+  ],
   "bin": {
     "keystone": "./dist/cli.js"
   },
