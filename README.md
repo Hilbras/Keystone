@@ -20,6 +20,10 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 
 ---
 
+## What's new in v1.4.0
+
+- **Fastify ecosystem upgrades** — fastify-plugin 6, @fastify/cookie 11, @fastify/cors 11, @fastify/static 10, @fastify/swagger-ui 6. All plugins updated to latest major versions with no code changes required.
+
 ## What's new in v1.3.0
 
 - **Core tooling upgrades** — TypeScript 7, Zod 4, Drizzle ORM 0.45, Commander 15, Dotenv 18. Updated all `z.record()` calls for Zod 4 compatibility.

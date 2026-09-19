@@ -83,6 +83,19 @@ Core tooling upgrades — TypeScript 7, Zod 4, Drizzle latest, Commander 15, Dot
 
 - **Zod 4 migration** — Updated all `z.record()` calls to include explicit `z.string()` key type parameter (sso.ts, auth.ts, config.ts, profile.ts, setup.ts, webauthn.ts, workflows.ts).
 
+## [1.4.0] - 2026-09-20
+
+Fastify ecosystem upgrades — all plugins updated to latest major versions.
+
+### Changed
+
+- **fastify-plugin** 5.1.0 → 6.0.0
+- **@fastify/cookie** 10.0.1 → 11.1.2
+- **@fastify/cors** 10.1.0 → 11.3.0
+- **@fastify/static** 8.3.0 → 10.1.4
+- **@fastify/swagger-ui** 5.2.6 → 6.1.1
+
+[1.4.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.3.0
 [1.2.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.1.0
