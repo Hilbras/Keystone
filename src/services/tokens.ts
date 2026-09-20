@@ -5,6 +5,7 @@ import {
   importSPKI,
   jwtVerify,
   decodeProtectedHeader,
+  exportJWK,
   type JWTPayload,
   type KeyLike,
 } from "jose";
@@ -54,7 +55,6 @@ export async function loadSigningKeys(): Promise<void> {
  */
 export async function getPublicJWK() {
   if (!activeKey) await loadSigningKeys();
-  const { exportJWK } = await import("jose");
   return exportJWK(activeKey!.publicKey);
 }
 
@@ -64,7 +64,6 @@ export async function getPublicJWK() {
  */
 export async function getPublicJwks() {
   if (validKeys.size === 0) await loadSigningKeys();
-  const { exportJWK } = await import("jose");
   const keys = await Promise.all(
     Array.from(validKeys.values()).map(async (key) => {
       const jwk = await exportJWK(key.publicKey);

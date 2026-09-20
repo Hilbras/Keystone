@@ -7,9 +7,17 @@ const UpdateConfigSchema = z.object({
   values: z.record(z.string()),
 });
 
+async function requireOwner(request: FastifyRequest, reply: FastifyReply) {
+  await request.server.authenticate(request, reply);
+  if (reply.sent) return;
+  if (request.user!.role !== "owner") {
+    return reply.status(403).send({ error: "Forbidden: owner access required" });
+  }
+}
+
 export default async function configRoutes(app: FastifyInstance) {
   // Read current configuration values from the configured store (.env by default).
-  app.get("/", { preHandler: [app.authenticate] }, async (_request: FastifyRequest, reply: FastifyReply) => {
+  app.get("/", { preHandler: [requireOwner] }, async (_request: FastifyRequest, reply: FastifyReply) => {
     try {
       const writer = createConfigWriter();
       const values = await writer.read();
@@ -21,7 +29,7 @@ export default async function configRoutes(app: FastifyInstance) {
   });
 
   // Update configuration values. A restart is required for most changes to take effect.
-  app.put("/", { preHandler: [app.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.put("/", { preHandler: [requireOwner] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = UpdateConfigSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
@@ -47,7 +55,7 @@ export default async function configRoutes(app: FastifyInstance) {
   });
 
   // Restart the server so new configuration is loaded.
-  app.post("/restart", { preHandler: [app.authenticate] }, async (_request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/restart", { preHandler: [requireOwner] }, async (_request: FastifyRequest, reply: FastifyReply) => {
     reply.status(202).send({ ok: true, message: "Server is restarting" });
     try {
       await queue.close?.();

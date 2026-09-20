@@ -5,6 +5,7 @@ import {
   sendVerificationEmail,
   consumeVerificationToken,
 } from "../services/emailVerification.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 
 const SendSchema = z.object({
   email: z.string().email(),
@@ -30,7 +31,15 @@ export default async function emailVerificationRoutes(app: FastifyInstance) {
 
   // Unauthenticated: request a verification email by address.
   // Always returns success to avoid user enumeration.
-  app.post("/email-verification/request", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/email-verification/request", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "email-verification",
+        maxAttempts: 3,
+        windowSeconds: 900,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const body = SendSchema.parse(request.body);
     const user = await findUserByEmail(body.email);
     if (!user || user.emailVerified) {

@@ -97,4 +97,10 @@ export type AuditEventType =
   | "email_verification_sent"
   | "email_verified"
   | "platform_webhook_created"
-  | "platform_webhook_deleted";
+  | "platform_webhook_updated"
+  | "platform_webhook_deleted"
+  | "platform_webhook_secret_rotated"
+  | "federation_identity_linked"
+  | "user_token_login"
+  | "session_revoked"
+  | "sessions_revoked_all";

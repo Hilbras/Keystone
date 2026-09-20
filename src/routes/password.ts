@@ -5,6 +5,8 @@ import { isZitadelConfigured } from "../config.js";
 import { requestPasswordReset, setPassword } from "../services/zitadel.js";
 import { findUserByEmail } from "../services/users.js";
 import { emailProvider } from "../services/email.js";
+import { sendResultError } from "./helpers.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 
 const ForgotSchema = z.object({
   email: z.string().email(),
@@ -21,14 +23,18 @@ function resetUrl(token: string): string {
   return `${base}${separator}token=${encodeURIComponent(token)}`;
 }
 
-function sendResultError(reply: FastifyReply, result: { success: false; error: { statusCode?: number; message: string; code: string } }) {
-  return reply.status(result.error.statusCode ?? 400).send({ error: result.error.message, code: result.error.code });
-}
-
 export default async function passwordRoutes(app: FastifyInstance) {
   const sdk = getSdk();
 
-  app.post("/forgot-password", async (request, reply) => {
+  app.post("/forgot-password", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "forgot-password",
+        maxAttempts: 5,
+        windowSeconds: 900,
+      }),
+    ],
+  }, async (request, reply) => {
     const body = ForgotSchema.parse(request.body);
     const user = await findUserByEmail(body.email);
 

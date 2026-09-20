@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { redis, isRedisReady } from "../services/redis.js";
@@ -68,7 +69,7 @@ async function isAllowed(key: string, maxAttempts: number, windowSeconds: number
 }
 
 function cryptoRandom(): string {
-  return Math.random().toString(36).slice(2);
+  return crypto.randomBytes(8).toString("hex");
 }
 
 function clientIdentifier(request: FastifyRequest): string {

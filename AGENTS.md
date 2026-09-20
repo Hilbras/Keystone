@@ -11,6 +11,7 @@ Keystone is a standalone identity platform. It provides:
 - Token issuance and validation (JWT access tokens, rotating refresh tokens, API keys)
 - Authorization (RBAC/ABAC via `/v1/authz/check`)
 - Organization and application management
+- Enterprise SSO (SAML, OIDC connectors, SCIM provisioning)
 - Audit logging, event bus, workflows, and background job processing
 
 ## Technology stack
@@ -31,6 +32,35 @@ src/
   di.ts              # Container factory and service wiring
   sdk/               # Internal SDK layer (stable contracts)
   routes/            # HTTP route handlers (Fastify plugins)
+    admin/           # Admin API routes (split by domain)
+      index.ts       # Route composition
+      helpers.ts     # Shared middleware, schemas, requireOwner(), requireAuthAndRole()
+      platform.ts    # Platform owner endpoints (users, orgs, apps, audit, queue)
+      organizations.ts # Organization CRUD, members, API keys, audit
+      permissions.ts # Permissions and roles (owner-only)
+      sso.ts         # SAML, OIDC, SCIM configuration
+      billing.ts     # Plans and billing
+      webhooks.ts    # Webhook CRUD and deliveries
+    helpers.ts       # Shared utilities (sendResultError, escapeXml)
+    auth.ts          # Authentication (register, login, logout, refresh)
+    oauth2.ts        # OAuth2/OIDC provider
+    federation.ts    # Identity federation
+    sessions.ts      # Session management
+    profile.ts       # User profile
+    apiKeys.ts       # Personal API keys
+    serviceAccounts.ts # Service account management
+    workflows.ts     # Workflow management
+    scim.ts          # SCIM provisioning (Users, Groups)
+    saml.ts          # SAML SSO
+    oidcEnterprise.ts # Enterprise OIDC SSO
+    webauthn.ts      # WebAuthn/Passkeys
+    totp.ts          # TOTP MFA
+    smsOtp.ts        # SMS OTP
+    magicLinks.ts    # Magic link authentication
+    password.ts      # Password reset
+    emailVerification.ts # Email verification
+    config.ts        # Server configuration (owner-only)
+    setup.ts         # Setup wizard
   services/
     application/     # Application services (use cases, HTTP agnostic)
     domain/          # Domain services (business rules)
@@ -41,8 +71,27 @@ src/
     plugins/         # Plugin registry and types
     workflows/       # Workflow engine
   repositories/      # Repository interfaces + Drizzle implementations
+    types.ts         # Repository interfaces (User, Organization, Application, etc.)
+    apiKey.ts        # ApiKeyRepository (create, list, revoke)
+    samlConnection.ts # SamlConnectionRepository (CRUD, findActive)
+    oidcConnection.ts # OidcConnectionRepository (CRUD, findActive)
+    session.ts       # SessionRepository (CRUD, refresh token ops)
+    user.ts          # DrizzleUserRepository + DrizzleIdentityRepository
+    organization.ts  # DrizzleOrganizationRepository
+    application.ts   # DrizzleApplicationRepository
+    permission.ts    # DrizzlePermissionRepository
+    audit.ts         # DrizzleAuditRepository
   db/                # Schema, migrations, seed scripts
   plugins/           # Fastify plugins (auth, audit, rate limit, etc.)
+    auth.ts          # Authentication plugin, cookie helpers
+    audit.ts         # Audit logging plugin
+    rateLimit.ts     # Rate limiting (sliding window via Redis)
+    permissions.ts   # Permission checking plugin
+    mtls.ts          # mTLS service account resolution
+    metrics.ts       # Prometheus metrics
+    requestLogger.ts # Request logging
+    appContext.ts    # App context injection
+    tracing.ts       # OpenTelemetry tracing
   lib/               # Shared utilities (Result<T>, errors)
 frontend/            # React + Vite setup wizard and admin dashboard
 ```
@@ -67,7 +116,9 @@ Database / External providers
 
 - Responsible only for HTTP concerns: parsing input, authentication, calling application services, returning responses.
 - Must **not** contain business logic.
-- Prefer using `request.server.container` or the SDK to access services.
+- Access services via `app.container.<repository>` or the SDK.
+- Use shared helpers from `./helpers.js` for `sendResultError` and `escapeXml`.
+- Admin routes are split into `src/routes/admin/` by domain.
 
 ### Application Services (`src/services/application/`)
 
@@ -86,6 +137,7 @@ Database / External providers
 - Abstract persistence. Domain services depend on repository interfaces.
 - Implementations live in `src/repositories/*.ts` (Drizzle-specific).
 - Add new repository interfaces in `src/repositories/types.ts`.
+- Available repositories: `userRepository`, `organizationRepository`, `applicationRepository`, `identityRepository`, `auditRepository`, `permissionRepository`, `apiKeyRepository`, `samlConnectionRepository`, `oidcConnectionRepository`.
 
 ## Dependency injection
 
@@ -125,7 +177,13 @@ if (!user) {
 return ok(user);
 ```
 
-Routes should translate `Result<T>` failures into appropriate HTTP responses.
+Routes should translate `Result<T>` failures into appropriate HTTP responses using the shared `sendResultError` helper:
+
+```ts
+import { sendResultError } from "./helpers.js";
+
+if (!result.success) return sendResultError(reply, result);
+```
 
 ## Events and audit
 
@@ -139,6 +197,64 @@ Events are versioned. Include a version in every event:
 
 ```ts
 emit({ type: "user.login", version: 1, payload: { userId } });
+```
+
+All state-changing operations in routes should include audit logging:
+
+```ts
+await request.audit("user_login", { userId: user.id });
+```
+
+## Security patterns
+
+### Authorization
+
+Routes use pre-handlers for access control:
+
+- `app.authenticate` — requires a valid session/API key
+- `requireOwner()` — requires platform owner role (for `src/routes/admin/helpers.ts`)
+- `requireAuthAndRole(roles, permission?)` — requires org membership with specified role
+- `app.requirePermission(resource, action)` — requires specific permission
+
+### Rate limiting
+
+Apply rate limiting to sensitive endpoints:
+
+```ts
+import { rateLimit } from "../plugins/rateLimit.js";
+
+app.post("/endpoint", {
+  preHandler: [
+    rateLimit({
+      keyPrefix: "endpoint-name",
+      maxAttempts: 5,
+      windowSeconds: 900,
+    }),
+  ],
+}, handler);
+```
+
+### Input validation
+
+All route inputs must be validated with Zod schemas:
+
+```ts
+const BodySchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1).max(255),
+});
+
+const body = BodySchema.parse(request.body);
+```
+
+### XML safety
+
+When generating XML (e.g., SAML metadata), escape all dynamic values:
+
+```ts
+import { escapeXml } from "./helpers.js";
+
+const metadata = `<EntityDescriptor entityID="${escapeXml(value)}">`;
 ```
 
 ## Adding a feature
@@ -159,3 +275,8 @@ emit({ type: "user.login", version: 1, payload: { userId } });
 - Keep files focused; one route file per domain is fine.
 - Do not add business logic to connectors or repositories.
 - All secrets and credentials belong in the secrets provider or environment config.
+- Routes must not import from `../db/index.js` directly — use repository interfaces.
+- Use `app.container.<repository>` for data access, not direct DB queries.
+- All state-changing operations should emit audit events.
+- Sensitive endpoints must have rate limiting.
+- Use `config.*` instead of `process.env.*` for configuration values.

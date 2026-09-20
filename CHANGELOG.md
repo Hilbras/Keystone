@@ -5,39 +5,49 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-08-23
+## [1.1.0] - 2026-09-19
 
-First stable release of Hilbras Keystone, a standalone, API-first identity platform.
+Security hardening, architecture improvements, and enterprise SSO enhancements.
 
 ### Added
 
-- **Authentication** — password (argon2id), magic links, social OAuth, enterprise SAML/OIDC,
-  WebAuthn (passkeys), TOTP with backup codes, and SMS OTP.
-- **Token issuance** — RSA-signed JWT access tokens, rotating refresh tokens, and API keys
-  with hashing at rest.
-- **OAuth 2.0 / OIDC provider** — `/oauth2/authorize`, `/oauth2/token`, `/oauth2/userinfo`,
-  consent management, token revocation, and JWKS discovery at `/.well-known/jwks.json`.
-- **Authorization** — RBAC/ABAC policy checks via `POST /v1/authz/check`, custom
-  permissions, and role permission mapping.
-- **Organizations & applications** — multi-tenant orgs, membership, per-application
-  client credentials, branding, and service accounts.
-- **Admin API** — platform users/orgs/apps, audit log export, usage metrics, security
-  summary, queue introspection and retries, webhook management with delivery retries,
-  signing-key rotation, plugin registry, feature flags, configuration profiles, and billing plans.
-- **SCIM 2.0** — user and group provisioning (`/scim/v2/*`).
-- **Event bus** — versioned domain events with subscribers for audit logging, webhooks,
-  and anomaly detection.
-- **Workflows** — configurable automation steps (email, SMS, webhooks) triggered by events.
-- **Background jobs** — Redis/BullMQ-backed queue abstraction with failure retry endpoints.
-- **Audit logging** — structured audit trail with CSV export and retention controls.
-- **Setup wizard & admin dashboard** — React + Vite frontend with first-run setup server
-  (`KEYSTONE_SETUP_MODE=true`) and post-setup administration UI.
-- **SDKs** — `@hilbras/keystone-sdk` (browser drop-in, ESM/CJS/IIFE builds),
-  `@hilbras/keystone-node`, `@hilbras/keystone-react`, `@hilbras/keystone-vue`,
-  and `@hilbras/keystone-cli`.
-- **Observability** — OpenTelemetry auto-instrumentation, Prometheus `/metrics`,
-  health diagnostics, and Swagger UI at `/documentation`.
-- **Deployment** — Docker Compose production stack, Kubernetes manifests with Kustomize
-  base, systemd unit, and one-command installer scripts.
+- **SCIM provisioning** — User and group provisioning endpoints (`/scim/v2/Users`, `/scim/v2/Groups`) for identity provider integration.
+- **Enterprise SSO** — SAML 2.0 and OIDC enterprise connectors with SCIM user provisioning.
+- **mTLS support** — Service account resolution via client certificate headers.
+- **Comprehensive audit logging** — All authentication events (register, login, logout, refresh) and state-changing operations now emit audit events.
+- **Rate limiting** — Added to 8 sensitive endpoints: password reset, magic links, email verification, SMS OTP send/verify, and organization creation.
+- **Owner-only access** — Configuration and permission management endpoints restricted to platform owner.
+- **Organization membership checks** — Workflow operations now verify org membership.
+- **XML injection prevention** — SAML metadata generation now escapes dynamic values.
+- **Cryptographic nonces** — Rate limiter uses `crypto.randomBytes()` instead of `Math.random()`.
+- **Shared helpers** — `sendResultError` and `escapeXml` utilities for consistent error handling and XML safety.
 
+### Changed
+
+- **Admin routes split** — Monolithic `admin.ts` (1071 lines) refactored into 7 focused modules under `src/routes/admin/` (platform, organizations, permissions, sso, billing, webhooks, helpers).
+- **Repository pattern enforced** — 9 route files updated to use DI container repositories instead of direct database access.
+- **Dynamic imports eliminated** — 15+ `await import()` workarounds converted to static imports across 10 files.
+- **Permission endpoints** — Now require owner-only access (was any authenticated user).
+- **Workflow endpoints** — Now require organization membership (was any authenticated user).
+- **Config endpoints** — Now require owner-only access (was any authenticated user).
+
+### Fixed
+
+- **Critical runtime crash** — Missing `cache` import in `src/index.ts` causing shutdown failures.
+- **Import ordering bug** — `sessions.ts` using `config` and `hashToken` before import declaration.
+- **Missing dependency** — Added `fastify-plugin` as explicit dependency.
+- **Redundant dynamic imports** — Removed 2 unnecessary `await import("jose")` calls in `tokens.ts`.
+- **Duplicate code** — Consolidated 3 duplicate `sendResultError` functions to shared helper.
+- **Unused imports** — Cleaned up across 8+ files.
+
+### Security
+
+- **Rate limiting** — 8 endpoints protected against abuse (password reset, magic links, email verification, SMS OTP, org creation).
+- **Authorization hardening** — 16 endpoints updated with proper owner/role/org membership checks.
+- **XML injection prevention** — SAML metadata generation escaped in 2 files.
+- **Cryptographic security** — Rate limiter nonce generation uses secure random bytes.
+- **Information leak removal** — Queue class name no longer exposed in API response.
+- **Input validation** — All route inputs validated with Zod schemas.
+
+[1.1.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.0.0

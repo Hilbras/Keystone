@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { workflows, workflowRuns } from "../db/schema.js";
+import { workflows, orgMemberships } from "../db/schema.js";
 import { registerWorkflow, listWorkflowRuns } from "../services/workflows/engine.js";
 
 const WorkflowStepSchema = z.object({
@@ -11,6 +11,7 @@ const WorkflowStepSchema = z.object({
 });
 
 const CreateWorkflowSchema = z.object({
+  orgId: z.string().uuid(),
   name: z.string().min(1).max(255),
   trigger: z.enum(["user_registered", "user_login", "organization_created"]),
   definition: z.object({
@@ -19,25 +20,69 @@ const CreateWorkflowSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+async function requireOrgMembership(request: FastifyRequest, reply: FastifyReply, orgId: string) {
+  await request.server.authenticate(request, reply);
+  if (reply.sent) return false;
+
+  const userId = request.user!.id;
+  const [membership] = await db
+    .select()
+    .from(orgMemberships)
+    .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+    .limit(1);
+
+  if (!membership) {
+    reply.status(403).send({ error: "Forbidden: not a member of this organization" });
+    return false;
+  }
+  return true;
+}
+
 export default async function workflowRoutes(app: FastifyInstance) {
-  app.get("/workflows", { preHandler: [app.authenticate] }, async (request) => {
-    const query = request.query as { orgId?: string } | undefined;
+  app.get("/workflows", { preHandler: [app.authenticate] }, async (request, reply) => {
+    const query = request.query as { orgId?: string };
     const orgId = query?.orgId;
 
-    const all = orgId
-      ? await db.select().from(workflows).where(eq(workflows.orgId, orgId))
-      : await db.select().from(workflows);
+    if (!orgId) {
+      return reply.status(400).send({ error: "orgId query parameter is required" });
+    }
+
+    // Verify org membership
+    const userId = request.user!.id;
+    const [membership] = await db
+      .select()
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+      .limit(1);
+    if (!membership) {
+      return reply.status(403).send({ error: "Forbidden: not a member of this organization" });
+    }
+
+    const all = await db.select().from(workflows).where(eq(workflows.orgId, orgId));
     return { workflows: all };
   });
 
   app.post("/workflows", { preHandler: [app.authenticate] }, async (request, reply) => {
     const body = CreateWorkflowSchema.parse(request.body);
+
+    // Verify org membership
+    const userId = request.user!.id;
+    const [membership] = await db
+      .select()
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, body.orgId), eq(orgMemberships.userId, userId)))
+      .limit(1);
+    if (!membership) {
+      return reply.status(403).send({ error: "Forbidden: not a member of this organization" });
+    }
+
     const workflow = await registerWorkflow({
+      orgId: body.orgId,
       name: body.name,
       trigger: body.trigger,
       definition: body.definition,
     });
-    await request.audit("workflow_created", { workflowId: workflow.id, trigger: body.trigger });
+    await request.audit("workflow_created", { workflowId: workflow.id, trigger: body.trigger, orgId: body.orgId });
     return reply.status(201).send(workflow);
   });
 
@@ -45,11 +90,43 @@ export default async function workflowRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const [workflow] = await db.select().from(workflows).where(eq(workflows.id, id)).limit(1);
     if (!workflow) return reply.status(404).send({ error: "Workflow not found" });
+
+    // Verify org membership
+    if (workflow.orgId) {
+      const userId = request.user!.id;
+      const [membership] = await db
+        .select()
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, workflow.orgId), eq(orgMemberships.userId, userId)))
+        .limit(1);
+      if (!membership) {
+        return reply.status(403).send({ error: "Forbidden" });
+      }
+    }
+
     return { workflow };
   });
 
   app.delete("/workflows/:id", { preHandler: [app.authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const userId = request.user!.id;
+
+    // Find the workflow and verify org membership
+    const [workflow] = await db.select().from(workflows).where(eq(workflows.id, id)).limit(1);
+    if (!workflow) return reply.status(404).send({ error: "Workflow not found" });
+
+    // Verify org membership
+    if (workflow.orgId) {
+      const [membership] = await db
+        .select()
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, workflow.orgId), eq(orgMemberships.userId, userId)))
+        .limit(1);
+      if (!membership) {
+        return reply.status(403).send({ error: "Forbidden" });
+      }
+    }
+
     const [record] = await db.delete(workflows).where(eq(workflows.id, id)).returning();
     if (!record) return reply.status(404).send({ error: "Workflow not found" });
     await request.audit("workflow_deleted", { workflowId: record.id });
@@ -60,6 +137,20 @@ export default async function workflowRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const [workflow] = await db.select().from(workflows).where(eq(workflows.id, id)).limit(1);
     if (!workflow) return reply.status(404).send({ error: "Workflow not found" });
+
+    // Verify org membership
+    if (workflow.orgId) {
+      const userId = request.user!.id;
+      const [membership] = await db
+        .select()
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, workflow.orgId), eq(orgMemberships.userId, userId)))
+        .limit(1);
+      if (!membership) {
+        return reply.status(403).send({ error: "Forbidden" });
+      }
+    }
+
     const runs = await listWorkflowRuns(id);
     return { runs };
   });

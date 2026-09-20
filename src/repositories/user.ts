@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, orgMemberships, userIdentities, type User } from "../db/schema.js";
+import { users, orgMemberships, userIdentities, identityProviders, type User } from "../db/schema.js";
 import type { CreateUserInput, UpdateUserInput, UserRepository } from "./types.js";
 
 export class DrizzleUserRepository implements UserRepository {
@@ -94,6 +94,26 @@ export class DrizzleUserRepository implements UserRepository {
       counter++;
     }
   }
+
+  async listAll(): Promise<User[]> {
+    return db.select().from(users);
+  }
+
+  async setTotpSecret(userId: string, totpSecret: string): Promise<void> {
+    await db.update(users).set({ totpSecret, totpEnabled: false }).where(eq(users.id, userId));
+  }
+
+  async enableTotp(userId: string): Promise<void> {
+    await db.update(users).set({ totpEnabled: true, totpVerifiedAt: new Date() }).where(eq(users.id, userId));
+  }
+
+  async disableTotp(userId: string): Promise<void> {
+    await db.update(users).set({ totpSecret: null, totpEnabled: false, totpVerifiedAt: null }).where(eq(users.id, userId));
+  }
+
+  async deleteById(userId: string): Promise<void> {
+    await db.delete(users).where(eq(users.id, userId));
+  }
 }
 
 export class DrizzleIdentityRepository {
@@ -126,5 +146,16 @@ export class DrizzleIdentityRepository {
       .innerJoin(users, eq(userIdentities.userId, users.id))
       .limit(1);
     return existing?.user;
+  }
+
+  async listByUserId(userId: string): Promise<{ identity: any; provider: { id: string; name: string; providerType: string } }[]> {
+    return db
+      .select({
+        identity: userIdentities,
+        provider: { id: identityProviders.id, name: identityProviders.name, providerType: identityProviders.providerType },
+      })
+      .from(userIdentities)
+      .where(eq(userIdentities.userId, userId))
+      .innerJoin(identityProviders, eq(userIdentities.providerId, identityProviders.id));
   }
 }

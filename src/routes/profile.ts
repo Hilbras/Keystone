@@ -1,8 +1,5 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { eq } from "drizzle-orm";
-import { db } from "../db/index.js";
-import { users } from "../db/schema.js";
 import { toPublicUser } from "../types.js";
 
 const UpdateProfileSchema = z.object({
@@ -17,7 +14,7 @@ export default async function profileRoutes(app: FastifyInstance) {
     const userId = request.user?.id;
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
 
-    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    const user = await app.container.userRepository.findById(userId);
     if (!user) return reply.status(404).send({ error: "User not found" });
 
     return { user: toPublicUser(user) };
@@ -28,7 +25,7 @@ export default async function profileRoutes(app: FastifyInstance) {
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
 
     const body = UpdateProfileSchema.parse(request.body);
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    const updates: Record<string, unknown> = {};
     if (body.name !== undefined) updates.name = body.name;
     if (body.avatarUrl !== undefined) updates.avatarUrl = body.avatarUrl;
     if (body.metadata !== undefined) updates.metadata = body.metadata;
@@ -38,12 +35,7 @@ export default async function profileRoutes(app: FastifyInstance) {
       updates.phoneVerified = false;
     }
 
-    const [updated] = await db
-      .update(users)
-      .set(updates)
-      .where(eq(users.id, userId))
-      .returning();
-
+    const updated = await app.container.userRepository.update(userId, updates);
     if (!updated) return reply.status(404).send({ error: "User not found" });
 
     await request.audit("profile_updated", { userId });

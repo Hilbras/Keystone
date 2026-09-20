@@ -14,6 +14,7 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Token Authority** — short-lived JWT access tokens, rotating refresh tokens, opaque API keys.
 - **Machine Identity Manager** — scoped, rotatable, auditable service credentials.
 - **Federation Broker** — delegate login to Google, GitHub, Azure, Okta, Keycloak, Zitadel, or any OIDC provider and issue Keystone tokens.
+- **Enterprise SSO** — SAML 2.0 and OIDC enterprise connectors with SCIM user provisioning.
 - **Audit & Compliance** — immutable audit log, event bus, webhooks, and anomaly detection.
 - **Workflow Platform** — configurable post-auth workflows (assign roles, create orgs, send email, fire webhooks).
 
@@ -69,7 +70,8 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │         Repositories (persistence abstraction)                  │   │
 │  │  UserRepository │ OrganizationRepository │ ApplicationRepository │   │
-│  │  IdentityRepository │ AuditRepository                         │   │
+│  │  IdentityRepository │ AuditRepository │ ApiKeyRepository         │   │
+│  │  SamlConnectionRepository │ OidcConnectionRepository            │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐      │   │
 │  │   Identity   │  │   Token      │  │    Authorization     │      │   │
@@ -81,6 +83,9 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 │  └──────────────┘  └──────────────┘  └──────────────────────┘      │   │
 │  ┌────────────────────────────────────────────────────────────┐    │   │
 │  │  DI Container │ Plugin Registry │ ConfigurationService     │    │   │
+│  └────────────────────────────────────────────────────────────┘    │   │
+│  ┌────────────────────────────────────────────────────────────┐    │   │
+│  │  Security: Rate Limiting │ mTLS │ SAML │ SCIM │ WebAuthn  │    │   │
 │  └────────────────────────────────────────────────────────────┘    │   │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -195,7 +200,7 @@ Services receive dependencies through constructors, making unit testing with moc
 
 ### Repository abstraction
 
-Domain services depend on repository interfaces such as `UserRepository`, `OrganizationRepository`, `ApplicationRepository`, `IdentityRepository`, and `AuditRepository`. Drizzle-based implementations live in `src/repositories/`, but the persistence layer can be swapped without touching business logic.
+Domain services depend on repository interfaces such as `UserRepository`, `OrganizationRepository`, `ApplicationRepository`, `IdentityRepository`, `AuditRepository`, `PermissionRepository`, `ApiKeyRepository`, `SamlConnectionRepository`, and `OidcConnectionRepository`. Drizzle-based implementations live in `src/repositories/`, but the persistence layer can be swapped without touching business logic.
 
 ### Standardized results
 
@@ -524,14 +529,83 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 | PATCH/DELETE | `/v1/admin/organizations/:id/members/:userId` | Update / remove member |
 | GET | `/v1/admin/organizations/:id/users` | List users in org |
 | GET/PATCH/DELETE | `/v1/admin/organizations/:id/users/:userId` | Manage user |
-| GET | `/v1/admin/permissions` | List all permissions |
-| GET/POST/DELETE | `/v1/admin/roles/:role/permissions` | Manage role permissions |
+| GET | `/v1/admin/permissions` | **Owner only** — list all permissions |
+| GET/POST/DELETE | `/v1/admin/roles/:role/permissions` | **Owner only** — manage role permissions |
 | GET/DELETE | `/v1/admin/organizations/:id/api-keys` | Org-scoped API keys |
 | GET | `/v1/admin/organizations/:id/audit-logs` | Paginated audit logs |
 | GET | `/v1/admin/platform/users` | **Owner only** — list all users |
 | GET | `/v1/admin/platform/organizations` | **Owner only** — list all organizations |
 | GET | `/v1/admin/platform/applications` | **Owner only** — list all applications |
 | GET | `/v1/admin/platform/audit-logs` | **Owner only** — list recent audit logs |
+| GET | `/v1/admin/platform/audit-logs/export` | **Owner only** — export audit logs |
+| GET | `/v1/admin/platform/metrics/usage` | **Owner only** — platform usage metrics |
+| GET | `/v1/admin/platform/queue` | **Owner only** — queue stats |
+| GET | `/v1/admin/platform/queue/failed` | **Owner only** — failed jobs |
+| POST | `/v1/admin/platform/queue/failed/:id/retry` | **Owner only** — retry failed job |
+| POST | `/v1/admin/platform/queue/retry-all` | **Owner only** — retry all failed jobs |
+| GET/POST/PATCH/DELETE | `/v1/admin/platform/webhooks` | **Owner only** — webhook management |
+| POST | `/v1/admin/platform/webhooks/:id/rotate-secret` | **Owner only** — rotate webhook secret |
+| GET/POST/DELETE | `/v1/admin/organizations/:id/saml-connections` | SAML connection management |
+| GET | `/v1/admin/organizations/:id/saml-connections/:connectionId/metadata` | SAML SP metadata |
+| GET/POST/DELETE | `/v1/admin/organizations/:id/oidc-connections` | OIDC connection management |
+
+### Enterprise SSO
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/saml/:connectionId` | Start SAML SSO login |
+| POST | `/saml/acs` | SAML assertion consumer service |
+| GET | `/saml/:connectionId/metadata` | SAML SP metadata |
+| GET | `/sso/oidc/:connectionId` | Start enterprise OIDC SSO login |
+| GET | `/sso/oidc/:connectionId/callback` | Enterprise OIDC callback |
+
+### SCIM Provisioning
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/scim/v2/Users` | List all users (SCIM) |
+| GET | `/scim/v2/Users/:userId` | Get user by ID (SCIM) |
+| POST | `/scim/v2/Users` | Create user (SCIM) |
+| PUT | `/scim/v2/Users/:userId` | Update user (SCIM) |
+| DELETE | `/scim/v2/Users/:userId` | Delete user (SCIM) |
+| GET | `/scim/v2/Groups` | List groups (SCIM) |
+| GET | `/scim/v2/Groups/:groupId` | Get group by ID (SCIM) |
+
+### MFA & Security
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/totp/enroll` | Enroll TOTP MFA |
+| POST | `/totp/verify` | Verify TOTP code |
+| POST | `/totp/disable` | Disable TOTP MFA |
+| POST | `/totp/backup` | Verify backup code |
+| POST | `/sms-otp/send` | Send SMS OTP |
+| POST | `/sms-otp/verify` | Verify SMS OTP |
+| POST | `/magic-link/send` | Send magic link |
+| GET | `/magic-link/verify` | Verify magic link |
+| POST | `/email-verification/send` | Send verification email |
+| POST | `/email-verification/request` | Request verification email |
+| GET | `/email-verification/verify` | Verify email token |
+| POST | `/webauthn/register` | Register WebAuthn credential |
+| POST | `/webauthn/authenticate` | Authenticate with WebAuthn |
+
+### Sessions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/sessions` | List active sessions |
+| DELETE | `/sessions/:id` | Revoke session |
+| POST | `/sessions/revoke-all` | Revoke all sessions |
+
+### Workflows
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/workflows` | List workflows (requires orgId) |
+| POST | `/workflows` | Create workflow |
+| GET | `/workflows/:id` | Get workflow |
+| DELETE | `/workflows/:id` | Delete workflow |
+| GET | `/workflows/:id/runs` | List workflow runs |
 
 ### Discovery
 
@@ -574,13 +648,20 @@ npx keystone org:create --name "Acme" --owner-email admin@example.com
 
 ## Security non-negotiables
 
-- Passwords are never stored in plaintext.
-- Tokens and secrets are hashed at rest.
-- JWTs are signed with RS256 and keys are rotatable.
-- Rate limiting is applied to every public endpoint.
+- Passwords are never stored in plaintext (argon2id with OWASP parameters).
+- Tokens and secrets are hashed at rest (SHA-256).
+- JWTs are signed with RS256 and keys are rotatable with 24-hour grace period.
+- Rate limiting is applied to all sensitive endpoints (login, register, password reset, magic links, SMS OTP, email verification, org creation).
 - Every authentication decision is audited.
 - Cookies use `HttpOnly`, `Secure`, and `SameSite`.
 - OAuth2 public clients must use PKCE.
+- All admin endpoints require owner or role-based authorization.
+- All workflow operations require organization membership.
+- XML output (SAML metadata) is escaped to prevent injection.
+- Rate limit nonces use cryptographically secure random bytes.
+- Internal implementation details are not exposed in API responses.
+- Input validation uses Zod schemas on all routes.
+- Error messages are sanitized in production mode.
 
 ---
 

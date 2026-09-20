@@ -1,4 +1,4 @@
-import { describe, it, before } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,21 @@ before(async () => {
 });
 
 const { buildApp } = await import("../index.js");
+
+// The postgres pool (db/index.ts) and the shared lazy ioredis client
+// (services/redis.ts, used by the global rate limiter on every request) are
+// process-wide singletons that app.close() does not release. Without this,
+// open sockets keep the node:test process alive after all tests finish.
+after(async () => {
+  const { closeDb } = await import("../db/index.js");
+  const { redis } = await import("../services/redis.js");
+  await closeDb().catch(() => {});
+  try {
+    if (redis.status !== "end") await redis.quit();
+  } catch {
+    redis.disconnect();
+  }
+});
 
 describe("Hilbras Keystone smoke test", () => {
   it("boots and responds to /health", async () => {

@@ -8,6 +8,7 @@ import { setSessionCookies, clearSessionCookies } from "../plugins/auth.js";
 import { findApplicationByClientId } from "../services/applications.js";
 import type { Application } from "../db/schema.js";
 import { buildOAuthErrorRedirect, buildOAuthErrorResponse } from "../lib/errors.js";
+import { sendResultError } from "./helpers.js";
 
 function isProvider(value: string): boolean {
   return listSupportedProviders().includes(value);
@@ -69,10 +70,6 @@ const LinkIdentitySchema = z.object({
   externalSub: z.string(),
   email: z.string().email().optional(),
 });
-
-function sendResultError(reply: FastifyReply, result: { success: false; error: { statusCode?: number; message: string; code: string } }) {
-  return reply.status(result.error.statusCode ?? 400).send({ error: result.error.message, code: result.error.code });
-}
 
 export default async function federationRoutes(app: FastifyInstance) {
   const sdk = getSdk();
@@ -147,22 +144,13 @@ export default async function federationRoutes(app: FastifyInstance) {
         body.email
       );
       if (!result.success) return sendResultError(reply, result);
+      await request.audit("federation_identity_linked", { userId: request.user!.id, providerType: body.providerType, providerId: body.providerId });
       return reply.status(201).send({ success: true });
     }
   );
 
   app.get("/identities", { preHandler: [app.authenticate] }, async (request: FastifyRequest) => {
-    const { db } = await import("../db/index.js");
-    const { userIdentities, identityProviders } = await import("../db/schema.js");
-    const { eq } = await import("drizzle-orm");
-    const rows = await db
-      .select({
-        identity: userIdentities,
-        provider: { id: identityProviders.id, name: identityProviders.name, providerType: identityProviders.providerType },
-      })
-      .from(userIdentities)
-      .where(eq(userIdentities.userId, request.user!.id))
-      .innerJoin(identityProviders, eq(userIdentities.providerId, identityProviders.id));
+    const rows = await app.container.identityRepository.listByUserId(request.user!.id);
     return { identities: rows };
   });
 }

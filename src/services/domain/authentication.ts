@@ -8,8 +8,9 @@ import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type TokenSet }
 import { isPasswordBreached } from "../hibp.js";
 import { recordFailedLogin, isFailedLoginAnomaly } from "../anomalyDetection.js";
 import { emit } from "../events/bus.js";
-import type { UserRepository } from "../../repositories/types.js";
+import type { UserRepository, ApplicationRepository } from "../../repositories/types.js";
 import { ok, err, type Result } from "../../lib/result.js";
+import { hashPassword, verifyPassword } from "../secrets/index.js";
 
 export interface AuthContext {
   app?: { id: string; clientId: string; orgId: string };
@@ -38,13 +39,14 @@ export interface TokenResponse {
 }
 
 export class AuthenticationDomainService {
-  constructor(private readonly users: UserRepository) {}
+  constructor(
+    private readonly users: UserRepository,
+    private readonly applications: ApplicationRepository
+  ) {}
 
   private async loadAppContext(clientId?: string): Promise<AuthContext> {
     if (!clientId) return {};
-    const { DrizzleApplicationRepository } = await import("../../repositories/application.js");
-    const apps = new DrizzleApplicationRepository();
-    const app = await apps.findByClientId(clientId);
+    const app = await this.applications.findByClientId(clientId);
     if (!app) return {};
     return {
       app: { id: app.id, clientId: app.clientId, orgId: app.orgId },
@@ -65,7 +67,7 @@ export class AuthenticationDomainService {
       return err({ code: "EMAIL_EXISTS", message: "An account with this email already exists.", statusCode: 409 });
     }
 
-    const passwordHash = await (await import("../secrets/index.js")).hashPassword(input.password);
+    const passwordHash = await hashPassword(input.password);
     const username = await this.users.ensureUniqueUsername(
       input.username.toLowerCase().trim().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32)
     );
@@ -96,10 +98,14 @@ export class AuthenticationDomainService {
     });
 
     if (config.EMAIL_VERIFICATION_REQUIRED) {
-      const { sendVerificationEmail } = await import("../emailVerification.js");
-      sendVerificationEmail(user).catch((err: unknown) => {
-        console.error("[auth] failed to send verification email:", err);
-      });
+      try {
+        const { sendVerificationEmail } = await import("../emailVerification.js");
+        sendVerificationEmail(user).catch((err: unknown) => {
+          console.error("[auth] failed to send verification email:", err);
+        });
+      } catch {
+        // emailVerification module may not be available in all configurations
+      }
     }
 
     const context = await this.loadAppContext(input.clientId);
@@ -146,7 +152,6 @@ export class AuthenticationDomainService {
       return err({ code: "ACCOUNT_LOCKED", message: "Account is temporarily locked due to too many failed attempts. Try again later.", statusCode: 403 });
     }
 
-    const { verifyPassword } = await import("../secrets/index.js");
     let valid = false;
     if (user.passwordHash) {
       valid = await verifyPassword(input.password, user.passwordHash);
@@ -256,7 +261,7 @@ export class AuthenticationDomainService {
       }
     }
 
-    const passwordHash = await (await import("../secrets/index.js")).hashPassword(newPassword);
+    const passwordHash = await hashPassword(newPassword);
     await db.transaction(async (tx) => {
       await tx
         .update(passwordResetTokens)

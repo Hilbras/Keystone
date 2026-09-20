@@ -1,8 +1,5 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { eq } from "drizzle-orm";
-import { db } from "../db/index.js";
-import { users } from "../db/schema.js";
 import { config } from "../config.js";
 import {
   generateSecret,
@@ -37,14 +34,7 @@ export default async function totpRoutes(app: FastifyInstance) {
       const encrypted = encryptSecret(secret);
       const { codes, hashes } = generateBackupCodes();
 
-      await db
-        .update(users)
-        .set({
-          totpSecret: encrypted,
-          totpEnabled: false,
-        })
-        .where(eq(users.id, user.id));
-
+      await app.container.userRepository.setTotpSecret(user.id, encrypted);
       await storeBackupCodes(user.id, hashes);
 
       const provisioningUri = buildProvisioningUri({
@@ -100,14 +90,7 @@ export default async function totpRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid code" });
       }
 
-      await db
-        .update(users)
-        .set({
-          totpEnabled: true,
-          totpVerifiedAt: new Date(),
-        })
-        .where(eq(users.id, user.id));
-
+      await app.container.userRepository.enableTotp(user.id);
       await request.audit("totp_enabled", { userId: user.id });
 
       return { success: true };
@@ -130,15 +113,7 @@ export default async function totpRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid code" });
       }
 
-      await db
-        .update(users)
-        .set({
-          totpSecret: null,
-          totpEnabled: false,
-          totpVerifiedAt: null,
-        })
-        .where(eq(users.id, user.id));
-
+      await app.container.userRepository.disableTotp(user.id);
       await request.audit("totp_disabled", { userId: user.id });
 
       return { success: true };

@@ -13,7 +13,7 @@ import {
   verifyClientSecret,
 } from "../services/oauth2.js";
 import { findUserById } from "../services/users.js";
-import { revokeRefreshToken, createApplicationAccessToken } from "../services/tokens.js";
+import { revokeRefreshToken, createApplicationAccessToken, rotateRefreshToken } from "../services/tokens.js";
 import { fingerprintFromRequest } from "../services/devices.js";
 import { rateLimit } from "../plugins/rateLimit.js";
 
@@ -185,7 +185,6 @@ export default async function oauth2Routes(app: FastifyInstance) {
         }
 
         // Lazy import to avoid circular dependency.
-        const { rotateRefreshToken } = await import("../services/tokens.js");
         const tokens = await rotateRefreshToken(body.refresh_token, request.ip, request.headers["user-agent"]);
         if (!tokens) {
           return reply.status(400).send({ error: "invalid_grant" });

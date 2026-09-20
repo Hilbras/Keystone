@@ -3,6 +3,8 @@ import { db } from "../db/index.js";
 import { organizations, orgMemberships, users, type Organization, type OrgMembership } from "../db/schema.js";
 import type { CreateOrganizationInput, OrganizationRepository } from "./types.js";
 
+export type { OrganizationRepository } from "./types.js";
+
 export class DrizzleOrganizationRepository implements OrganizationRepository {
   private slugify(name: string): string {
     return name
@@ -36,6 +38,31 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
   async findBySlug(slug: string): Promise<Organization | undefined> {
     const [org] = await db.select().from(organizations).where(eq(organizations.slug, slug)).limit(1);
     return org;
+  }
+
+  async listAll(): Promise<Organization[]> {
+    return db.select().from(organizations).orderBy(organizations.createdAt);
+  }
+
+  async update(id: string, input: { name?: string; branding?: Record<string, unknown> }): Promise<Organization | undefined> {
+    const [updated] = await db
+      .update(organizations)
+      .set({
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.branding !== undefined ? { branding: input.branding } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, id))
+      .returning();
+    return updated;
+  }
+
+  async countMembers(orgId: string): Promise<number> {
+    const [countRow] = await db
+      .select({ count: sql<number>`count(*)`.mapWith(Number) })
+      .from(orgMemberships)
+      .where(eq(orgMemberships.orgId, orgId));
+    return countRow?.count ?? 0;
   }
 
   async listByUserId(userId: string): Promise<Organization[]> {

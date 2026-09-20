@@ -1,8 +1,5 @@
 import crypto from "node:crypto";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { eq, and } from "drizzle-orm";
-import { db } from "../db/index.js";
-import { oidcConnections, organizations } from "../db/schema.js";
 import { provisionEnterpriseUser, defaultRoleForOrg } from "../services/enterpriseSso.js";
 import { createTokenSet } from "../services/tokens.js";
 import { setSessionCookies, clearSessionCookies } from "../plugins/auth.js";
@@ -37,11 +34,7 @@ function clearStateCookie(reply: FastifyReply): void {
 export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
   app.get("/sso/oidc/:connectionId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
-    const [connection] = await db
-      .select()
-      .from(oidcConnections)
-      .where(and(eq(oidcConnections.id, connectionId), eq(oidcConnections.isActive, true)))
-      .limit(1);
+    const connection = await app.container.oidcConnectionRepository.findActiveById(connectionId);
 
     if (!connection) {
       return reply.status(404).send({ error: "OIDC connection not found" });
@@ -81,11 +74,7 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid OIDC state" });
     }
 
-    const [connection] = await db
-      .select()
-      .from(oidcConnections)
-      .where(and(eq(oidcConnections.id, connectionId), eq(oidcConnections.isActive, true)))
-      .limit(1);
+    const connection = await app.container.oidcConnectionRepository.findActiveById(connectionId);
 
     if (!connection) {
       return reply.status(400).send({ error: "OIDC connection not found" });
@@ -137,11 +126,7 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
         throw new Error("OIDC provider did not return an email");
       }
 
-      const [org] = await db
-        .select()
-        .from(organizations)
-        .where(eq(organizations.id, connection.orgId))
-        .limit(1);
+      const org = await app.container.organizationRepository.findById(connection.orgId);
 
       const user = await provisionEnterpriseUser(
         connection.orgId,

@@ -1,10 +1,8 @@
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { organizations, orgMemberships, users, type Organization, type OrgMembership } from "../db/schema.js";
 
 export type OrgRole = "owner" | "admin" | "member";
-
-const ROLES: OrgRole[] = ["owner", "admin", "member"];
 
 export function slugify(name: string): string {
   return name

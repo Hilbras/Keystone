@@ -1,8 +1,5 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { eq, and } from "drizzle-orm";
-import { db } from "../db/index.js";
-import { apiKeys } from "../db/schema.js";
 import {
   createServiceAccount,
   findServiceAccountsByOrgId,
@@ -105,18 +102,15 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
       }
 
       const { key, prefix } = generateApiKey();
-      const [record] = await db
-        .insert(apiKeys)
-        .values({
-          serviceAccountId: account.id,
-          orgId: id,
-          name: body.name,
-          prefix,
-          keyHash: hashApiKey(key),
-          scopes: body.scopes?.length ? body.scopes : ["api:read"],
-          expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
-        })
-        .returning();
+      const record = await app.container.apiKeyRepository.create({
+        serviceAccountId: account.id,
+        orgId: id,
+        name: body.name,
+        prefix,
+        keyHash: hashApiKey(key),
+        scopes: body.scopes?.length ? body.scopes : ["api:read"],
+        expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+      });
 
       await request.audit("api_key_created", {
         orgId: id,
