@@ -64,6 +64,6 @@
     "drizzle-kit": "^0.22.0",
     "light-my-request": "^6.0.0",
     "tsx": "^4.15.0",
-    "typescript": "^5.4.0"
+    "typescript": "^7.0.2"
   }
 }
