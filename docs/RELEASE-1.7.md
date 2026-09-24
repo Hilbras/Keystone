@@ -4,7 +4,7 @@ This checklist is for the local release candidate. Tagging, GitHub Release creat
 
 ## Local verification
 
-- [x] `npm ci` (2026-09-24 local run; release CI repeats the install)
+- [x] `npm ci` (2026-09-25 local run; release CI repeats the install)
 - [x] `npm run typecheck`
 - [x] `npm run build`
 - [x] `npm test` with PostgreSQL and Redis (97 passed, 1 skipped)
@@ -34,7 +34,7 @@ This checklist is for the local release candidate. Tagging, GitHub Release creat
 
 ### Dependency audit
 
-The release workflow now runs `npm audit --omit=dev --audit-level=high` as a blocking gate; the lint exception remains explicitly documented. The 2026-09-24 run still reports 3 High severity findings: `@xmldom/xmldom` (multiple XML parser/serialization advisories), `fast-uri` (host-confusion/SSRF advisories), and `find-my-way` (HTTP/2 DDoS). `npm audit fix` is available, but no forced remediation was applied. The roadmap schedules dependency remediation for a later supply-chain phase, but no exception is approved yet. Do not tag or publish until these findings are either fixed or covered by an explicitly approved, time-bounded exception with an owner and review date.
+The release workflow now runs `npm audit --omit=dev --audit-level=high` as a blocking gate; the lint exception remains explicitly documented. The 2026-09-25 run still reports 3 High severity findings: `@xmldom/xmldom` (multiple XML parser/serialization advisories), `fast-uri` (host-confusion/SSRF advisories), and `find-my-way` (HTTP/2 DDoS). `npm audit fix` is available, but no forced remediation was applied. The roadmap schedules dependency remediation for a later supply-chain phase, but no exception is approved yet. Do not tag or publish until these findings are either fixed or covered by an explicitly approved, time-bounded exception with an owner and review date.
 
 ### Lint
 
