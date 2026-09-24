@@ -1,22 +1,48 @@
 import dns from "node:dns/promises";
 import net from "node:net";
+import { customFetch, type FetchImplementation } from "jose";
 import { config } from "../config.js";
 
-function isPrivateAddress(address: string): boolean {
-  if (net.isIPv4(address)) {
-    const [a, b] = address.split(".").map(Number);
-    return a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+export function isPrivateAddress(address: string): boolean {
+  const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
+  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  const value = mapped ?? normalized;
+  if (net.isIPv4(value)) {
+    const [a, b] = value.split(".").map(Number);
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    );
   }
-  if (net.isIPv6(address)) {
-    const normalized = address.toLowerCase();
-    return normalized === "::1" || normalized === "::" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
+  if (net.isIPv6(value)) {
+    return (
+      value === "::1" ||
+      value === "::" ||
+      value.startsWith("fc") ||
+      value.startsWith("fd") ||
+      value.startsWith("fe80:")
+    );
   }
   return false;
 }
 
 function isPrivateHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/\.$/, "");
-  return normalized === "localhost" || normalized.endsWith(".localhost") || normalized.endsWith(".local") || normalized === "metadata.google.internal";
+  return (
+    normalized === "localhost" ||
+    normalized === "ip6-localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized.endsWith(".local") ||
+    normalized.endsWith(".internal") ||
+    normalized === "metadata.google.internal"
+  );
 }
 
 export function validateSsoEndpoint(value: string, label: string): URL {
@@ -36,6 +62,15 @@ export function validateSsoEndpoint(value: string, label: string): URL {
   return url;
 }
 
+export async function fetchSsoEndpoint(
+  value: string,
+  label: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const url = await assertSafeSsoEndpoint(value, label);
+  return fetch(url, { ...init, redirect: "error" });
+}
+
 export async function assertSafeSsoEndpoint(value: string, label: string): Promise<URL> {
   const url = validateSsoEndpoint(value, label);
   if (config.ALLOW_PRIVATE_SSO_ENDPOINTS) return url;
@@ -50,3 +85,10 @@ export async function assertSafeSsoEndpoint(value: string, label: string): Promi
   }
   return url;
 }
+
+export const safeJwksFetch: FetchImplementation = async (url, options) => {
+  const safeUrl = await assertSafeSsoEndpoint(url, "jwksUri");
+  return fetch(safeUrl, { ...options, redirect: "manual" });
+};
+
+export { customFetch };

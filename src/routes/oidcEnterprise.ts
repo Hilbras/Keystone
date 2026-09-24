@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { config } from "../config.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { provisionEnterpriseUser, defaultRoleForOrg } from "../services/enterpriseSso.js";
@@ -6,7 +7,7 @@ import { createTokenSet } from "../services/tokens.js";
 import { setSessionCookies, clearSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
 import { toSelfUser } from "../types.js";
-import { assertSafeSsoEndpoint } from "../services/ssoEndpointPolicy.js";
+import { assertSafeSsoEndpoint, customFetch, fetchSsoEndpoint, safeJwksFetch } from "../services/ssoEndpointPolicy.js";
 import { buildOAuthErrorResponse } from "../lib/errors.js";
 import { decryptSecret } from "../services/secrets/index.js";
 import { isLegacyOidcSecret, LEGACY_OIDC_SECRET_PREFIX } from "../services/oidcSecretFormat.js";
@@ -21,7 +22,7 @@ function setStateCookie(reply: FastifyReply, state: string): void {
   reply.setCookie(OIDC_STATE_COOKIE, state, {
     path: "/",
     httpOnly: true,
-    secure: process.env.COOKIE_SECURE === "true",
+    secure: config.COOKIE_SECURE,
     sameSite: "lax",
     maxAge: 600,
   });
@@ -104,7 +105,6 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
       } else {
         clientSecret = await decryptSecret(connection.clientSecret);
       }
-      const tokenEndpoint = await assertSafeSsoEndpoint(connection.tokenEndpoint, "tokenEndpoint");
       const userinfoEndpoint = await assertSafeSsoEndpoint(
         connection.userinfoEndpoint ||
           (connection.scopes.includes("openid")
@@ -112,9 +112,8 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
             : `${connection.issuer}/userinfo`),
         "userinfoEndpoint"
       );
-      const tokenRes = await fetch(tokenEndpoint, {
+      const tokenRes = await fetchSsoEndpoint(connection.tokenEndpoint, "tokenEndpoint", {
         method: "POST",
-        redirect: "error",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "authorization_code",
@@ -134,13 +133,14 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
       if (!tokenData.id_token || !connection.jwksUri) {
         throw new Error("OIDC provider did not return a verifiable ID token");
       }
-      const jwks = createRemoteJWKSet(await assertSafeSsoEndpoint(connection.jwksUri, "jwksUri"));
+      const jwks = createRemoteJWKSet(await assertSafeSsoEndpoint(connection.jwksUri, "jwksUri"), {
+        [customFetch]: safeJwksFetch,
+      });
       const verifiedIdToken = await jwtVerify(tokenData.id_token, jwks, {
         issuer: connection.issuer,
         audience: connection.clientId,
       });
-      const userinfoRes = await fetch(userinfoEndpoint, {
-        redirect: "error",
+      const userinfoRes = await fetchSsoEndpoint(userinfoEndpoint.toString(), "userinfoEndpoint", {
         headers: { Authorization: `Bearer ${tokenData.access_token}` },
       });
 
@@ -177,7 +177,9 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
           email: userinfo.email,
           name: userinfo.name,
           username: userinfo.preferred_username,
+          externalId: userinfo.sub,
         },
+        { id: connection.id, type: "oidc" },
         org ? defaultRoleForOrg(org) : "member"
       );
       request.user = user;

@@ -142,7 +142,7 @@ export const refreshTokens = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    appId: uuid("app_id").references(() => applications.id, { onDelete: "set null" }),
+    appId: uuid("app_id").references(() => applications.id, { onDelete: "restrict" }),
     tokenHash: text("token_hash").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
@@ -549,6 +549,37 @@ export const userIdentities = pgTable(
   })
 );
 
+export const ssoIdentityLinks = pgTable(
+  "sso_identity_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    connectionType: text("connection_type").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    externalSub: text("external_sub").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    connectionSubUnique: unique("sso_identity_links_connection_sub_unique").on(
+      table.connectionType,
+      table.connectionId,
+      table.externalSub
+    ),
+    userConnectionUnique: unique("sso_identity_links_user_connection_unique").on(
+      table.orgId,
+      table.userId,
+      table.connectionType,
+      table.connectionId
+    ),
+    userIdx: index("sso_identity_links_user_idx").on(table.userId),
+  })
+);
+
 export const secrets = pgTable(
   "secrets",
   {
@@ -667,6 +698,7 @@ export type IdentityProvider = typeof identityProviders.$inferSelect;
 export type NewIdentityProvider = typeof identityProviders.$inferInsert;
 export type UserIdentity = typeof userIdentities.$inferSelect;
 export type NewUserIdentity = typeof userIdentities.$inferInsert;
+export type SsoIdentityLink = typeof ssoIdentityLinks.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;
 export type NewSecret = typeof secrets.$inferInsert;
 export type FeatureFlag = typeof featureFlags.$inferSelect;

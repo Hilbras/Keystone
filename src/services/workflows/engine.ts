@@ -22,6 +22,29 @@ function readWorkflowSteps(definition: unknown): WorkflowStep[] | null {
   return steps as WorkflowStep[];
 }
 
+async function hasWorkflowPermission(actorId: string, orgId: string): Promise<boolean> {
+  const [membership] = await db
+    .select({ role: orgMemberships.role, isActive: users.isActive })
+    .from(orgMemberships)
+    .innerJoin(users, eq(orgMemberships.userId, users.id))
+    .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, actorId)))
+    .limit(1);
+  if (!membership?.isActive || (membership.role !== "owner" && membership.role !== "admin")) return false;
+  const [permission] = await db
+    .select({ id: permissions.id })
+    .from(permissions)
+    .innerJoin(rolePermissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(
+      and(
+        eq(permissions.resource, "organization"),
+        eq(permissions.action, "update"),
+        eq(rolePermissions.role, membership.role)
+      )
+    )
+    .limit(1);
+  return Boolean(permission);
+}
+
 let loaded = false;
 
 export async function loadWorkflows(): Promise<void> {
@@ -98,7 +121,7 @@ export async function registerWorkflow(input: {
   return workflow;
 }
 
-export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEvent): Promise<WorkflowRun> {
+export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEvent): Promise<WorkflowRun | undefined> {
   const definition = (workflow.definition ?? { steps: [] }) as WorkflowDefinition;
   const steps = readWorkflowSteps(definition);
   const eventOrgId = typeof event.payload.orgId === "string" ? event.payload.orgId : undefined;
@@ -113,6 +136,24 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
       .where(and(eq(orgMemberships.orgId, workflow.orgId), eq(orgMemberships.userId, event.payload.userId)))
       .limit(1);
     isOutOfScope = !membership;
+  }
+  const eventUserId = typeof event.payload.userId === "string" ? event.payload.userId : undefined;
+  if (inactiveWorkflow || triggerMismatch || isOutOfScope || (workflow.orgId && (!eventUserId || !(await hasWorkflowPermission(eventUserId, workflow.orgId))))) {
+    const reason = inactiveWorkflow
+      ? "Workflow is inactive"
+      : triggerMismatch
+        ? "Workflow trigger does not match the emitted event"
+        : isOutOfScope
+          ? "Workflow event does not belong to the workflow organization"
+          : "Workflow actor lacks current organization permission";
+    await emit({
+      type: "workflow_blocked",
+      payload: {
+        orgId: workflow.orgId ?? undefined,
+        metadata: { workflowId: workflow.id, reason },
+      },
+    });
+    return undefined;
   }
   const blockedReason = inactiveWorkflow
     ? "Workflow is inactive"
@@ -213,30 +254,23 @@ async function executeRun(run: WorkflowRun, workflow: Workflow): Promise<void> {
     return;
   }
   const userId = typeof payload.userId === "string" ? payload.userId : undefined;
-  if (workflow.orgId && userId) {
-    const [membership] = await db
-      .select({ id: orgMemberships.id })
-      .from(orgMemberships)
-      .where(and(eq(orgMemberships.orgId, workflow.orgId), eq(orgMemberships.userId, userId)))
-      .limit(1);
-    if (!membership) {
-      await db
-        .update(workflowRuns)
-        .set({
-          status: "blocked",
-          finishedAt: new Date(),
-          log: [{ status: "blocked", error: "Workflow actor is not a member of the workflow organization" }],
-        })
-        .where(eq(workflowRuns.id, run.id));
-      await emit({
-        type: "workflow_blocked",
-        payload: {
-          orgId: workflow.orgId ?? undefined,
-          metadata: { workflowId: workflow.id, runId: run.id, reason: "actor_not_member" },
-        },
-      });
-      return;
-    }
+  if (workflow.orgId && (!userId || !(await hasWorkflowPermission(userId, workflow.orgId)))) {
+    await db
+      .update(workflowRuns)
+      .set({
+        status: "blocked",
+        finishedAt: new Date(),
+        log: [{ status: "blocked", error: "Workflow actor lacks current organization permission" }],
+      })
+      .where(eq(workflowRuns.id, run.id));
+    await emit({
+      type: "workflow_blocked",
+      payload: {
+        orgId: workflow.orgId ?? undefined,
+        metadata: { workflowId: workflow.id, runId: run.id, reason: "actor_permission_revoked" },
+      },
+    });
+    return;
   }
   const user = userId ? await findUserById(userId) : undefined;
   const outputs: Record<string, string> = {};

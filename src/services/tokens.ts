@@ -233,16 +233,15 @@ export async function rotateRefreshToken(
   token: string,
   ip?: string,
   userAgent?: string,
-  clientId?: string
+  clientId?: string,
+  expectedAppId?: string
 ): Promise<TokenSet | null> {
   const hash = hashToken(token);
   const now = new Date();
 
-  // Claim the token with one conditional update. Concurrent requests cannot
-  // both rotate the same refresh token.
-  const [claimed] = await db
-    .update(refreshTokens)
-    .set({ revokedAt: now })
+  const [existing] = await db
+    .select()
+    .from(refreshTokens)
     .where(
       and(
         eq(refreshTokens.tokenHash, hash),
@@ -250,19 +249,20 @@ export async function rotateRefreshToken(
         isNull(refreshTokens.revokedAt)
       )
     )
-    .returning();
-  if (!claimed) return null;
+    .limit(1);
+  if (!existing) return null;
 
-  const [user] = await db.select().from(users).where(eq(users.id, claimed.userId)).limit(1);
-  if (!user?.isActive) return null;
+  const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
+  if (!user?.isActive || user.accountReviewRequired) return null;
 
   let appId: string | undefined;
   let orgId: string | undefined;
-  if (claimed.appId) {
+  if (existing.appId) {
+    if (expectedAppId && expectedAppId !== existing.appId) return null;
     const [application] = await db
       .select({ id: applications.id, orgId: applications.orgId, clientId: applications.clientId })
       .from(applications)
-      .where(and(eq(applications.id, claimed.appId), eq(applications.isActive, true)))
+      .where(and(eq(applications.id, existing.appId), eq(applications.isActive, true)))
       .limit(1);
     if (!application || !clientId || application.clientId !== clientId) return null;
 
@@ -274,9 +274,25 @@ export async function rotateRefreshToken(
     if (!membership) return null;
     appId = application.id;
     orgId = application.orgId;
-  } else if (clientId) {
+  } else if (clientId || expectedAppId) {
     return null;
   }
+
+  // Claim only after all client, application, membership, and account checks
+  // pass. The conditional update makes concurrent rotations single-use.
+  const [claimed] = await db
+    .update(refreshTokens)
+    .set({ revokedAt: now })
+    .where(
+      and(
+        eq(refreshTokens.id, existing.id),
+        eq(refreshTokens.tokenHash, hash),
+        gt(refreshTokens.expiresAt, now),
+        isNull(refreshTokens.revokedAt)
+      )
+    )
+    .returning();
+  if (!claimed) return null;
 
   return createTokenSet(
     user,

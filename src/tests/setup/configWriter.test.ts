@@ -43,12 +43,14 @@ describe("EnvFileConfigWriter", () => {
       DATABASE_URL: "postgres://user:password@host/db",
       SMTP_PASS: "smtp-secret",
       ZITADEL_SERVICE_PAT: "pat-secret",
+      SCIM_BEARER_TOKEN: "scim-secret",
       PORT: "4001",
     });
     assert.deepStrictEqual(redacted, {
       DATABASE_URL: REDACTED_CONFIG_VALUE,
       SMTP_PASS: REDACTED_CONFIG_VALUE,
       ZITADEL_SERVICE_PAT: REDACTED_CONFIG_VALUE,
+      SCIM_BEARER_TOKEN: REDACTED_CONFIG_VALUE,
       PORT: "4001",
     });
   });

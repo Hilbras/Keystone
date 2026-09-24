@@ -208,7 +208,7 @@ export class AuthenticationDomainService {
       return err({ code: "INVALID_REFRESH_TOKEN", message: "Invalid or expired session.", statusCode: 401 });
     }
 
-    await emit({ type: "token_refresh", payload: {} });
+    await emit({ type: "token_refresh", payload: { userId: tokens.userId } });
     return ok({ tokens, userId: tokens.userId });
   }
 

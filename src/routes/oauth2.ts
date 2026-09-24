@@ -195,6 +195,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
+        request.state.auditUserId = user.id;
         request.state.membership = membership;
         request.state.org = await app.container.organizationRepository.findById(application.orgId);
         await request.audit("oauth2_token", {
@@ -213,8 +214,12 @@ export default async function oauth2Routes(app: FastifyInstance) {
       }
 
       if (body.grant_type === "refresh_token") {
-        if (!body.refresh_token || !body.client_id) {
+        if (!body.refresh_token || !body.client_id || !body.client_secret) {
           return reply.status(400).send({ error: "invalid_request" });
+        }
+        const application = await verifyClientSecret(body.client_id, body.client_secret);
+        if (!application) {
+          return reply.status(401).send({ error: "invalid_client" });
         }
 
         // Lazy import to avoid circular dependency.
@@ -222,13 +227,17 @@ export default async function oauth2Routes(app: FastifyInstance) {
           body.refresh_token,
           request.ip,
           request.headers["user-agent"],
-          body.client_id
+          body.client_id,
+          application.id
         );
         if (!tokens) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
         request.state.auditUserId = tokens.userId;
+        request.state.app = application;
+        request.state.org = await app.container.organizationRepository.findById(application.orgId);
+        request.state.membership = await app.container.organizationRepository.findMembership(application.orgId, tokens.userId);
         return {
           access_token: tokens.accessToken,
           refresh_token: tokens.refreshToken,

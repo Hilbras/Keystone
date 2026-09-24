@@ -1,6 +1,9 @@
 ALTER TABLE "users" ADD COLUMN "account_review_required" boolean DEFAULT false NOT NULL;
 
-UPDATE "users" SET "is_active" = true WHERE "is_active" IS NULL;
+UPDATE "users"
+SET "is_active" = CASE WHEN "email_verified" = true THEN true ELSE false END,
+    "account_review_required" = CASE WHEN "email_verified" = true THEN false ELSE true END
+WHERE "is_active" IS NULL;
 ALTER TABLE "users" ALTER COLUMN "is_active" SET DEFAULT true;
 ALTER TABLE "users" ALTER COLUMN "is_active" SET NOT NULL;
 

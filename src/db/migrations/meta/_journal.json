@@ -78,6 +78,13 @@
       "when": 1790276829374,
       "tag": "0010_wealthy_shadow_king",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790281200949,
+      "tag": "0011_overrated_vector",
+      "breakpoints": true
     }
   ]
 }

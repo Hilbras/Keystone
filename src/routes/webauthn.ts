@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { config } from "../config.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import {
   type RegistrationResponseJSON,
@@ -22,7 +23,7 @@ function setChallengeCookie(reply: FastifyReply, challenge: string): void {
   reply.setCookie(ChallengeCookieName, challenge, {
     path: "/",
     httpOnly: true,
-    secure: process.env.COOKIE_SECURE === "true",
+    secure: config.COOKIE_SECURE,
     sameSite: "lax",
     maxAge: 300,
   });

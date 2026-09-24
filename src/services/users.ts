@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, userIdentities, identityProviders, orgMemberships, type User } from "../db/schema.js";
 
@@ -8,12 +8,22 @@ export interface OAuthClaims {
   username?: string;
   name?: string;
   picture?: string;
+  emailVerified?: boolean;
   email_verified?: boolean;
 }
 
 export async function findUserByEmail(email: string): Promise<User | undefined> {
   const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase())).limit(1);
   return user;
+}
+
+export async function findIdentityProviderByType(providerType: string) {
+  const [provider] = await db
+    .select()
+    .from(identityProviders)
+    .where(and(eq(identityProviders.providerType, providerType), eq(identityProviders.isActive, true)))
+    .limit(1);
+  return provider;
 }
 
 export async function findUserById(id: string): Promise<User | undefined> {
@@ -54,21 +64,25 @@ export async function upsertOAuthUser(
   providerType: string,
   providerId?: string
 ): Promise<User> {
+  const verified = claims.emailVerified === true || claims.email_verified === true;
+  if (!verified) {
+    throw new Error("Identity provider did not verify the email address");
+  }
   const username = slugifyUsername(claims.username || claims.name || claims.email.split("@")[0]);
   const email = claims.email.toLowerCase().trim();
 
-  // Prefer linking by external identity when a provider record is available.
+  // Only an explicit provider/subject link may identify an existing account.
   if (providerId) {
     const [existingLink] = await db
       .select({ user: users })
       .from(userIdentities)
-      .where(eq(userIdentities.externalSub, claims.sub))
+      .where(and(eq(userIdentities.providerId, providerId), eq(userIdentities.externalSub, claims.sub)))
       .innerJoin(users, eq(userIdentities.userId, users.id))
       .limit(1);
 
     if (existingLink) {
       const existing = existingLink.user;
-      if (!existing.isActive) throw new Error("User account is deactivated");
+      if (!existing.isActive || existing.accountReviewRequired) throw new Error("User account is unavailable");
       const [updated] = await db
         .update(users)
         .set({
@@ -76,7 +90,7 @@ export async function upsertOAuthUser(
           username: await ensureUniqueUsername(username, existing.id),
           name: claims.name || existing.name,
           avatarUrl: claims.picture || existing.avatarUrl,
-          emailVerified: claims.email_verified ?? existing.emailVerified ?? true,
+          emailVerified: true,
           provider: providerType,
           updatedAt: sql`now()`,
         })
@@ -86,24 +100,11 @@ export async function upsertOAuthUser(
     }
   }
 
-  // Fall back to email-based matching.
-  const existing = await findUserByEmail(email);
-  if (existing) {
-    if (!existing.isActive) throw new Error("User account is deactivated");
-    const [updated] = await db
-      .update(users)
-      .set({
-        email,
-        username: await ensureUniqueUsername(username, existing.id),
-        name: claims.name || existing.name,
-        avatarUrl: claims.picture || existing.avatarUrl,
-        emailVerified: claims.email_verified ?? existing.emailVerified ?? true,
-        provider: providerType,
-        updatedAt: sql`now()`,
-      })
-      .where(eq(users.id, existing.id))
-      .returning();
-    return updated;
+  // Email equality alone is never proof of identity. Existing users must be
+  // linked through an explicitly provisioned provider/subject identity.
+  const existingByEmail = await findUserByEmail(email);
+  if (existingByEmail) {
+    throw new Error("Existing account requires an explicit external identity link");
   }
 
   const [user] = await db
@@ -113,7 +114,7 @@ export async function upsertOAuthUser(
       username: await ensureUniqueUsername(username),
       name: claims.name || username,
       avatarUrl: claims.picture,
-      emailVerified: claims.email_verified ?? true,
+      emailVerified: true,
       provider: providerType,
     })
     .returning();

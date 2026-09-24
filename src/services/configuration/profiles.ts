@@ -25,7 +25,11 @@ const SENSITIVE_CONFIG_KEYS = new Set([
 ]);
 
 export function isSensitiveConfigurationKey(key: string): boolean {
-  return SENSITIVE_CONFIG_KEYS.has(key.toUpperCase());
+  const normalized = key.toUpperCase();
+  return (
+    SENSITIVE_CONFIG_KEYS.has(normalized) ||
+    /(SECRET|TOKEN|PASSWORD|PASS|PAT|PRIVATE_KEY|API_KEY|CREDENTIAL|AUTHORIZATION|DATABASE_URL|REDIS_URL|ENCRYPTION_KEY)/.test(normalized)
+  );
 }
 
 export function redactConfigurationValues(values: Record<string, string | undefined>): Record<string, string> {

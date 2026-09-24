@@ -7,7 +7,14 @@ import { isLegacyOidcSecret, LEGACY_OIDC_SECRET_PREFIX } from "../services/oidcS
 const allowUnmarkedPlaintext = process.argv.includes("--allow-unmarked-plaintext");
 
 function looksEncrypted(value: string): boolean {
-  return value.startsWith("aes-256-gcm$") || value.startsWith("azure-key-vault$") || value.includes(":");
+  if (value.startsWith("aes-256-gcm$") || value.startsWith("azure-key-vault$")) return true;
+  const parts = value.split(":");
+  if (parts.length !== 2) return false;
+  try {
+    return Buffer.from(parts[0], "base64").length === 16 && parts[1].length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function main(): Promise<void> {

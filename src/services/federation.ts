@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { buildConnector } from "./connectors/registry.js";
-import { upsertOAuthUser } from "./users.js";
+import { findIdentityProviderByType, upsertOAuthUser } from "./users.js";
 import { createTokenSet } from "./tokens.js";
 import { db } from "../db/index.js";
 import { users, orgMemberships } from "../db/schema.js";
@@ -36,29 +36,24 @@ export async function completeFederationLogin(
   const identity = await connector.exchangeCode(code, redirectUri);
   const email = identity.email.toLowerCase().trim();
 
+  let existingUser: User | undefined;
   if (application) {
     const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (existing && !existing.isActive) throw new Error("User account is deactivated");
-    if (existing) {
-      const [membership] = await db
-        .select({ id: orgMemberships.id })
-        .from(orgMemberships)
-        .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, existing.id)))
-        .limit(1);
-      if (!membership) throw new Error("Federation user must be explicitly invited to the application organization");
-    }
-  }
-
-  const user = await upsertOAuthUser(identity, providerType);
-  if (application) {
+    if (!existing) throw new Error("Federation users must be explicitly invited to the application organization");
+    if (!existing.isActive || existing.accountReviewRequired) throw new Error("User account is unavailable");
     const [membership] = await db
       .select({ id: orgMemberships.id })
       .from(orgMemberships)
-      .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, user.id)))
+      .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, existing.id)))
       .limit(1);
-    if (!membership) {
-      await db.insert(orgMemberships).values({ orgId: application.orgId, userId: user.id, role: "member" });
-    }
+    if (!membership) throw new Error("Federation user must be explicitly invited to the application organization");
+    existingUser = existing;
+  }
+
+  const provider = await findIdentityProviderByType(providerType);
+  const user = await upsertOAuthUser(identity, providerType, provider?.id);
+  if (application && (!existingUser || existingUser.id !== user.id)) {
+    throw new Error("Federation identity is not linked to the invited user");
   }
   const tokens = await createTokenSet(
     user,

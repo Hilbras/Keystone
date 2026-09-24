@@ -22,6 +22,14 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
       if (membership) {
         orgId = request.state.app.orgId;
         appId = request.state.app.id;
+        request.state.membership = membership;
+        request.state.org = await app.container.organizationRepository.findById(request.state.app.orgId);
+      }
+    } else if (orgId) {
+      const membership = await app.container.organizationRepository.findMembership(orgId, user.id);
+      if (membership) {
+        request.state.membership = membership;
+        request.state.org = await app.container.organizationRepository.findById(orgId);
       }
     }
 
@@ -39,6 +47,8 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
     await request.audit("api_key_created", {
       keyId: record.id,
       name: record.name,
+      orgId,
+      appId,
     });
 
     return { key, apiKey: toPublicApiKey(record) };

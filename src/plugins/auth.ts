@@ -179,8 +179,9 @@ export default fp(async function authPlugin(app: FastifyInstance) {
       return;
     }
 
-    const serviceAccount = await resolveServiceAccountFromApiKey(token);
-    if (serviceAccount) {
+    const serviceAccountResult = await resolveServiceAccountFromApiKey(token);
+    if (serviceAccountResult) {
+      const { serviceAccount, keyId, scopes } = serviceAccountResult;
       request.serviceAccount = serviceAccount;
       request.apiKeyScopes = ["api:read", "api:write", "service_account"];
       await emit({
@@ -190,7 +191,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
           requestId: request.id,
           ip: request.ip,
           userAgent: request.headers["user-agent"],
-          metadata: { serviceAccountId: serviceAccount.id },
+          metadata: { serviceAccountId: serviceAccount.id, keyId, scopes },
         },
       });
       // Synthesize a user so existing routes that expect request.user keep working.
@@ -252,5 +253,5 @@ async function resolveServiceAccountFromApiKey(key: string) {
     .from(serviceAccounts)
     .where(and(eq(serviceAccounts.id, keyRecord.serviceAccountId), eq(serviceAccounts.isActive, true)))
     .limit(1);
-  return account;
+  return account ? { serviceAccount: account, keyId: keyRecord.id, scopes: keyRecord.scopes ?? [] } : undefined;
 }

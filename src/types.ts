@@ -10,6 +10,7 @@ declare module "fastify" {
       org?: Organization;
       membership?: OrgMembership;
       auditUserId?: string;
+      scimOrgId?: string;
     };
   }
 

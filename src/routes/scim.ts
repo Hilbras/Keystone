@@ -56,27 +56,32 @@ export default async function scimRoutes(app: FastifyInstance) {
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = request.headers.authorization;
     const expected = process.env.SCIM_BEARER_TOKEN;
-    if (!expected) {
+    const orgId = process.env.SCIM_ORG_ID;
+    if (!expected || !orgId) {
       return reply.status(501).send(scimError(501, "SCIM not configured"));
     }
+    request.state.scimOrgId = orgId;
     if (!auth || !auth.startsWith("Bearer ") || auth.slice(7) !== expected) {
       return reply.status(401).send(scimError(401, "Unauthorized"));
     }
   });
 
-  app.get("/scim/v2/Users", async () => {
-    const allUsers = (await app.container.userRepository.listAll()).filter((user) => user.isActive);
+  app.get("/scim/v2/Users", async (request: FastifyRequest) => {
+    const usersForOrg = (await app.container.userRepository.listByOrg(request.state.scimOrgId!)).filter((user) => user.isActive);
     return {
       schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-      totalResults: allUsers.length,
-      Resources: allUsers.map(scimUserResponse),
+      totalResults: usersForOrg.length,
+      Resources: usersForOrg.map(scimUserResponse),
     };
   });
 
   app.get("/scim/v2/Users/:userId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { userId } = request.params as { userId: string };
     const user = await app.container.userRepository.findById(userId);
-    if (!user) {
+    const membership = user
+      ? await app.container.organizationRepository.findMembership(request.state.scimOrgId!, user.id)
+      : undefined;
+    if (!user || !membership) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
     request.state.auditUserId = user.id;
@@ -85,6 +90,7 @@ export default async function scimRoutes(app: FastifyInstance) {
 
   app.post("/scim/v2/Users", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = ScimUserSchema.parse(request.body);
+    const orgId = request.state.scimOrgId!;
     const email = body.userName.toLowerCase().trim();
 
     let user = await app.container.userRepository.findByEmail(email);
@@ -102,14 +108,30 @@ export default async function scimRoutes(app: FastifyInstance) {
         provider: "scim",
         emailVerified: true,
       });
+      await db.insert(orgMemberships).values({ orgId, userId: user.id, role: "member" });
       isNewUser = true;
+    } else {
+      if (user.role === "owner" || user.accountReviewRequired) {
+        return reply.status(409).send(scimError(409, "User requires platform-owner review or cannot be provisioned by SCIM"));
+      }
+      const membership = await app.container.organizationRepository.findMembership(orgId, user.id);
+      if (!membership) {
+        await db.insert(orgMemberships).values({ orgId, userId: user.id, role: "member" });
+      }
     }
 
     request.state.auditUserId = user.id;
     if (body.active === false && user.isActive) {
-      await app.container.userRepository.deactivate(user.id);
+      try {
+        await app.container.userRepository.deactivate(user.id);
+      } catch {
+        return reply.status(400).send(scimError(400, "The last platform owner cannot be deactivated"));
+      }
       user = (await app.container.userRepository.findById(user.id)) ?? user;
     } else if (body.active === true && !user.isActive) {
+      if (user.accountReviewRequired) {
+        return reply.status(409).send(scimError(409, "Account review must be completed by a platform owner"));
+      }
       user = (await app.container.userRepository.update(user.id, { isActive: true })) ?? user;
     }
 
@@ -120,15 +142,26 @@ export default async function scimRoutes(app: FastifyInstance) {
   app.put("/scim/v2/Users/:userId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { userId } = request.params as { userId: string };
     const body = ScimUserSchema.parse(request.body);
+    const orgId = request.state.scimOrgId!;
 
     const existing = await app.container.userRepository.findById(userId);
-    if (!existing) {
+    const membership = existing
+      ? await app.container.organizationRepository.findMembership(orgId, existing.id)
+      : undefined;
+    if (!existing || !membership) {
       return reply.status(404).send(scimError(404, "User not found"));
+    }
+    if (existing.accountReviewRequired) {
+      return reply.status(409).send(scimError(409, "Account review must be completed by a platform owner"));
     }
     request.state.auditUserId = existing.id;
 
     if (body.active === false && existing.isActive) {
-      await app.container.userRepository.deactivate(userId);
+      try {
+        await app.container.userRepository.deactivate(userId);
+      } catch {
+        return reply.status(400).send(scimError(400, "The last platform owner cannot be deactivated"));
+      }
     } else {
       await app.container.userRepository.update(userId, {
         email: body.userName.toLowerCase().trim(),
@@ -149,17 +182,33 @@ export default async function scimRoutes(app: FastifyInstance) {
 
   app.delete("/scim/v2/Users/:userId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { userId } = request.params as { userId: string };
+    const orgId = request.state.scimOrgId!;
     const user = await app.container.userRepository.findById(userId);
-    if (user) request.state.auditUserId = user.id;
-    await app.container.userRepository.deleteById(userId);
-    await request.audit("scim_user_deleted", { userId, email: user?.email });
+    const membership = user
+      ? await app.container.organizationRepository.findMembership(orgId, user.id)
+      : undefined;
+    if (!user || !membership) {
+      return reply.status(404).send(scimError(404, "User not found"));
+    }
+    if (user.accountReviewRequired) {
+      return reply.status(409).send(scimError(409, "Account review must be completed by a platform owner"));
+    }
+    request.state.auditUserId = user.id;
+    try {
+      await app.container.userRepository.deactivate(user.id);
+    } catch {
+      return reply.status(400).send(scimError(400, "The last platform owner cannot be deactivated"));
+    }
+    await request.audit("scim_user_deleted", { userId, email: user.email });
     return reply.status(204).send();
   });
 
-  app.get("/scim/v2/Groups", async () => {
+  app.get("/scim/v2/Groups", async (request: FastifyRequest) => {
+    const scimOrgId = request.state.scimOrgId!;
     const memberships = await db
       .select({ orgId: orgMemberships.orgId, role: orgMemberships.role })
-      .from(orgMemberships);
+      .from(orgMemberships)
+      .where(eq(orgMemberships.orgId, scimOrgId));
 
     const groupMap = new Map<string, { orgId: string; role: string; members: { value: string; display: string }[] }>();
     for (const m of memberships) {
@@ -176,7 +225,7 @@ export default async function scimRoutes(app: FastifyInstance) {
       const members = await db
         .select({ userId: orgMemberships.userId, email: users.email })
         .from(orgMemberships)
-        .where(and(eq(orgMemberships.orgId, group.orgId), eq(orgMemberships.role, group.role)))
+        .where(and(eq(orgMemberships.orgId, scimOrgId), eq(orgMemberships.role, group.role)))
         .innerJoin(users, eq(orgMemberships.userId, users.id));
 
       groups.push({
@@ -197,7 +246,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     const { groupId } = request.params as { groupId: string };
     const [orgId, role] = groupId.split(":");
 
-    if (!orgId || !role) {
+    if (!orgId || !role || orgId !== request.state.scimOrgId) {
       return reply.status(400).send(scimError(400, "Invalid group ID format. Expected orgId:role"));
     }
 

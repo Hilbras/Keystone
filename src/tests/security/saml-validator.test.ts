@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import { describe, it } from "node:test";
 import { X509CertificateGenerator } from "@peculiar/x509";
+import type { SamlConnection } from "../../db/schema.js";
 import { IdentityProvider, ServiceProvider } from "samlify";
-import "../../routes/saml.js";
+import { validateSamlSemantics } from "../../routes/saml.js";
 
 function pemPrivateKey(pkcs8: ArrayBuffer): string {
   const body = Buffer.from(pkcs8).toString("base64").match(/.{1,64}/g)?.join("\n") ?? "";
@@ -69,7 +70,15 @@ describe("SAML response validation", () => {
     const { idp, sp } = await createSignedSamlFixture();
     const response = await idp.createLoginResponse(
       sp,
-      { extract: { request: { id: "saml-test-request-id" } } },
+      {
+        extract: {
+          request: {
+            id: "saml-test-request-id",
+            destination: "https://keystone.example.test/sso/saml/acs",
+            assertionConsumerServiceURL: "https://keystone.example.test/sso/saml/acs",
+          },
+        },
+      },
       "post",
       { email: "signed-saml-user@example.test" },
     );
@@ -81,5 +90,14 @@ describe("SAML response validation", () => {
     assert.equal(parsed.extract.nameID, "signed-saml-user@example.test");
     assert.ok(parsed.extract.response);
     assert.equal(parsed.extract.response.inResponseTo, "saml-test-request-id");
+    const connection = {
+      spEntityId: "https://saml-test-sp.example/metadata",
+      spAcsUrl: "https://keystone.example.test/sso/saml/acs",
+    } as SamlConnection;
+    validateSamlSemantics(parsed, connection, "signed-saml-user@example.test");
+    assert.throws(
+      () => validateSamlSemantics({ ...parsed, extract: { ...parsed.extract, audience: ["wrong-audience"] } }, connection, "signed-saml-user@example.test"),
+      /audience/i
+    );
   });
 });

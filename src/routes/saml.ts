@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { DOMParser } from "@xmldom/xmldom";
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { ServiceProvider, IdentityProvider, setSchemaValidator } from "samlify";
@@ -182,6 +183,51 @@ function parseSamlAttributes(
   };
 }
 
+function valuesOf(value: string | string[] | undefined): string[] {
+  if (Array.isArray(value)) return value;
+  return value ? [value] : [];
+}
+
+export function validateSamlSemantics(
+  result: {
+    samlContent?: string;
+    extract: {
+      audience?: string | string[];
+      response?: Record<string, string | string[]>;
+      nameID?: string;
+    };
+  },
+  connection: SamlConnection,
+  externalId: string
+): void {
+  const audiences = valuesOf(result.extract.audience);
+  if (!audiences.includes(connection.spEntityId)) {
+    throw new Error("SAML audience mismatch");
+  }
+
+  const responseDestination = result.extract.response?.Destination ?? result.extract.response?.destination;
+  const destination = valuesOf(responseDestination);
+  if (destination.length !== 1 || destination[0] !== connection.spAcsUrl) {
+    throw new Error("SAML response destination mismatch");
+  }
+  if (result.extract.nameID !== externalId) {
+    throw new Error("SAML subject mismatch");
+  }
+
+  const samlContent = result.samlContent ?? "";
+  const parsed = new DOMParser({ errorHandler: { warning: () => undefined, error: () => undefined, fatalError: () => undefined } }).parseFromString(
+    samlContent,
+    "application/xml"
+  );
+  const recipientNodes = parsed.getElementsByTagNameNS("*", "SubjectConfirmationData");
+  const recipients = Array.from({ length: recipientNodes.length }, (_, index) =>
+    recipientNodes.item(index)?.getAttribute("Recipient") ?? ""
+  );
+  if (recipients.length === 0 || recipients.some((recipient) => recipient !== connection.spAcsUrl)) {
+    throw new Error("SAML subject recipient mismatch");
+  }
+}
+
 function sanitizeSamlError(error: unknown): { statusCode: number; body: { error: string } } {
   const message = config.NODE_ENV === "development" && error instanceof Error ? error.message : "SAML validation failed";
   return { statusCode: 400, body: { error: message } };
@@ -293,10 +339,16 @@ export default async function samlRoutes(app: FastifyInstance) {
     try {
       const { sp, idp } = buildSamlEntities(connection);
       const result = await sp.parseLoginResponse(idp, "post", { body });
-      const response = result.extract.response as { InResponseTo?: string };
-      if (response.InResponseTo !== transaction.requestId) {
+      const response = result.extract.response as { InResponseTo?: string; inResponseTo?: string };
+      const responseRequestId = response.InResponseTo ?? response.inResponseTo;
+      if (responseRequestId !== transaction.requestId) {
         throw new Error("SAML response request ID mismatch");
       }
+      const externalId = result.extract.nameID;
+      if (!externalId) {
+        throw new Error("SAML response did not contain a subject");
+      }
+      validateSamlSemantics(result, connection, externalId);
       const claims = parseSamlAttributes(result.extract.attributes, connection);
 
       if (!claims.email) {
@@ -315,7 +367,8 @@ export default async function samlRoutes(app: FastifyInstance) {
 
       const user = await provisionEnterpriseUser(
         connection.orgId,
-        { email: claims.email, name: claims.name },
+        { email: claims.email, name: claims.name, externalId },
+        { id: connection.id, type: "saml" },
         org ? defaultRoleForOrg(org) : "member"
       );
       request.user = user;

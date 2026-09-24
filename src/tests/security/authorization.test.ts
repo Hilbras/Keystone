@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { Organization, User } from "../../db/schema.js";
 import type { UserRepository, OrganizationRepository } from "../../repositories/types.js";
@@ -29,12 +29,13 @@ const samlTestCertificate = fs.readFileSync(
 );
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
 const { db } = await import("../../db/index.js");
-const { users, workflows, workflowRuns, auditLog, oidcConnections, apiKeys, refreshTokens } = await import("../../db/schema.js");
+const { users, workflows, workflowRuns, auditLog, oidcConnections, apiKeys, refreshTokens, orgMemberships } = await import("../../db/schema.js");
 const { buildApp } = await import("../../index.js");
 const { createAccessToken, createTokenSet, generateApiKey, hashApiKey, loadSigningKeys, rotateRefreshToken } = await import("../../services/tokens.js");
-const { triggerWorkflowRun } = await import("../../services/workflows/engine.js");
+const { triggerWorkflowRun, executeRunById } = await import("../../services/workflows/engine.js");
 const { getSdk } = await import("../../sdk/index.js");
 const { provisionEnterpriseUser } = await import("../../services/enterpriseSso.js");
+const { upsertOAuthUser } = await import("../../services/users.js");
 
 let app: FastifyInstance;
 let userRepository: UserRepository;
@@ -441,6 +442,9 @@ describe("Phase 1 authorization security regressions", () => {
       await rotateRefreshToken(wrongClientSet.refreshToken, "127.0.0.1", "test-agent", "wrong-client"),
       null
     );
+    assert.ok(
+      await rotateRefreshToken(wrongClientSet.refreshToken, "127.0.0.1", "test-agent", application.clientId)
+    );
 
     const tokenSet = await createTokenSet(member.user, "127.0.0.1", "test-agent", options);
     const rotations = await Promise.all([
@@ -709,6 +713,10 @@ describe("Phase 1 authorization security regressions", () => {
   it("propagates deactivation through SCIM and omits inactive users from lists", async () => {
     process.env.SCIM_BEARER_TOKEN = "security-test-scim-token";
     const target = await createActor("user", "scim-deactivation-target");
+    const organization = await createOrganization("scim-deactivation-boundary", [
+      { userId: target.user.id, role: "member" },
+    ]);
+    process.env.SCIM_ORG_ID = organization.id;
     const headers = { authorization: "Bearer security-test-scim-token" };
     const updated = await app.inject({
       method: "PUT",
@@ -721,6 +729,24 @@ describe("Phase 1 authorization security regressions", () => {
     const list = await app.inject({ method: "GET", url: "/scim/v2/Users", headers });
     assert.strictEqual(list.statusCode, 200);
     assert.doesNotMatch(list.body, new RegExp(target.user.id));
+    const deleted = await app.inject({ method: "DELETE", url: `/scim/v2/Users/${target.user.id}`, headers });
+    assert.strictEqual(deleted.statusCode, 204);
+    const stillPresent = await userRepository.findById(target.user.id);
+    assert.strictEqual(stillPresent?.isActive, false);
+  });
+
+  it("does not let a tenant SCIM credential provision a platform owner", async () => {
+    process.env.SCIM_BEARER_TOKEN = "security-test-scim-owner-token";
+    const owner = await createActor("owner", "scim-platform-owner-target");
+    const organization = await createOrganization("scim-owner-boundary", []);
+    process.env.SCIM_ORG_ID = organization.id;
+    const response = await app.inject({
+      method: "POST",
+      url: "/scim/v2/Users",
+      headers: { authorization: "Bearer security-test-scim-owner-token" },
+      payload: { userName: owner.user.email, active: true },
+    });
+    assert.strictEqual(response.statusCode, 409);
   });
 
   it("does not expose another organization's SAML connection metadata", async () => {
@@ -905,12 +931,33 @@ describe("Phase 1 authorization security regressions", () => {
     assert.strictEqual((await app.inject(acs)).statusCode, 400);
   });
 
+  it("does not auto-link generic OAuth accounts by email or unverified claims", async () => {
+    const existing = await createActor("owner", "generic-oauth-existing-owner");
+    await assert.rejects(() => upsertOAuthUser({ sub: "unverified-sub", email: existing.user.email }, "google"));
+    await assert.rejects(() => upsertOAuthUser({ sub: "verified-sub", email: existing.user.email, emailVerified: true }, "google"));
+  });
+
   it("does not auto-link an existing global user through enterprise SSO", async () => {
     const owner = await createActor("owner", "enterprise-sso-existing-owner");
     const organization = await createOrganization("enterprise-sso-existing-boundary", []);
-    await assert.rejects(() => provisionEnterpriseUser(organization.id, { email: owner.user.email }));
+    await assert.rejects(() =>
+      provisionEnterpriseUser(
+        organization.id,
+        { email: owner.user.email, externalId: "attacker-controlled-subject" },
+        { id: crypto.randomUUID(), type: "saml" }
+      )
+    );
     const membership = await organizationRepository.findMembership(organization.id, owner.user.id);
     assert.strictEqual(membership, undefined);
+
+    await organizationRepository.addMembership({ orgId: organization.id, userId: owner.user.id, role: "member" });
+    await assert.rejects(() =>
+      provisionEnterpriseUser(
+        organization.id,
+        { email: owner.user.email, externalId: "attacker-controlled-subject" },
+        { id: crypto.randomUUID(), type: "oidc" }
+      )
+    );
   });
 
   it("enforces organization permissions inside direct SDK application services", async () => {
@@ -1002,6 +1049,28 @@ describe("Phase 1 authorization security regressions", () => {
     assert.strictEqual(response.statusCode, 403);
   });
 
+  it("rechecks workflow authorization at execution time", async () => {
+    const owner = await createActor("user", "workflow-execution-owner");
+    const organization = await createOrganization("workflow-execution-boundary", [
+      { userId: owner.user.id, role: "owner" },
+    ]);
+    const [workflow] = await db
+      .insert(workflows)
+      .values({ orgId: organization.id, name: "Execution authorization", trigger: "user_login", definition: { steps: [] } })
+      .returning();
+    const [run] = await db
+      .insert(workflowRuns)
+      .values({ workflowId: workflow.id, triggerEvent: "user_login", payload: { userId: owner.user.id }, status: "running" })
+      .returning();
+    await db
+      .update(orgMemberships)
+      .set({ role: "member" })
+      .where(and(eq(orgMemberships.orgId, organization.id), eq(orgMemberships.userId, owner.user.id)));
+    await executeRunById(run.id, workflow.id);
+    const [stored] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id));
+    assert.strictEqual(stored?.status, "blocked");
+  });
+
   it("fails closed for malformed persisted workflow definitions", async () => {
     const [workflow] = await db
       .insert(workflows)
@@ -1013,6 +1082,7 @@ describe("Phase 1 authorization security regressions", () => {
       timestamp: new Date(),
       payload: { userId: crypto.randomUUID() },
     });
+    assert.ok(run);
     assert.strictEqual(run.status, "blocked");
     const stored = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id));
     assert.strictEqual(stored[0]?.status, "blocked");

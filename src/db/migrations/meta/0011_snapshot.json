@@ -1,6 +1,6 @@
 {
-  "id": "171524db-af86-4f10-ab58-19476ba211e5",
-  "prevId": "610c299f-8b18-434d-b587-47d28742031d",
+  "id": "fc6875a6-31ab-4607-bda7-9b5666a28860",
+  "prevId": "6e994071-f35c-42f7-a16e-042751de3174",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1886,7 +1886,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -2350,6 +2350,126 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.sso_identity_links": {
+      "name": "sso_identity_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "connection_type": {
+          "name": "connection_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "org_id": {
+          "name": "org_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_sub": {
+          "name": "external_sub",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "sso_identity_links_user_idx": {
+          "name": "sso_identity_links_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sso_identity_links_org_id_organizations_id_fk": {
+          "name": "sso_identity_links_org_id_organizations_id_fk",
+          "tableFrom": "sso_identity_links",
+          "tableTo": "organizations",
+          "columnsFrom": [
+            "org_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "sso_identity_links_user_id_users_id_fk": {
+          "name": "sso_identity_links_user_id_users_id_fk",
+          "tableFrom": "sso_identity_links",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "sso_identity_links_connection_sub_unique": {
+          "name": "sso_identity_links_connection_sub_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "connection_type",
+            "connection_id",
+            "external_sub"
+          ]
+        },
+        "sso_identity_links_user_connection_unique": {
+          "name": "sso_identity_links_user_connection_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "org_id",
+            "user_id",
+            "connection_type",
+            "connection_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -2877,7 +2997,15 @@
           "name": "is_active",
           "type": "boolean",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": true
+        },
+        "account_review_required": {
+          "name": "account_review_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "default_org_id": {
           "name": "default_org_id",
