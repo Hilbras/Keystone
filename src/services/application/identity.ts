@@ -1,6 +1,8 @@
 import type { IdentityDomainService } from "../domain/identity.js";
 import type { User } from "../../db/schema.js";
 import type { Result } from "../../lib/result.js";
+import type { PlatformRole } from "../domain/authorization.js";
+import type { EventContext } from "../events/types.js";
 
 export class IdentityApplicationService {
   constructor(private readonly domain: IdentityDomainService) {}
@@ -19,9 +21,18 @@ export class IdentityApplicationService {
 
   async updateUserProfile(
     userId: string,
-    updates: Partial<{ name: string; username: string; role: string; emailVerified: boolean }>
+    updates: Partial<{ name: string; username: string; emailVerified: boolean }>
   ): Promise<Result<User>> {
     return this.domain.updateUserProfile(userId, updates);
+  }
+
+  async updatePlatformRole(
+    actorId: string,
+    targetUserId: string,
+    role: PlatformRole,
+    context?: EventContext
+  ): Promise<Result<User>> {
+    return this.domain.updatePlatformRole(actorId, targetUserId, role, context);
   }
 
   async deactivate(userId: string): Promise<Result<void>> {

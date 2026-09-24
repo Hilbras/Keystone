@@ -1,6 +1,4 @@
-import { createOrganization, addOrgMembership, findOrganizationBySlug } from "../organizations.js";
-import { findApplicationByClientId } from "../applications.js";
-import { updateUser } from "../users.js";
+import { createOrganization, findOrganizationBySlug } from "../organizations.js";
 import { queue } from "../queue/index.js";
 import { getPluginWorkflowStep } from "../plugins/registry.js";
 import type { EmailMessage } from "../email.js";
@@ -18,6 +16,12 @@ export interface WorkflowStep {
   [key: string]: unknown;
 }
 
+export const BLOCKED_WORKFLOW_STEP_TYPES = new Set(["assign_role", "add_membership", "add_app_membership"]);
+
+export function isBlockedWorkflowStep(step: WorkflowStep): boolean {
+  return BLOCKED_WORKFLOW_STEP_TYPES.has(step.type);
+}
+
 export interface StepResult {
   output?: Record<string, string>;
   error?: string;
@@ -33,16 +37,11 @@ function interpolate(template: string, context: StepContext): string {
 export async function executeStep(step: WorkflowStep, context: StepContext): Promise<StepResult> {
   const log = (msg: string) => console.log(`[workflow] step ${step.type}: ${msg}`);
 
-  switch (step.type) {
-    case "assign_role": {
-      const role = String(step.role || "user");
-      if (context.user) {
-        await updateUser(context.user.id, { role });
-        log(`assigned role ${role} to ${context.user.id}`);
-      }
-      return {};
-    }
+  if (isBlockedWorkflowStep(step)) {
+    return { error: `workflow step ${step.type} is not allowed for tenant workflows` };
+  }
 
+  switch (step.type) {
     case "create_organization": {
       const nameTemplate = String(step.orgName || "{{username}}-personal");
       const name = interpolate(nameTemplate, context);
@@ -55,30 +54,6 @@ export async function executeStep(step: WorkflowStep, context: StepContext): Pro
       const org = await createOrganization({ name, slug });
       log(`created organization ${org.id}`);
       return { output: { [String(step.outputKey || "orgId")]: org.id } };
-    }
-
-    case "add_membership": {
-      const userId = context.user?.id;
-      if (!userId) return { error: "missing user" };
-      const orgRef = String(step.orgRef || "personalOrgId");
-      const orgId = context.outputs[orgRef];
-      if (!orgId) return { error: `missing output ${orgRef}` };
-      const role = String(step.role || "member");
-      await addOrgMembership({ orgId, userId, role: role as import("../organizations.js").OrgRole });
-      log(`added membership ${userId} -> ${orgId} as ${role}`);
-      return {};
-    }
-
-    case "add_app_membership": {
-      const userId = context.user?.id;
-      if (!userId) return { error: "missing user" };
-      const clientId = String(step.clientId || context.payload.client_id || "");
-      if (!clientId) return { error: "missing client_id" };
-      const app = await findApplicationByClientId(clientId);
-      if (!app) return { error: "application not found" };
-      await addOrgMembership({ orgId: app.orgId, userId, role: "member" });
-      log(`added app membership ${userId} -> ${app.orgId}`);
-      return {};
     }
 
     case "send_email": {

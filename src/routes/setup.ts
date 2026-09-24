@@ -271,7 +271,9 @@ export default async function setupRoutes(app: FastifyInstance) {
     const [existing] = await db.select().from(users).where(eq(users.email, body.email)).limit(1);
 
     let ownerUser;
+    let previousRole: string;
     if (existing) {
+      previousRole = existing.role;
       await db.update(users).set({ role: "owner" }).where(eq(users.id, existing.id));
       ownerUser = existing;
     } else {
@@ -293,9 +295,17 @@ export default async function setupRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: result.error.message });
       }
 
+      previousRole = result.data.user.role;
       await db.update(users).set({ role: "owner" }).where(eq(users.id, result.data.user.id));
       ownerUser = result.data.user;
     }
+
+    await request.audit("platform_role_changed", {
+      targetUserId: ownerUser.id,
+      previousRole,
+      newRole: "owner",
+      action: "setup_bootstrap",
+    });
 
     try {
       await fs.writeFile(SETUP_MARKER_PATH, new Date().toISOString(), "utf-8");

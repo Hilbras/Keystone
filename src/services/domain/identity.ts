@@ -5,6 +5,8 @@ import { createTokenSet } from "../tokens.js";
 import { emit } from "../events/bus.js";
 import { getFederationAuthorizeUrl as getFederationAuthorizeUrlService, completeFederationLogin as completeFederationLoginService } from "../federation.js";
 import { ok, err, type Result } from "../../lib/result.js";
+import { canManagePlatformRole, isPlatformRole, type PlatformRole } from "./authorization.js";
+import type { EventContext } from "../events/types.js";
 
 export class IdentityDomainService {
   constructor(
@@ -45,10 +47,55 @@ export class IdentityDomainService {
 
   async updateUserProfile(
     userId: string,
-    updates: Partial<{ name: string; username: string; role: string; emailVerified: boolean }>
+    updates: Partial<{ name: string; username: string; emailVerified: boolean }>
   ): Promise<Result<User>> {
     const updated = await this.users.update(userId, updates);
     if (!updated) return err({ code: "USER_NOT_FOUND", message: "User not found", statusCode: 404 });
+    return ok(updated);
+  }
+
+  async updatePlatformRole(
+    actorId: string,
+    targetUserId: string,
+    role: PlatformRole,
+    context?: EventContext
+  ): Promise<Result<User>> {
+    if (!isPlatformRole(role)) {
+      return err({ code: "INVALID_PLATFORM_ROLE", message: "Invalid platform role", statusCode: 400 });
+    }
+
+    const actor = await this.users.findById(actorId);
+    if (!actor) return err({ code: "USER_NOT_FOUND", message: "Actor not found", statusCode: 404 });
+    if (!canManagePlatformRole(actor.role, role)) {
+      return err({ code: "FORBIDDEN", message: "Only platform owners can change platform roles", statusCode: 403 });
+    }
+
+    const target = await this.users.findById(targetUserId);
+    if (!target) return err({ code: "USER_NOT_FOUND", message: "User not found", statusCode: 404 });
+    if (target.role === "owner" && role === "user" && (await this.users.countByRole("owner")) <= 1) {
+      return err({ code: "LAST_PLATFORM_OWNER", message: "Cannot demote the last platform owner", statusCode: 400 });
+    }
+
+    const updated = await this.users.updateRole(targetUserId, role);
+    if (!updated) return err({ code: "USER_NOT_FOUND", message: "User not found", statusCode: 404 });
+
+    await emit({
+      type: "platform_role_changed",
+      payload: {
+        userId: actorId,
+        orgId: target.defaultOrgId ?? undefined,
+        requestId: context?.requestId,
+        ip: context?.ip,
+        userAgent: context?.userAgent,
+        appId: context?.appId,
+        metadata: {
+          targetUserId,
+          previousRole: target.role,
+          newRole: role,
+          action: "platform_role_changed",
+        },
+      },
+    });
     return ok(updated);
   }
 

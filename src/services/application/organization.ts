@@ -1,8 +1,19 @@
 import type { OrganizationDomainService } from "../domain/organization.js";
-import type { AuthorizationDomainService, OrgRole } from "../domain/authorization.js";
+import { canManageOrganizationRole, isOrganizationRole, type AuthorizationDomainService, type OrgRole } from "../domain/authorization.js";
 import type { IdentityDomainService } from "../domain/identity.js";
-import type { Organization, Application, OrgMembership } from "../../db/schema.js";
-import type { Result } from "../../lib/result.js";
+import type { Organization, Application, OrgMembership, User } from "../../db/schema.js";
+import { err, type Result } from "../../lib/result.js";
+import { emit } from "../events/bus.js";
+import type { EventContext } from "../events/types.js";
+
+function eventContext(context?: EventContext) {
+  return {
+    requestId: context?.requestId,
+    ip: context?.ip,
+    userAgent: context?.userAgent,
+    appId: context?.appId,
+  };
+}
 
 export class OrganizationApplicationService {
   constructor(
@@ -31,18 +42,108 @@ export class OrganizationApplicationService {
   async inviteMember(
     actorId: string,
     orgId: string,
-    input: { email: string; role: OrgRole }
-  ): Promise<Result<{ user: { id: string }; membership: OrgMembership }>> {
+    input: { email: string; role: OrgRole },
+    context?: EventContext
+  ): Promise<Result<{ user: User; membership: OrgMembership }>> {
     const roleCheck = await this.authorization.requireOrgRole(actorId, orgId, ["owner", "admin"]);
     if (!roleCheck.success) return roleCheck;
+    if (!isOrganizationRole(roleCheck.data.role) || !canManageOrganizationRole(roleCheck.data.role, roleCheck.data.role, input.role)) {
+      return { success: false, error: { code: "INSUFFICIENT_ROLE", message: "Only organization owners can grant the owner role", statusCode: 403 } };
+    }
 
     const userResult = await this.identity.upsertInvitedUser({ email: input.email });
     if (!userResult.success) return userResult;
 
+    const previousMembership = await this.domain.getMembership(orgId, userResult.data.id);
     const membershipResult = await this.domain.addOrgMembership({ orgId, userId: userResult.data.id, role: input.role });
     if (!membershipResult.success) return membershipResult;
 
+    await emit({
+      type: "organization_member_invited",
+      payload: {
+        userId: actorId,
+        orgId,
+        ...eventContext(context),
+        metadata: {
+          targetUserId: userResult.data.id,
+          previousRole: previousMembership.success ? previousMembership.data.role : null,
+          newRole: membershipResult.data.role,
+          action: "organization_member_invited",
+        },
+      },
+    });
+
     return { success: true, data: { user: userResult.data, membership: membershipResult.data } };
+  }
+
+  async updateMemberRole(
+    actorId: string,
+    orgId: string,
+    targetUserId: string,
+    role: OrgRole,
+    context?: EventContext
+  ): Promise<Result<OrgMembership>> {
+    const actorResult = await this.authorization.requireOrgRole(actorId, orgId, ["owner", "admin"]);
+    if (!actorResult.success) return actorResult;
+
+    const targetResult = await this.domain.getMembership(orgId, targetUserId);
+    if (!targetResult.success) return targetResult;
+    if (!isOrganizationRole(actorResult.data.role) || !isOrganizationRole(targetResult.data.role)) {
+      return err({ code: "INVALID_ORGANIZATION_ROLE", message: "Invalid organization role", statusCode: 403 });
+    }
+    if (!canManageOrganizationRole(actorResult.data.role, targetResult.data.role, role)) {
+      return err({ code: "INSUFFICIENT_ROLE", message: "Insufficient organization role", statusCode: 403 });
+    }
+
+    const result = await this.domain.updateMembershipRole(orgId, targetUserId, role);
+    if (!result.success) return result;
+    await emit({
+      type: "organization_member_role_updated",
+      payload: {
+        userId: actorId,
+        orgId,
+        ...eventContext(context),
+        metadata: {
+          targetUserId,
+          previousRole: targetResult.data.role,
+          newRole: result.data.role,
+          action: "organization_member_role_updated",
+        },
+      },
+    });
+    return result;
+  }
+
+  async removeMember(actorId: string, orgId: string, targetUserId: string, context?: EventContext): Promise<Result<{ success: boolean }>> {
+    const actorResult = await this.authorization.requireOrgRole(actorId, orgId, ["owner", "admin"]);
+    if (!actorResult.success) return actorResult;
+
+    const targetResult = await this.domain.getMembership(orgId, targetUserId);
+    if (!targetResult.success) return targetResult;
+    if (!isOrganizationRole(actorResult.data.role) || !isOrganizationRole(targetResult.data.role)) {
+      return err({ code: "INVALID_ORGANIZATION_ROLE", message: "Invalid organization role", statusCode: 403 });
+    }
+    if (!canManageOrganizationRole(actorResult.data.role, targetResult.data.role, "member")) {
+      return err({ code: "INSUFFICIENT_ROLE", message: "Insufficient organization role", statusCode: 403 });
+    }
+
+    const result = await this.domain.removeOrgMember(orgId, targetUserId);
+    if (!result.success) return result;
+    await emit({
+      type: "organization_member_removed",
+      payload: {
+        userId: actorId,
+        orgId,
+        ...eventContext(context),
+        metadata: {
+          targetUserId,
+          previousRole: targetResult.data.role,
+          newRole: null,
+          action: "organization_member_removed",
+        },
+      },
+    });
+    return result;
   }
 
   async createApplication(

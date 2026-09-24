@@ -5,6 +5,7 @@ import type {
   OrganizationApplicationService,
 } from "../services/application/index.js";
 import type { AuthorizationDomainService } from "../services/domain/authorization.js";
+import type { EventContext } from "../services/events/types.js";
 import { getContainer } from "../container.js";
 import { buildApplicationServices } from "../di.js";
 
@@ -53,8 +54,12 @@ class SdkIdentityClient implements IdentitySdk {
     return this.app.upsertInvitedUser(input);
   }
 
-  updateUserProfile(userId: string, updates: Partial<{ name: string; username: string; role: string; emailVerified: boolean }>) {
+  updateUserProfile(userId: string, updates: Partial<{ name: string; username: string; emailVerified: boolean }>) {
     return this.app.updateUserProfile(userId, updates);
+  }
+
+  updatePlatformRole(actorId: string, targetUserId: string, role: "owner" | "user", context?: EventContext) {
+    return this.app.updatePlatformRole(actorId, targetUserId, role, context);
   }
 
   deactivate(userId: string) {
@@ -93,8 +98,16 @@ class SdkOrganizationClient implements OrganizationSdk {
     return this.app.listUserOrganizations(userId);
   }
 
-  inviteMember(actorId: string, orgId: string, input: { email: string; role: "owner" | "admin" | "member" }) {
-    return this.app.inviteMember(actorId, orgId, input);
+  inviteMember(actorId: string, orgId: string, input: { email: string; role: "owner" | "admin" | "member" }, context?: EventContext) {
+    return this.app.inviteMember(actorId, orgId, input, context);
+  }
+
+  updateMemberRole(actorId: string, orgId: string, targetUserId: string, role: "owner" | "admin" | "member", context?: EventContext) {
+    return this.app.updateMemberRole(actorId, orgId, targetUserId, role, context);
+  }
+
+  removeMember(actorId: string, orgId: string, targetUserId: string, context?: EventContext) {
+    return this.app.removeMember(actorId, orgId, targetUserId, context);
   }
 
   createApplication(actorId: string, orgId: string, input: { name: string; redirectUris?: string[]; allowedOrigins?: string[] }) {

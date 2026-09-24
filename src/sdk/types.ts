@@ -1,5 +1,6 @@
 import type { User, Organization, Application, OrgMembership } from "../db/schema.js";
 import type { Result } from "../lib/result.js";
+import type { EventContext } from "../services/events/types.js";
 
 export interface AuthResponse {
   user: User;
@@ -21,7 +22,8 @@ export interface IdentitySdk {
   findUser(id: string): Promise<Result<User>>;
   findUserByEmail(email: string): Promise<Result<User>>;
   upsertInvitedUser(input: { email: string; name?: string; username?: string }): Promise<Result<User>>;
-  updateUserProfile(userId: string, updates: Partial<{ name: string; username: string; role: string; emailVerified: boolean }>): Promise<Result<User>>;
+  updateUserProfile(userId: string, updates: Partial<{ name: string; username: string; emailVerified: boolean }>): Promise<Result<User>>;
+  updatePlatformRole(actorId: string, targetUserId: string, role: "owner" | "user", context?: EventContext): Promise<Result<User>>;
   deactivate(userId: string): Promise<Result<void>>;
   listOrganizationUsers(orgId: string): Promise<User[]>;
   linkUserIdentity(userId: string, providerId: string, providerType: string, externalSub: string, email?: string): Promise<Result<void>>;
@@ -33,7 +35,9 @@ export interface OrganizationSdk {
   createOrganization(userId: string, input: { name: string; slug?: string; plan?: string }): Promise<Result<Organization>>;
   getOrganization(userId: string, orgId: string): Promise<Result<Organization>>;
   listUserOrganizations(userId: string): Promise<Organization[]>;
-  inviteMember(actorId: string, orgId: string, input: { email: string; role: "owner" | "admin" | "member" }): Promise<Result<{ user: { id: string }; membership: OrgMembership }>>;
+  inviteMember(actorId: string, orgId: string, input: { email: string; role: "owner" | "admin" | "member" }, context?: EventContext): Promise<Result<{ user: User; membership: OrgMembership }>>;
+  updateMemberRole(actorId: string, orgId: string, targetUserId: string, role: "owner" | "admin" | "member", context?: EventContext): Promise<Result<OrgMembership>>;
+  removeMember(actorId: string, orgId: string, targetUserId: string, context?: EventContext): Promise<Result<{ success: boolean }>>;
   createApplication(actorId: string, orgId: string, input: { name: string; redirectUris?: string[]; allowedOrigins?: string[] }): Promise<Result<Application & { clientSecret: string }>>;
   listOrganizationApplications(actorId: string, orgId: string): Promise<Result<Application[]>>;
   updateApplication(actorId: string, orgId: string, appId: string, updates: Partial<{ name: string; redirectUris: string[]; allowedOrigins: string[]; allowedIps: string[]; blockedIps: string[]; isActive: boolean; branding: Record<string, unknown> }>): Promise<Result<Application>>;

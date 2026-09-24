@@ -21,6 +21,10 @@ const DEFAULT_PERMISSIONS = [
   { resource: "api_key", action: "create" },
   { resource: "api_key", action: "revoke" },
   { resource: "audit_log", action: "read" },
+  { resource: "sso_connection", action: "read" },
+  { resource: "sso_connection", action: "manage" },
+  { resource: "billing", action: "read" },
+  { resource: "billing", action: "update" },
 ];
 
 const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
@@ -40,12 +44,17 @@ const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     "api_key:create",
     "api_key:revoke",
     "audit_log:read",
+    "sso_connection:read",
+    "sso_connection:manage",
+    "billing:read",
+    "billing:update",
   ],
   member: [
     "organization:read",
     "application:read",
     "service_account:read",
     "api_key:read",
+    "sso_connection:read",
   ],
   viewer: ["organization:read", "application:read", "audit_log:read"],
 };

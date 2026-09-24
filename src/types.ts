@@ -52,6 +52,20 @@ export interface PublicUser {
   metadata: Record<string, unknown>;
 }
 
+const SENSITIVE_METADATA_KEY = /(password|secret|token|hash|private.?key|credential|otp|totp)/i;
+
+export function redactPublicMetadata(value: unknown, depth = 0): unknown {
+  if (depth > 5) return "[redacted]";
+  if (Array.isArray(value)) return value.map((item) => redactPublicMetadata(item, depth + 1));
+  if (!value || typeof value !== "object") return value;
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !SENSITIVE_METADATA_KEY.test(key))
+      .map(([key, nested]) => [key, redactPublicMetadata(nested, depth + 1)])
+  );
+}
+
 export function toPublicUser(user: User): PublicUser {
   return {
     id: user.id,
@@ -65,6 +79,6 @@ export function toPublicUser(user: User): PublicUser {
     plan: user.plan,
     role: user.role,
     provider: user.provider,
-    metadata: (user.metadata ?? {}) as Record<string, unknown>,
+    metadata: redactPublicMetadata(user.metadata ?? {}) as Record<string, unknown>,
   };
 }

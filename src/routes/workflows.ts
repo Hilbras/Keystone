@@ -4,18 +4,24 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { workflows, orgMemberships } from "../db/schema.js";
 import { registerWorkflow, listWorkflowRuns } from "../services/workflows/engine.js";
+import { isBlockedWorkflowStep } from "../services/workflows/steps.js";
 
-const WorkflowStepSchema = z.object({
-  type: z.string(),
-  name: z.string().optional(),
-});
+const WorkflowStepSchema = z
+  .object({
+    type: z.string(),
+    name: z.string().optional(),
+  })
+  .passthrough()
+  .refine((step) => !isBlockedWorkflowStep(step), {
+    message: "This workflow step is not allowed for organization workflows",
+  });
 
 const CreateWorkflowSchema = z.object({
   orgId: z.string().uuid(),
   name: z.string().min(1).max(255),
   trigger: z.enum(["user_registered", "user_login", "organization_created"]),
   definition: z.object({
-    steps: z.array(WorkflowStepSchema.and(z.record(z.string(), z.unknown()))),
+    steps: z.array(WorkflowStepSchema),
   }),
   isActive: z.boolean().optional(),
 });
@@ -63,7 +69,11 @@ export default async function workflowRoutes(app: FastifyInstance) {
   });
 
   app.post("/workflows", { preHandler: [app.authenticate] }, async (request, reply) => {
-    const body = CreateWorkflowSchema.parse(request.body);
+    const parsed = CreateWorkflowSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid workflow", details: parsed.error.issues });
+    }
+    const body = parsed.data;
 
     // Verify org membership
     const userId = request.user!.id;

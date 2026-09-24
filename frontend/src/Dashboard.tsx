@@ -296,7 +296,13 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     loadTab({ data: null, loading: false, error: null }, setOidcConnections, () => api.getOidcConnections(selectedOrgId));
     loadTab({ data: null, loading: false, error: null }, setScimConfig, () => api.getScimConfig(selectedOrgId));
   }, [selectedOrgId]);
-  const refreshWorkflows = useCallback(() => loadTab({ data: null, loading: false, error: null }, setWorkflows, api.getWorkflows), []);
+  const refreshWorkflows = useCallback(() => {
+    if (!selectedOrgId) {
+      setWorkflows({ data: null, loading: false, error: null });
+      return;
+    }
+    loadTab({ data: null, loading: false, error: null }, setWorkflows, () => api.getWorkflows(selectedOrgId));
+  }, [selectedOrgId]);
   const refreshBilling = useCallback(() => {
     loadTab({ data: null, loading: false, error: null }, setPlans, api.getPlans);
     if (selectedOrgId) {
@@ -342,9 +348,10 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     refreshEnterpriseSso();
   }, [selectedOrgId, refreshEnterpriseSso]);
   const handleCreateWorkflow = useCallback(async (input: { name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> } }) => {
-    await api.createWorkflow(input);
+    if (!selectedOrgId) return;
+    await api.createWorkflow(selectedOrgId, input);
     refreshWorkflows();
-  }, [refreshWorkflows]);
+  }, [selectedOrgId, refreshWorkflows]);
   const handleDeleteWorkflow = useCallback(async (id: string) => {
     await api.deleteWorkflow(id);
     if (selectedWorkflowId === id) setSelectedWorkflowId(null);
@@ -410,14 +417,14 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
         refreshEnterpriseSso();
         break;
       case "workflows":
-        loadTab(workflows, setWorkflows, api.getWorkflows);
+        refreshWorkflows();
         break;
       case "billing":
         refreshBilling();
         break;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, token]);
+  }, [activeTab, token, refreshWorkflows, selectedOrgId]);
 
   if (!token) {
     return <LoginForm onLogin={() => window.location.reload()} />;

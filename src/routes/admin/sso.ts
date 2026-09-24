@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { requireAuthAndRole } from "./helpers.js";
+import { requireOrganizationRole } from "./helpers.js";
 import { config } from "../../config.js";
 import { escapeXml } from "../helpers.js";
 
@@ -30,8 +30,8 @@ const OidcConnectionSchema = z.object({
 });
 
 export default async function ssoRoutes(app: FastifyInstance) {
-  const requireSsoManager = requireAuthAndRole(["owner", "admin"], { resource: "sso_connection", action: "manage" });
-  const requireSsoReader = requireAuthAndRole(["owner", "admin", "member"], { resource: "sso_connection", action: "read" });
+  const requireSsoManager = requireOrganizationRole(["owner", "admin"], { resource: "sso_connection", action: "manage" });
+  const requireSsoReader = requireOrganizationRole(["owner", "admin", "member"], { resource: "sso_connection", action: "read" });
 
   // SAML connections.
   app.get(
@@ -60,8 +60,8 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/saml-connections/:connectionId/metadata",
     { preHandler: [requireSsoReader] },
     async (request, reply) => {
-      const { connectionId } = request.params as { connectionId: string };
-      const connection = await app.container.samlConnectionRepository.findById(connectionId);
+      const { id, connectionId } = request.params as { id: string; connectionId: string };
+      const connection = await app.container.samlConnectionRepository.findByIdAndOrgId(connectionId, id);
       if (!connection) return reply.status(404).send({ error: "Connection not found" });
 
       const metadata = `<?xml version="1.0" encoding="UTF-8"?>

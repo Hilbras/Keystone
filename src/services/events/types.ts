@@ -1,3 +1,10 @@
+export interface EventContext {
+  requestId?: string;
+  ip?: string;
+  userAgent?: string;
+  appId?: string;
+}
+
 export interface EventPayload {
   userId?: string;
   orgId?: string;
@@ -57,6 +64,7 @@ export type AuditEventType =
   | "organization_member_role_updated"
   | "permission_created"
   | "permission_deleted"
+  | "permission_role_updated"
   | "application_created"
   | "application_updated"
   | "magic_link_sent"
@@ -88,6 +96,7 @@ export type AuditEventType =
   | "workflow_created"
   | "workflow_deleted"
   | "platform_user_updated"
+  | "platform_role_changed"
   | "platform_user_deactivated"
   | "platform_signing_key_rotated"
   | "platform_plugin_unregistered"

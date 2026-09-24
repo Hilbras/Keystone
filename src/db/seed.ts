@@ -84,15 +84,19 @@ async function seed() {
           name: username,
           provider: "password",
           emailVerified: true,
+          role: "owner",
           passwordHash: await hashPassword(ownerPassword),
         })
         .returning();
-      console.log(`[seed] created owner user ${owner.id}`);
+      console.log(`[seed] created owner user ${owner.id} (password not logged)`);
       if (!process.env.KEYSTONE_SEED_OWNER_PASSWORD) {
-        console.log(`[seed] generated owner password: ${ownerPassword}`);
+        console.log("[seed] generated owner password was not displayed; configure KEYSTONE_SEED_OWNER_PASSWORD for a known credential");
       }
     } else {
       console.log(`[seed] owner user already exists`);
+      if (owner.role !== "owner") {
+        await db.update(users).set({ role: "owner" }).where(eq(users.id, owner.id));
+      }
     }
 
     const existingMembership = await db
@@ -115,17 +119,11 @@ async function seed() {
   const [existingWorkflow] = await db.select().from(workflows).where(eq(workflows.trigger, "user_registered")).limit(1);
   if (!existingWorkflow) {
     await db.insert(workflows).values({
-      orgId: hilbrasOrg.id,
+      orgId: null,
       name: "Default signup",
       trigger: "user_registered",
       definition: {
-        steps: [
-          { type: "assign_role", role: "user" },
-          { type: "create_organization", orgName: "{{username}}-personal", slug: "{{username}}-personal", outputKey: "personalOrgId" },
-          { type: "add_membership", orgRef: "personalOrgId", role: "owner" },
-          { type: "add_app_membership", role: "member" },
-          { type: "send_welcome_email" },
-        ],
+        steps: [{ type: "send_welcome_email" }],
       },
     });
     console.log("[seed] created default signup workflow");

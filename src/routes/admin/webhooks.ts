@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { requireOwner } from "./helpers.js";
+import { requirePlatformRole } from "./helpers.js";
 import { listEndpoints, createEndpoint, updateEndpoint, deleteEndpoint, rotateEndpointSecret, listDeliveries, retryDelivery } from "../../services/webhooks.js";
 
 const CreateWebhookSchema = z.object({
@@ -18,13 +18,13 @@ const UpdateWebhookSchema = z.object({
 });
 
 export default async function webhooksRoutes(app: FastifyInstance) {
-  app.get("/platform/webhooks", { preHandler: [requireOwner()] }, async (request) => {
+  app.get("/platform/webhooks", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
     const query = request.query as { appId?: string };
     const endpoints = await listEndpoints(query.appId);
     return { endpoints: endpoints.map(({ secret: _secret, ...rest }) => rest) };
   });
 
-  app.post("/platform/webhooks", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.post("/platform/webhooks", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const body = CreateWebhookSchema.parse(request.body);
     const endpoint = await createEndpoint(body);
     await request.audit("platform_webhook_created", { endpointId: endpoint.id, url: endpoint.url });
@@ -32,7 +32,7 @@ export default async function webhooksRoutes(app: FastifyInstance) {
     return reply.status(201).send({ endpoint: rest, signingSecret: endpoint.signingSecret });
   });
 
-  app.patch("/platform/webhooks/:id", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.patch("/platform/webhooks/:id", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = UpdateWebhookSchema.parse(request.body);
     const updated = await updateEndpoint(id, body);
@@ -42,7 +42,7 @@ export default async function webhooksRoutes(app: FastifyInstance) {
     return { endpoint: rest };
   });
 
-  app.delete("/platform/webhooks/:id", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.delete("/platform/webhooks/:id", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const deleted = await deleteEndpoint(id);
     if (!deleted) return reply.status(404).send({ error: "Webhook not found" });
@@ -50,7 +50,7 @@ export default async function webhooksRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.post("/platform/webhooks/:id/rotate-secret", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.post("/platform/webhooks/:id/rotate-secret", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const result = await rotateEndpointSecret(id);
     if (!result) return reply.status(404).send({ error: "Webhook not found" });
@@ -58,13 +58,13 @@ export default async function webhooksRoutes(app: FastifyInstance) {
     return { signingSecret: result.signingSecret };
   });
 
-  app.get("/platform/webhooks/:id/deliveries", { preHandler: [requireOwner()] }, async (request) => {
+  app.get("/platform/webhooks/:id/deliveries", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
     const { id } = request.params as { id: string };
     const deliveries = await listDeliveries(id);
     return { deliveries };
   });
 
-  app.post("/platform/webhook-deliveries/:id/retry", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.post("/platform/webhook-deliveries/:id/retry", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const ok = await retryDelivery(id);
     if (!ok) return reply.status(400).send({ error: "Delivery is not in a failed state" });

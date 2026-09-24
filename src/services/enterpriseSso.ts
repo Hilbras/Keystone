@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, orgMemberships, type Organization } from "../db/schema.js";
 import { slugifyUsername, ensureUniqueUsername } from "./users.js";
@@ -38,15 +38,18 @@ export async function provisionEnterpriseUser(
   const [existingMembership] = await db
     .select()
     .from(orgMemberships)
-    .where(eq(orgMemberships.userId, user.id))
+    .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, user.id)))
     .limit(1);
 
   if (!existingMembership) {
-    await db.insert(orgMemberships).values({
-      orgId,
-      userId: user.id,
-      role: defaultRole,
-    });
+    await db
+      .insert(orgMemberships)
+      .values({
+        orgId,
+        userId: user.id,
+        role: defaultRole,
+      })
+      .onConflictDoNothing({ target: [orgMemberships.orgId, orgMemberships.userId] });
   }
 
   return user;

@@ -5,11 +5,21 @@ import { findUserById } from "../users.js";
 import { subscribe } from "../events/bus.js";
 import type { KeystoneEvent } from "../events/types.js";
 import { queue } from "../queue/index.js";
-import { executeStep, type WorkflowStep } from "./steps.js";
+import { executeStep, isBlockedWorkflowStep, type WorkflowStep } from "./steps.js";
 
 export interface WorkflowDefinition {
   steps: WorkflowStep[];
   [key: string]: unknown;
+}
+
+function readWorkflowSteps(definition: unknown): WorkflowStep[] | null {
+  if (!definition || typeof definition !== "object") return null;
+  const steps = (definition as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return null;
+  if (!steps.every((step) => step && typeof step === "object" && typeof (step as { type?: unknown }).type === "string")) {
+    return null;
+  }
+  return steps as WorkflowStep[];
 }
 
 let loaded = false;
@@ -36,6 +46,11 @@ export async function registerWorkflow(input: {
   trigger: string;
   definition: WorkflowDefinition;
 }): Promise<Workflow> {
+  const steps = readWorkflowSteps(input.definition);
+  if (!steps || steps.some(isBlockedWorkflowStep)) {
+    throw new Error("Workflow contains an invalid or blocked step");
+  }
+
   const [workflow] = await db
     .insert(workflows)
     .values({
@@ -52,16 +67,31 @@ export async function registerWorkflow(input: {
 }
 
 export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEvent): Promise<WorkflowRun> {
+  const definition = (workflow.definition ?? { steps: [] }) as WorkflowDefinition;
+  const steps = readWorkflowSteps(definition);
+  const eventOrgId = typeof event.payload.orgId === "string" ? event.payload.orgId : undefined;
+  const hasBlockedStep = steps === null || steps.some(isBlockedWorkflowStep);
+  const isOutOfScope = Boolean(workflow.orgId && eventOrgId !== workflow.orgId);
+  const blockedReason = hasBlockedStep
+    ? "Workflow contains a blocked authorization step"
+    : isOutOfScope
+      ? "Workflow event does not belong to the workflow organization"
+      : undefined;
+  const now = new Date();
   const [run] = await db
     .insert(workflowRuns)
     .values({
       workflowId: workflow.id,
       triggerEvent: event.type,
       payload: event.payload as Record<string, unknown>,
-      status: "running",
-      startedAt: new Date(),
+      status: blockedReason ? "blocked" : "running",
+      startedAt: now,
+      finishedAt: blockedReason ? now : null,
+      log: blockedReason ? [{ status: "blocked", error: blockedReason }] : [],
     })
     .returning();
+
+  if (blockedReason) return run;
 
   // Dispatch to the background queue so the HTTP response is not blocked.
   await queue.enqueue({
@@ -85,12 +115,24 @@ export async function executeRunById(runId: string, workflowId: string): Promise
 async function executeRun(run: WorkflowRun, workflow: Workflow): Promise<void> {
   const definition = (workflow.definition ?? { steps: [] }) as WorkflowDefinition;
   const payload = (run.payload ?? {}) as Record<string, unknown>;
+  const steps = readWorkflowSteps(definition);
+  if (!steps || steps.some(isBlockedWorkflowStep)) {
+    await db
+      .update(workflowRuns)
+      .set({
+        status: "blocked",
+        finishedAt: new Date(),
+        log: [{ status: "blocked", error: "Workflow contains an invalid or blocked authorization step" }],
+      })
+      .where(eq(workflowRuns.id, run.id));
+    return;
+  }
   const userId = payload.userId as string | undefined;
   const user = userId ? await findUserById(userId) : undefined;
   const outputs: Record<string, string> = {};
   const log: Array<{ step: string; status: string; output?: Record<string, string>; error?: string }> = [];
 
-  for (const step of definition.steps ?? []) {
+  for (const step of steps) {
     const result = await executeStep(step, { payload, outputs, user });
     if (result.output) {
       Object.assign(outputs, result.output);

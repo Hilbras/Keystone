@@ -2,8 +2,9 @@ import type { Organization, Application, OrgMembership } from "../../db/schema.j
 import type { OrganizationRepository, ApplicationRepository, UserRepository } from "../../repositories/types.js";
 import { emit } from "../events/bus.js";
 import { ok, err, type Result } from "../../lib/result.js";
+import { isOrganizationRole, type OrgRole } from "./authorization.js";
 
-export type OrgRole = "owner" | "admin" | "member";
+export type { OrgRole } from "./authorization.js";
 
 export class OrganizationDomainService {
   constructor(
@@ -34,6 +35,9 @@ export class OrganizationDomainService {
   }
 
   async addOrgMembership(input: { orgId: string; userId: string; role: OrgRole }): Promise<Result<OrgMembership>> {
+    if (!isOrganizationRole(input.role)) {
+      return err({ code: "INVALID_ORGANIZATION_ROLE", message: "Invalid organization role", statusCode: 400 });
+    }
     const membership = await this.organizations.addMembership(input);
     return ok(membership);
   }
@@ -49,6 +53,16 @@ export class OrganizationDomainService {
     userId: string,
     role: OrgRole
   ): Promise<Result<OrgMembership>> {
+    if (!isOrganizationRole(role)) {
+      return err({ code: "INVALID_ORGANIZATION_ROLE", message: "Invalid organization role", statusCode: 400 });
+    }
+
+    const current = await this.organizations.findMembership(orgId, userId);
+    if (!current) return err({ code: "MEMBERSHIP_NOT_FOUND", message: "Membership not found", statusCode: 404 });
+    if (current.role === "owner" && role !== "owner" && (await this.organizations.countOwners(orgId)) <= 1) {
+      return err({ code: "LAST_OWNER", message: "Cannot demote the last organization owner", statusCode: 400 });
+    }
+
     const updated = await this.organizations.updateMembershipRole(orgId, userId, role);
     if (!updated) return err({ code: "MEMBERSHIP_NOT_FOUND", message: "Membership not found", statusCode: 404 });
     return ok(updated);

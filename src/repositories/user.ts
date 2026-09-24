@@ -33,9 +33,28 @@ export class DrizzleUserRepository implements UserRepository {
   }
 
   async update(id: string, input: UpdateUserInput): Promise<User | undefined> {
+    const safeUpdates = {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.email !== undefined ? { email: input.email } : {}),
+      ...(input.username !== undefined ? { username: input.username } : {}),
+      ...(input.emailVerified !== undefined ? { emailVerified: input.emailVerified } : {}),
+      ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+      ...(input.phoneNumber !== undefined ? { phoneNumber: input.phoneNumber } : {}),
+      ...(input.phoneVerified !== undefined ? { phoneVerified: input.phoneVerified } : {}),
+      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    };
     const [updated] = await db
       .update(users)
-      .set({ ...input, updatedAt: sql`now()` })
+      .set({ ...safeUpdates, updatedAt: sql`now()` })
+      .where(eq(users.id, id))
+      .returning();
+    return updated;
+  }
+
+  async updateRole(id: string, role: "owner" | "user"): Promise<User | undefined> {
+    const [updated] = await db
+      .update(users)
+      .set({ role, updatedAt: sql`now()` })
       .where(eq(users.id, id))
       .returning();
     return updated;
@@ -97,6 +116,14 @@ export class DrizzleUserRepository implements UserRepository {
 
   async listAll(): Promise<User[]> {
     return db.select().from(users);
+  }
+
+  async countByRole(role: string): Promise<number> {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)`.mapWith(Number) })
+      .from(users)
+      .where(eq(users.role, role));
+    return row?.count ?? 0;
   }
 
   async setTotpSecret(userId: string, totpSecret: string): Promise<void> {

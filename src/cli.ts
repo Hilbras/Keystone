@@ -55,7 +55,7 @@ program
   .requiredOption("--password <password>", "User password")
   .option("--username <username>", "Username")
   .option("--name <name>", "Display name")
-  .option("--role <role>", "Role (e.g. owner, admin, member)", "member")
+  .option("--role <role>", "Platform role (owner or user)", "user")
   .action(
     async (options: {
       email: string;
@@ -66,9 +66,10 @@ program
     }) => {
       const { initializeContainer } = await import("./di.js");
       const { AuthenticationDomainService } = await import("./services/domain/index.js");
-      const { db } = await import("./db/index.js");
-      const { users } = await import("./db/schema.js");
-      const { eq } = await import("drizzle-orm");
+      if (options.role !== "owner" && options.role !== "user") {
+        console.error("Role must be either owner or user");
+        process.exit(1);
+      }
 
       const container = initializeContainer();
       const authService = new AuthenticationDomainService(container.userRepository, container.applicationRepository);
@@ -86,8 +87,8 @@ program
         process.exit(1);
       }
 
-      if (options.role !== "member") {
-        await db.update(users).set({ role: options.role }).where(eq(users.id, result.data.user.id));
+      if (options.role === "owner") {
+        await container.userRepository.updateRole(result.data.user.id, "owner");
       }
 
       console.log(`Created user ${result.data.user.id} (${result.data.user.email}) with role ${options.role}`);

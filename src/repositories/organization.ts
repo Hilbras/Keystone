@@ -5,6 +5,8 @@ import type { CreateOrganizationInput, OrganizationRepository } from "./types.js
 
 export type { OrganizationRepository } from "./types.js";
 
+const ORGANIZATION_ROLES = new Set(["owner", "admin", "member"]);
+
 export class DrizzleOrganizationRepository implements OrganizationRepository {
   private slugify(name: string): string {
     return name
@@ -74,7 +76,8 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
     return rows.map((r) => r.org);
   }
 
-  async addMembership(input: { orgId: string; userId: string; role: string }): Promise<OrgMembership> {
+  async addMembership(input: { orgId: string; userId: string; role: "owner" | "admin" | "member" }): Promise<OrgMembership> {
+    if (!ORGANIZATION_ROLES.has(input.role)) throw new Error("Invalid organization role");
     const [membership] = await db
       .insert(orgMemberships)
       .values({
@@ -107,8 +110,9 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
   async updateMembershipRole(
     orgId: string,
     userId: string,
-    role: string
+    role: "owner" | "admin" | "member"
   ): Promise<OrgMembership | undefined> {
+    if (!ORGANIZATION_ROLES.has(role)) throw new Error("Invalid organization role");
     const [updated] = await db
       .update(orgMemberships)
       .set({ role, updatedAt: sql`now()` })

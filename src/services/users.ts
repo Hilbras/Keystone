@@ -195,13 +195,17 @@ export async function updateUser(
   updates: Partial<{
     name: string;
     username: string;
-    role: string;
     emailVerified: boolean;
   }>
 ): Promise<User | undefined> {
+  const safeUpdates = {
+    ...(updates.name !== undefined ? { name: updates.name } : {}),
+    ...(updates.username !== undefined ? { username: updates.username } : {}),
+    ...(updates.emailVerified !== undefined ? { emailVerified: updates.emailVerified } : {}),
+  };
   const [updated] = await db
     .update(users)
-    .set({ ...updates, updatedAt: sql`now()` })
+    .set({ ...safeUpdates, updatedAt: sql`now()` })
     .where(eq(users.id, userId))
     .returning();
   return updated;

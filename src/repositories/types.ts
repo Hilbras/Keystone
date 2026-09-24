@@ -16,7 +16,6 @@ export interface UpdateUserInput {
   name?: string;
   email?: string;
   username?: string;
-  role?: string;
   emailVerified?: boolean;
   avatarUrl?: string | null;
   phoneNumber?: string | null;
@@ -29,9 +28,11 @@ export interface UserRepository {
   findByEmail(email: string): Promise<User | undefined>;
   create(input: CreateUserInput): Promise<User>;
   update(id: string, input: UpdateUserInput): Promise<User | undefined>;
+  updateRole(id: string, role: "owner" | "user"): Promise<User | undefined>;
   deactivate(id: string): Promise<void>;
   listByOrg(orgId: string): Promise<User[]>;
   listAll(): Promise<User[]>;
+  countByRole(role: string): Promise<number>;
   updateLastSeen(id: string): Promise<void>;
   ensureUniqueUsername(base: string, excludeId?: string): Promise<string>;
   recordFailedLogin(id: string): Promise<User | undefined>;
@@ -57,9 +58,9 @@ export interface OrganizationRepository {
   listAll(): Promise<Organization[]>;
   update(id: string, input: { name?: string; branding?: Record<string, unknown> }): Promise<Organization | undefined>;
   countMembers(orgId: string): Promise<number>;
-  addMembership(input: { orgId: string; userId: string; role: string }): Promise<OrgMembership>;
+  addMembership(input: { orgId: string; userId: string; role: "owner" | "admin" | "member" }): Promise<OrgMembership>;
   findMembership(orgId: string, userId: string): Promise<OrgMembership | undefined>;
-  updateMembershipRole(orgId: string, userId: string, role: string): Promise<OrgMembership | undefined>;
+  updateMembershipRole(orgId: string, userId: string, role: "owner" | "admin" | "member"): Promise<OrgMembership | undefined>;
   removeMembership(orgId: string, userId: string): Promise<boolean>;
   countOwners(orgId: string): Promise<number>;
   listMembers(orgId: string): Promise<{ membership: OrgMembership; user: { id: string; email: string; username: string; name: string | null; avatarUrl: string | null } }[]>;

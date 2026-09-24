@@ -8,7 +8,34 @@ export interface PermissionInput {
 }
 
 export { type PermissionInput as PermissionRequirement };
+export type PlatformRole = "owner" | "user";
 export type OrgRole = "owner" | "admin" | "member";
+
+export function isPlatformRole(role: string): role is PlatformRole {
+  return role === "owner" || role === "user";
+}
+
+export function isOrganizationRole(role: string): role is OrgRole {
+  return role === "owner" || role === "admin" || role === "member";
+}
+
+/**
+ * Organization admins may manage members and other admins, but only an
+ * organization owner may grant or modify the owner role.
+ */
+export function canManageOrganizationRole(
+  actorRole: OrgRole,
+  targetRole: OrgRole,
+  nextRole: OrgRole
+): boolean {
+  if (actorRole === "owner") return true;
+  if (actorRole !== "admin") return false;
+  return targetRole !== "owner" && nextRole !== "owner";
+}
+
+export function canManagePlatformRole(actorRole: string, nextRole: PlatformRole): boolean {
+  return actorRole === "owner" && isPlatformRole(nextRole);
+}
 
 export class AuthorizationDomainService {
   constructor(
@@ -37,7 +64,7 @@ export class AuthorizationDomainService {
     if (!membership) {
       return err({ code: "NOT_MEMBER", message: "Not a member of this organization", statusCode: 403 });
     }
-    if (!allowedRoles.includes(membership.role as OrgRole)) {
+    if (!isOrganizationRole(membership.role) || !allowedRoles.includes(membership.role)) {
       return err({ code: "INSUFFICIENT_ROLE", message: "Insufficient organization permissions", statusCode: 403 });
     }
     return ok(membership);

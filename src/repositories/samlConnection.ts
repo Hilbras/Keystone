@@ -16,6 +16,7 @@ export type SamlConnectionListItem = {
 export interface SamlConnectionRepository {
   listByOrgId(orgId: string): Promise<SamlConnectionListItem[]>;
   findById(id: string): Promise<SamlConnection | undefined>;
+  findByIdAndOrgId(id: string, orgId: string): Promise<SamlConnection | undefined>;
   findActiveById(id: string): Promise<SamlConnection | undefined>;
   create(input: {
     orgId: string;
@@ -50,6 +51,15 @@ export class DrizzleSamlConnectionRepository implements SamlConnectionRepository
 
   async findById(id: string) {
     const [connection] = await db.select().from(samlConnections).where(eq(samlConnections.id, id)).limit(1);
+    return connection;
+  }
+
+  async findByIdAndOrgId(id: string, orgId: string) {
+    const [connection] = await db
+      .select()
+      .from(samlConnections)
+      .where(and(eq(samlConnections.id, id), eq(samlConnections.orgId, orgId)))
+      .limit(1);
     return connection;
   }
 

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fastify, { type FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import swagger from "@fastify/swagger";
@@ -244,6 +245,16 @@ export async function buildApp() {
   await app.register(setupRoutes, { prefix: "/setup" });
 
   app.setErrorHandler((error: unknown, request, reply) => {
+    if (error instanceof ZodError || (error && typeof error === "object" && "issues" in error && Array.isArray((error as { issues?: unknown }).issues))) {
+      const issues = error instanceof ZodError
+        ? error.issues
+        : (error as { issues: Array<{ path?: Array<string | number>; message?: string }> }).issues;
+      return reply.status(400).send({
+        error: "Invalid input",
+        details: issues.map((issue) => ({ path: issue.path ?? [], message: issue.message ?? "Invalid value" })),
+      });
+    }
+
     if (error && typeof error === "object" && "validation" in error) {
       const message = error instanceof Error ? error.message : String(error);
       return reply.status(400).send({ error: "Invalid input", details: message });

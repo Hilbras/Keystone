@@ -218,8 +218,15 @@ export const api = {
     fetchJson<{ id: string }>(`/v1/admin/organizations/${orgId}/saml-connections`, { method: "POST", body: JSON.stringify(input) }),
   deleteSamlConnection: (orgId: string, connectionId: string) =>
     fetchJson<{ success: boolean }>(`/v1/admin/organizations/${orgId}/saml-connections/${connectionId}`, { method: "DELETE" }),
-  getSamlMetadata: (connectionId: string) =>
-    fetch(`${API_BASE}/v1/admin/organizations/_/saml-connections/${connectionId}/metadata`).then((r) => r.text()),
+  getSamlMetadata: async (orgId: string, connectionId: string) => {
+    const accessToken = getKeystoneAccessToken();
+    const response = await fetch(`${API_BASE}/v1/admin/organizations/${orgId}/saml-connections/${connectionId}/metadata`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+      credentials: "include",
+    });
+    if (!response.ok) throw new Error(`Failed to fetch SAML metadata: ${response.status}`);
+    return response.text();
+  },
   getOidcConnections: (orgId: string) =>
     fetchJson<{ connections: Array<{ id: string; name: string; issuer: string; authorizationEndpoint: string; tokenEndpoint: string; userinfoEndpoint: string | null; jwksUri: string | null; clientId: string; scopes: string[]; isActive: boolean; createdAt: string }> }>(`/v1/admin/organizations/${orgId}/oidc-connections`),
   createOidcConnection: (orgId: string, input: { name: string; issuer: string; authorizationEndpoint: string; tokenEndpoint: string; userinfoEndpoint?: string; jwksUri?: string; clientId: string; clientSecret: string; scopes?: string[]; attributeMapping?: Record<string, string[]>; isActive?: boolean }) =>
@@ -230,9 +237,9 @@ export const api = {
     fetchJson<{ enabled: boolean; baseUrl: string; orgId: string }>(`/v1/admin/organizations/${orgId}/scim-config`),
 
   // Workflows
-  getWorkflows: () => fetchJson<{ workflows: Array<{ id: string; name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> }; isActive: boolean; createdAt: string }> }>("/v1/admin/workflows"),
-  createWorkflow: (input: { name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> } }) =>
-    fetchJson<{ id: string }>("/v1/admin/workflows", { method: "POST", body: JSON.stringify(input) }),
+  getWorkflows: (orgId: string) => fetchJson<{ workflows: Array<{ id: string; name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> }; isActive: boolean; createdAt: string }> }>(`/v1/admin/workflows?orgId=${encodeURIComponent(orgId)}`),
+  createWorkflow: (orgId: string, input: { name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> } }) =>
+    fetchJson<{ id: string }>("/v1/admin/workflows", { method: "POST", body: JSON.stringify({ ...input, orgId }) }),
   deleteWorkflow: (id: string) => fetchJson<{ success: boolean }>(`/v1/admin/workflows/${id}`, { method: "DELETE" }),
   getWorkflowRuns: (id: string) =>
     fetchJson<{ runs: Array<{ id: string; status: string; triggerEvent: string; startedAt: string | null; finishedAt: string | null; log: Array<{ step: string; status: string; error?: string }> }> }>(`/v1/admin/workflows/${id}/runs`),
@@ -275,10 +282,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateUser: (userId: string, input: Partial<{ name: string; username: string; role: string; emailVerified: boolean }>) =>
+  updateUser: (userId: string, input: Partial<{ name: string; username: string; emailVerified: boolean }>) =>
     fetchJson<unknown>(`/v1/admin/platform/users/${userId}`, {
       method: "PATCH",
       body: JSON.stringify(input),
+    }),
+  updatePlatformRole: (userId: string, role: "owner" | "user") =>
+    fetchJson<unknown>(`/v1/admin/platform/users/${userId}/role`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
     }),
   deactivateUser: (userId: string) =>
     fetchJson<{ success: boolean }>(`/v1/admin/platform/users/${userId}`, { method: "DELETE" }),
