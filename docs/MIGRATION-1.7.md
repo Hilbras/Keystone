@@ -52,7 +52,7 @@ Remove `assign_role`, `add_membership`, `add_app_membership`, `create_organizati
 - [ ] Remove unsafe legacy workflow definitions.
 - [ ] Configure a stable high-entropy `KEYSTONE_INTERNAL_API_KEY` for SAML transaction binding.
 - [ ] Configure a stable `KEYSTONE_ENCRYPTION_KEY`; run `npm run db:reencrypt-oidc-secrets -- --allow-unmarked-plaintext` after reviewing legacy rows, then verify encrypted OIDC secrets.
-- [ ] Review quarantined legacy accounts: migration `0010` marks ambiguous pre-v1.7 unverified accounts `account_review_required` and inactive; do not bulk-reactivate them without review.
+- [ ] Review quarantined legacy accounts: migration `0010` marks ambiguous pre-v1.7 unverified accounts `account_review_required` and inactive; do not bulk-reactivate them without review. Platform owners can resolve an individual account through `/v1/admin/platform/users/<userId>/account-review`.
 - [ ] Update SAML/OIDC initiation and metadata URLs to include `organizationId`; callback state is organization-bound and existing enterprise users must already be organization members.
 - [ ] Update clients using `/v1/authz/check` to send `organizationId`.
 - [ ] Ensure users are organization members before using organization-bound OAuth/OIDC clients; cross-tenant client context no longer adds an organization claim.

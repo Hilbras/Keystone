@@ -45,7 +45,7 @@ Default provider stores secrets in PostgreSQL. Production deployments should use
 
 ## User data exposure
 
-Administrative and organization user responses use a redacted public projection. Password hashes, TOTP secrets, setup tokens, and sensitive metadata are never returned by user-management endpoints. Treat any client that depends on those fields as requiring a separate, explicitly authorized migration.
+Administrative and organization user responses use a redacted public projection. Password hashes, TOTP secrets, setup tokens, and sensitive metadata are never returned by user-management endpoints. Self-service profile responses may return the authenticated user's own metadata, but API-key validation and cross-principal projections never do. Treat any client that depends on administrative metadata fields as requiring a separate, explicitly authorized migration.
 
 ## Rate limiting
 
