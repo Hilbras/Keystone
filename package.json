@@ -4,6 +4,7 @@
   "type": "module",
   "files": [
     "dist",
+    "!dist/tests",
     "CHANGELOG.md",
     "README.md"
   ],
