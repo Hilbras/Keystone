@@ -159,33 +159,6 @@ export async function updateUserLastSeen(id: string): Promise<void> {
   await db.update(users).set({ updatedAt: sql`now()` }).where(eq(users.id, id));
 }
 
-export async function findOrCreateUserByEmail(input: {
-  email: string;
-  name?: string;
-  username?: string;
-}): Promise<User> {
-  const existing = await findUserByEmail(input.email);
-  if (existing) {
-    if (!existing.isActive) throw new Error("User account is deactivated");
-    return existing;
-  }
-
-  const baseUsername = input.username || input.email.split("@")[0];
-  const username = await ensureUniqueUsername(slugifyUsername(baseUsername));
-
-  const [user] = await db
-    .insert(users)
-    .values({
-      email: input.email.toLowerCase().trim(),
-      username,
-      name: input.name || username,
-      provider: "password",
-      emailVerified: false,
-    })
-    .returning();
-  return user;
-}
-
 export async function listUsersByOrg(orgId: string): Promise<User[]> {
   const rows = await db
     .select({ user: users })
@@ -193,31 +166,6 @@ export async function listUsersByOrg(orgId: string): Promise<User[]> {
     .innerJoin(orgMemberships, eq(users.id, orgMemberships.userId))
     .where(eq(orgMemberships.orgId, orgId));
   return rows.map((r) => r.user);
-}
-
-export async function updateUser(
-  userId: string,
-  updates: Partial<{
-    name: string;
-    username: string;
-    emailVerified: boolean;
-  }>
-): Promise<User | undefined> {
-  const safeUpdates = {
-    ...(updates.name !== undefined ? { name: updates.name } : {}),
-    ...(updates.username !== undefined ? { username: updates.username } : {}),
-    ...(updates.emailVerified !== undefined ? { emailVerified: updates.emailVerified } : {}),
-  };
-  const [updated] = await db
-    .update(users)
-    .set({ ...safeUpdates, updatedAt: sql`now()` })
-    .where(eq(users.id, userId))
-    .returning();
-  return updated;
-}
-
-export async function deactivateUser(userId: string): Promise<void> {
-  await db.update(users).set({ emailVerified: false, updatedAt: sql`now()` }).where(eq(users.id, userId));
 }
 
 export function slugifyUsername(input: string): string {
