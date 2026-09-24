@@ -51,6 +51,12 @@ async function createSignedSamlFixture() {
         Location: "https://saml-test-idp.example/sso",
       },
     ],
+    singleLogoutService: [
+      {
+        Binding: "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+        Location: "https://saml-test-idp.example/slo",
+      },
+    ],
     signingCert: certificatePem,
     privateKey: privateKeyPem,
   });
