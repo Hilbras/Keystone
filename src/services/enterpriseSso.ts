@@ -84,6 +84,12 @@ export async function provisionEnterpriseUser(
       externalSub: externalId,
     });
   }
+  if (user?.role === "owner") {
+    throw new Error("Platform owners cannot authenticate through tenant SSO");
+  }
+  if (user?.accountReviewRequired) {
+    throw new Error("User account requires platform review");
+  }
   if (byEmail && !link) {
     throw new Error("Existing enterprise users require an explicit identity link");
   }
