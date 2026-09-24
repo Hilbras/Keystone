@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { applications } from "../db/schema.js";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 /**
  * Per-application IP allow/block lists.
@@ -80,7 +80,7 @@ export async function checkIpAllowed(clientId: string | undefined, ip: string | 
   const [app] = await db
     .select({ allowedIps: applications.allowedIps, blockedIps: applications.blockedIps })
     .from(applications)
-    .where(eq(applications.clientId, clientId))
+    .where(and(eq(applications.clientId, clientId), eq(applications.isActive, true)))
     .limit(1);
 
   if (!app) return { allowed: true };
