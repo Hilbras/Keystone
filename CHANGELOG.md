@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refresh-token rotation and OAuth authorization-code consumption are atomic and client-bound.
 - Legacy unverified accounts are quarantined for explicit review during the deactivation migration.
 - OIDC endpoint configuration blocks private/redirected targets by default; SCIM reflects account deactivation.
+- Added a blocking `oxlint` gate with warnings denied; CI now runs lint separately from typecheck.
+- Pinned safe transitive versions for `@xmldom/xmldom`, `fast-uri`, and `find-my-way`; the High-severity production audit gate now passes.
 - API-key validation uses public user projections and emits `api_key_used` audit events; the compiled OIDC re-encryption helper closes its database pool before exit.
 
 ### Security

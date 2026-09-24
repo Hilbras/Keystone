@@ -25,12 +25,12 @@
 
 - [x] After Tasks 1–4: platform-role escalation blocked at every boundary
 - [x] After Tasks 5–8: membership, workflow, and resource-scope invariants enforced
-- [x] After Tasks 9–11: audit, docs, versions, and local release gates synchronized (dependency/lint/npm-secret blockers remain explicit)
+- [x] After Tasks 9–11: audit, docs, versions, and local release gates synchronized (npm-secret blocker remains explicit)
 
 ## Release blockers to resolve before tagging
 
-- [ ] Existing High `npm audit` findings are fixed or covered by an approved, documented exception
-- [ ] A real lint gate exists or its absence is explicitly accepted
+- [x] Existing High `npm audit` findings fixed with safe transitive overrides; High-severity audit gate passes
+- [x] A real lint gate exists (`npm run lint` via oxlint) and CI runs it
 - [x] CI runs the security regression suite through the dedicated `npm run test:security` step
 - [x] npm publication procedure is configured and verified in the release workflow (secret still required)
 - [x] `package-lock.json` version is synchronized with `1.7.0`
