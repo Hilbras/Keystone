@@ -84,6 +84,7 @@ export default async function workflowRoutes(app: FastifyInstance) {
     request.state.org = await app.container.organizationRepository.findById(body.orgId) ?? undefined;
 
     const workflow = await registerWorkflow({
+      actorId: request.user!.id,
       orgId: body.orgId,
       name: body.name,
       trigger: body.trigger,

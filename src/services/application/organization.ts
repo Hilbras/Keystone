@@ -23,7 +23,7 @@ export class OrganizationApplicationService {
 
   private async auditDenied(
     actorId: string,
-    orgId: string,
+    orgId: string | undefined,
     action: string,
     targetUserId?: string,
     context?: EventContext
@@ -45,6 +45,12 @@ export class OrganizationApplicationService {
     userId: string,
     input: { name: string; slug?: string; plan?: string }
   ): Promise<Result<Organization>> {
+    const actor = await this.identity.findUser(userId);
+    if (!actor.success) return actor;
+    if (actor.data.role !== "owner" || !actor.data.isActive) {
+      await this.auditDenied(userId, undefined, "organization_create");
+      return err({ code: "FORBIDDEN", message: "Only platform owners can create organizations", statusCode: 403 });
+    }
     return this.domain.createOrganization(input, userId);
   }
 

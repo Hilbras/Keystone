@@ -6,6 +6,7 @@ import {
   oauth2Consents,
   applications,
   users,
+  orgMemberships,
   type User,
   type Application,
 } from "../db/schema.js";
@@ -161,6 +162,13 @@ export async function createTokenResponse(
   scopes: string[],
   opts: { ip?: string; userAgent?: string; deviceFingerprint?: string; nonce?: string } = {}
 ) {
+  const [membership] = await db
+    .select({ id: orgMemberships.id })
+    .from(orgMemberships)
+    .where(and(eq(orgMemberships.orgId, app.orgId), eq(orgMemberships.userId, user.id)))
+    .limit(1);
+  if (!membership) throw new Error("OAuth user is not a member of the application organization");
+
   const tokenOpts: AccessTokenOptions = {
     appId: app.id,
     orgId: app.orgId,

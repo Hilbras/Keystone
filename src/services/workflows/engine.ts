@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { workflows, workflowRuns, orgMemberships, type Workflow, type WorkflowRun } from "../../db/schema.js";
+import { workflows, workflowRuns, orgMemberships, users, type Workflow, type WorkflowRun } from "../../db/schema.js";
 import { findUserById } from "../users.js";
 import { subscribe, emit } from "../events/bus.js";
 import type { KeystoneEvent } from "../events/types.js";
@@ -41,6 +41,7 @@ export async function loadWorkflows(): Promise<void> {
 }
 
 export async function registerWorkflow(input: {
+  actorId: string;
   orgId: string;
   name: string;
   trigger: string;
@@ -50,6 +51,15 @@ export async function registerWorkflow(input: {
   const steps = readWorkflowSteps(input.definition);
   if (!input.orgId) {
     throw new Error("Organization-scoped workflows require an organization ID");
+  }
+  const [membership] = await db
+    .select({ role: orgMemberships.role, isActive: users.isActive })
+    .from(orgMemberships)
+    .innerJoin(users, eq(orgMemberships.userId, users.id))
+    .where(and(eq(orgMemberships.orgId, input.orgId), eq(orgMemberships.userId, input.actorId)))
+    .limit(1);
+  if (!membership?.isActive || (membership.role !== "owner" && membership.role !== "admin")) {
+    throw new Error("Only organization owners or admins can register workflows");
   }
   if (!steps || steps.some(isBlockedWorkflowStep)) {
     throw new Error("Workflow contains an invalid or blocked step");

@@ -183,7 +183,7 @@ describe("Phase 1 authorization security regressions", () => {
   });
 
   it("always assigns an owner when creating an organization through the API", async () => {
-    const creator = await createActor("user", "organization-creator");
+    const creator = await createActor("owner", "organization-creator");
     const response = await app.inject({
       method: "POST",
       url: "/v1/admin/organizations",
@@ -194,6 +194,17 @@ describe("Phase 1 authorization security regressions", () => {
     const organizationId = JSON.parse(response.body).id as string;
     const membership = await organizationRepository.findMembership(organizationId, creator.user.id);
     assert.strictEqual(membership?.role, "owner");
+  });
+
+  it("requires a platform owner to create an organization", async () => {
+    const creator = await createActor("user", "organization-create-denied");
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/admin/organizations",
+      headers: authHeaders(creator),
+      payload: { name: "Unauthorized organization" },
+    });
+    assert.strictEqual(response.statusCode, 403);
   });
 
   it("rolls back organization creation when owner membership cannot be written", async () => {
