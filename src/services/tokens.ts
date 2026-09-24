@@ -6,7 +6,6 @@ import {
   jwtVerify,
   decodeProtectedHeader,
   exportJWK,
-  type JWTPayload,
 } from "jose";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -16,7 +15,6 @@ import {
   applications,
   orgMemberships,
   type User,
-  type RefreshToken,
   type Application,
 } from "../db/schema.js";
 import { config } from "../config.js";

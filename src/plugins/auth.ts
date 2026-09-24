@@ -1,6 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { apiKeys, users, serviceAccounts, type User } from "../db/schema.js";

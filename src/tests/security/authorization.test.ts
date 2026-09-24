@@ -537,7 +537,7 @@ describe("Phase 1 authorization security regressions", () => {
     });
     assert.strictEqual(apiKey.statusCode, 200);
     assert.doesNotMatch(apiKey.body, /keyHash/);
-    assert.match(apiKey.body, /\"key\"/);
+    assert.match(apiKey.body, /"key"/);
 
     const serviceAccount = await app.inject({
       method: "POST",
@@ -555,7 +555,7 @@ describe("Phase 1 authorization security regressions", () => {
     });
     assert.ok(serviceKey.statusCode === 200 || serviceKey.statusCode === 201);
     assert.doesNotMatch(serviceKey.body, /keyHash/);
-    assert.match(serviceKey.body, /\"key\"/);
+    assert.match(serviceKey.body, /"key"/);
 
     const config = await app.inject({
       method: "GET",

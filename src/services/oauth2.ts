@@ -1,11 +1,10 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull, inArray, or } from "drizzle-orm";
+import { eq, and, gt, isNull, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   oauth2AuthorizationCodes,
   oauth2Consents,
   applications,
-  users,
   orgMemberships,
   type User,
   type Application,

@@ -9,8 +9,6 @@ import { findApplicationByClientId } from "../services/applications.js";
 import type { Application } from "../db/schema.js";
 import { buildOAuthErrorRedirect, buildOAuthErrorResponse } from "../lib/errors.js";
 
-const REDIRECT_TARGET = process.env.AUTH_SUCCESS_REDIRECT || "/chat";
-
 const OAuthStartSchema = {
   querystring: {
     type: "object",

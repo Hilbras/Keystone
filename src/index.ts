@@ -158,7 +158,7 @@ export async function buildApp() {
     };
     await fetch(url, {
       method: method || "POST",
-      headers: { "Content-Type": "application/json", ...(headers || {}) },
+      headers: { "Content-Type": "application/json", ...headers },
       body: body ? JSON.stringify(body) : undefined,
     });
   });

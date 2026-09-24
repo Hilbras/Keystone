@@ -10,14 +10,6 @@ function getEnv(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
-}
-
 function requireEnvUnlessSetup(name: string): string {
   const value = process.env[name];
   if (!value && process.env.KEYSTONE_SETUP_MODE !== "true") {

@@ -2,6 +2,12 @@
   "name": "@hilbras/keystone",
   "version": "1.7.0",
   "type": "module",
+  "overrides": {
+    "@xmldom/xmldom": "0.8.15",
+    "fast-uri@3.0.0 - 3.1.5": "3.1.8",
+    "fast-uri@4.0.0 - 4.1.2": "4.2.1",
+    "find-my-way": "9.9.0"
+  },
   "files": [
     "dist",
     "!dist/tests",
@@ -22,6 +28,7 @@
     "start": "node dist/index.js",
     "start:setup": "KEYSTONE_SETUP_MODE=true node dist/setup-server.js",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint src --deny-warnings",
     "typecheck:all": "npm run typecheck && cd frontend && npm run build",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
@@ -68,6 +75,7 @@
     "@types/nodemailer": "^8.0.1",
     "drizzle-kit": "^0.31.10",
     "light-my-request": "^6.0.0",
+    "oxlint": "^1.85.0",
     "reflect-metadata": "^0.2.2",
     "tsx": "^4.15.0",
     "typescript": "^7.0.2"

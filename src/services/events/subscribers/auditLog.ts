@@ -13,7 +13,7 @@ export async function auditLogSubscriber(event: KeystoneEvent): Promise<void> {
       event: `${event.type}:v${event.version}`,
       ipAddress: ip ?? null,
       userAgent: userAgent ?? null,
-      metadata: { ...(metadata ?? {}), eventVersion: event.version },
+      metadata: { ...metadata, eventVersion: event.version },
     });
   } catch (err) {
     console.error("[audit-log-subscriber] failed to write event:", err);

@@ -319,7 +319,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
     }
   );
 
-  app.post("/revoke", async (request, reply) => {
+  app.post("/revoke", async (request) => {
     const body = z.object({ token: z.string() }).parse(request.body);
     await revokeRefreshToken(body.token);
     await request.audit("oauth2_revoke", {});

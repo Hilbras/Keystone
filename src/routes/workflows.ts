@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { workflows, orgMemberships } from "../db/schema.js";

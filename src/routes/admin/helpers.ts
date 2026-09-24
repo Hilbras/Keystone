@@ -95,7 +95,7 @@ export const requireOwner = () => requirePlatformRole("owner");
 /** @deprecated Use requireOrganizationRole. */
 export const requireAuthAndRole = requireOrganizationRole;
 
-export const ipEntry = z.string().max(64).regex(/^[0-9a-fA-F:.\/]+$/, "Invalid IP or CIDR entry");
+export const ipEntry = z.string().max(64).regex(/^[0-9a-fA-F:./]+$/, "Invalid IP or CIDR entry");
 
 export const BrandingSchema = z
   .object({

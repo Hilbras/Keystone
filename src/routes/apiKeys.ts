@@ -9,7 +9,7 @@ const CreateKeySchema = z.object({
 });
 
 export default async function apiKeyRoutes(app: FastifyInstance) {
-  app.post("/api-keys", { preHandler: [app.authenticate] }, async (request, reply) => {
+  app.post("/api-keys", { preHandler: [app.authenticate] }, async (request) => {
     const body = CreateKeySchema.parse(request.body);
     const user = request.user!;
     let orgId = user.defaultOrgId ?? null;

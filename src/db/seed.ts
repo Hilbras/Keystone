@@ -3,7 +3,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "./index.js";
 import { organizations, users, orgMemberships, applications, workflows, type User } from "./schema.js";
 import { config } from "../config.js";
-import { createApplication, hashClientSecret } from "../services/applications.js";
+import { createApplication } from "../services/applications.js";
 import { hashPassword } from "../services/secrets.js";
 import { persistAudit } from "../services/audit.js";
 import { DrizzleOrganizationRepository } from "../repositories/organization.js";

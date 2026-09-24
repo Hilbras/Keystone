@@ -1,6 +1,5 @@
 import type {
   KeystonePlugin,
-  PluginMetadata,
   WorkflowStepExecutor,
   AuthenticationMethod,
   AnalyticsProvider,

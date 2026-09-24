@@ -71,17 +71,6 @@ function parseBody<T>(schema: z.ZodSchema<T>, body: unknown, reply: FastifyReply
   return result.data;
 }
 
-async function hasNoUsers(): Promise<boolean> {
-  if (!db) return true;
-  try {
-    const [result] = await db.select({ total: count() }).from(users);
-    return (result?.total ?? 0) === 0;
-  } catch {
-    // Database exists but migrations have not run yet; setup is still required.
-    return true;
-  }
-}
-
 async function hasNoOwners(): Promise<boolean> {
   if (!db) return true;
   try {

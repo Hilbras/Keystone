@@ -25,7 +25,7 @@ export default async function smsOtpRoutes(app: FastifyInstance) {
         }),
       ],
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request: FastifyRequest) => {
       const user = request.user!;
       const body = SendSchema.parse(request.body);
 

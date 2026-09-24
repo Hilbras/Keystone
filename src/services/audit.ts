@@ -20,7 +20,7 @@ export async function persistAudit(input: AuditInput): Promise<void> {
     event: `${input.event}:v1`,
     ipAddress: ip ?? null,
     userAgent: userAgent ?? null,
-    metadata: { ...(metadata ?? {}), eventVersion: 1 },
+    metadata: { ...metadata, eventVersion: 1 },
   });
 }
 

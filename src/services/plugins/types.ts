@@ -2,7 +2,7 @@ import type { IdentityConnector } from "../connectors/types.js";
 import type { EmailProvider } from "../email.js";
 import type { SmsProvider } from "../sms.js";
 import type { WorkflowStep, StepContext, StepResult } from "../workflows/steps.js";
-import type { Result, KeystoneError } from "../../lib/result.js";
+import type { Result } from "../../lib/result.js";
 
 export type WorkflowStepExecutor = (step: WorkflowStep, context: StepContext) => Promise<StepResult> | StepResult;
 

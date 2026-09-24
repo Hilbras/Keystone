@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { getSdk } from "../sdk/index.js";
 import { isZitadelConfigured } from "../config.js";
-import { requestPasswordReset, setPassword } from "../services/zitadel.js";
+import { requestPasswordReset } from "../services/zitadel.js";
 import { findUserByEmail } from "../services/users.js";
 import { emailProvider } from "../services/email.js";
 import { sendResultError } from "./helpers.js";
