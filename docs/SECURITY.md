@@ -17,7 +17,7 @@ This document outlines the security model and operational practices for Hilbras 
 - **API keys** are opaque, prefix-searchable, and hashed at rest.
 - **JWT signing keys** are rotatable. The JWKS endpoint publishes the active key plus recently rotated keys for a 24-hour grace period.
 - **Cookies** use `HttpOnly`, `Secure` (configurable), and `SameSite=lax`.
-- SCIM is a single-organization integration credential: `SCIM_BEARER_TOKEN` must be paired with `SCIM_ORG_ID`; user and group operations outside that organization are rejected. Deactivation is account-aware and cannot bypass last-owner protection.
+- SCIM is a single-organization integration credential: `SCIM_BEARER_TOKEN` must be paired with `SCIM_ORG_ID`; user and group operations outside that organization are rejected. Platform owners and review-required accounts cannot be modified by SCIM. Deactivation is account-aware and cannot bypass last-owner protection; SCIM audit rows identify the credential as the actor and the target only in metadata.
 - Configuration and profile responses redact secret-like values before leaving the API; raw database URLs, credentials, signing keys, provider secrets, SCIM tokens, Vault tokens, and generic `*_CLIENT_SECRET` values are not returned.
 - SAML RelayState is bound to a short-lived, one-time Redis transaction and initiating browser cookie; production requires a high-entropy `KEYSTONE_INTERNAL_API_KEY`.
 - Deactivated users are rejected by password, token, API-key, refresh, magic-link, WebAuthn, OAuth, SAML, and OIDC authentication; deactivation revokes refresh tokens, sessions, and user API keys. Ambiguous legacy unverified accounts are quarantined with `account_review_required` during migration.
@@ -30,7 +30,7 @@ This document outlines the security model and operational practices for Hilbras 
 - Organization member APIs may change only `organizationMembership.role`; global account writes and deactivation are rejected.
 - Organization permission checks resolve the authenticated actor and route organization explicitly. Client-controlled application/origin context is not an authorization decision.
 - `/v1/authz/check` requires an explicit `organizationId` and fails closed when the actor is not a member.
-- OIDC/SAML endpoint configuration rejects local/private targets by default; private enterprise endpoints require an explicit deployment opt-in and outbound fetches reject redirects.
+- OIDC/SAML endpoint configuration rejects local/private targets by default, including hex-form IPv4-mapped IPv6; private enterprise endpoints require an explicit deployment opt-in and outbound fetches pin DNS answers and reject redirects.
 - The last platform owner and the last organization owner cannot be demoted.
 - Tenant workflows cannot assign roles or add memberships across organizations, cannot be registered or executed by actors lacking current workflow-management permission, and are blocked when inactive. Out-of-scope events do not create durable workflow runs.
 - See [RBAC.md](RBAC.md) for the role matrix and migration guidance.
@@ -62,7 +62,7 @@ Every security-relevant action emits a versioned event:
 - `api_key_created`, `api_key_revoked`
 - `authz_check`, `password_reset_requested`, `password_reset_completed`
 - `platform_role_changed`, `organization_member_role_updated`, `organization_member_invited`, `organization_member_removed`
-- `permission_role_updated`, `workflow_blocked`, `unauthorized_access`, `api_key_used`; refresh, OAuth, SCIM, and API-key mutations carry server-derived actor and tenant attribution.
+- `permission_role_updated`, `workflow_blocked`, `unauthorized_access`, `api_key_used`, `oauth2_refresh`, `oauth2_refresh_failed`; refresh, OAuth, SCIM, and API-key mutations carry server-derived actor and tenant attribution.
 
 Events are written to the audit log, exported to webhooks, and consumed by anomaly detection. Authorization transitions include actor, target, organization, previous/new state, request ID, IP address, and user agent where available. Audit persistence is asynchronous; production deployments should monitor subscriber failures.
 

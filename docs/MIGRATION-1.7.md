@@ -60,6 +60,7 @@ Remove `assign_role`, `add_membership`, `add_app_membership`, `create_organizati
 - [ ] Send the bound `client_id` when rotating application-bound refresh tokens; mismatches and inactive/unauthorized applications are rejected.
 - [ ] Keep OIDC endpoints on approved public HTTPS hosts. Private endpoints require the explicit `ALLOW_PRIVATE_SSO_ENDPOINTS=true` deployment decision.
 - [ ] Configure `SCIM_BEARER_TOKEN` together with `SCIM_ORG_ID`; the bearer credential is scoped to that one organization and cannot administer platform users globally.
+- [ ] Use the production-safe cookie defaults from `.env.example` (`__Host-` name, no domain, `Secure=true`); override them only for local HTTP development.
 - [ ] Existing users must have an explicit enterprise SSO identity link before tenant SSO can issue a token; platform owners are rejected from tenant SSO.
 - [ ] Move platform-role mutations to the dedicated endpoint.
 - [ ] Treat platform-user deactivation as irreversible account disablement; sessions, refresh tokens, and user API keys are revoked.

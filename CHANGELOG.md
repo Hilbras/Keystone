@@ -40,14 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Failed authorization attempts and role transitions now produce structured audit evidence.
 - SAML schema validation now has a signed-response regression test and audience/destination/recipient checks, alongside one-time transaction claiming and OIDC ID-token/JWKS verification.
 - Enterprise SSO requires an explicit connection/subject identity link and rejects platform-owner tenant login; generic OAuth no longer auto-links by email.
-- SCIM is scoped to `SCIM_ORG_ID`, cannot re-enable quarantined accounts, and deactivates rather than deleting users.
-- OIDC endpoint checks cover private, carrier-grade, benchmarking, IPv4-mapped, and redirecting targets.
+- SCIM is scoped to `SCIM_ORG_ID`, cannot re-enable quarantined or platform-owner accounts, attributes audits to the SCIM credential, and deactivates rather than deleting users.
+- OIDC endpoint checks cover private, carrier-grade, benchmarking, dotted/hex IPv4-mapped, DNS-pinned, and redirecting targets.
 - Legacy account migration quarantines ambiguous unverified rows instead of activating them.
-- SAML semantic validation and OIDC/JWKS checks are covered by signed-response tests.
+- SAML semantic validation and OIDC/JWKS checks are covered by signed-response tests; OAuth2 refresh success and failure emit audit events.
 - Refresh-token rotation and OAuth authorization-code consumption are atomic and client-bound.
 - Legacy unverified accounts are quarantined for explicit review during the deactivation migration.
 - OIDC endpoint configuration blocks private/redirected targets by default; SCIM reflects account deactivation.
-- API-key validation uses public user projections and emits `api_key_used` audit events.
+- API-key validation uses public user projections and emits `api_key_used` audit events; the compiled OIDC re-encryption helper closes its database pool before exit.
 
 ### Security
 

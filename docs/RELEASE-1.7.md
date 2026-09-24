@@ -21,11 +21,11 @@ This checklist is for the local release candidate. Tagging, GitHub Release creat
 - [x] SAML/OIDC organization-scope, schema validation, ID-token verification, and one-time RelayState transaction coverage
 - [x] Existing-user enterprise SSO membership/identity-link and platform-owner isolation coverage
 - [x] Generic OAuth verified-identity and no-email-autolink coverage
-- [x] Scoped SCIM credential, organization isolation, review-state, and last-owner coverage
-- [x] OIDC endpoint SSRF policy coverage, including private and mapped address ranges
+- [x] Scoped SCIM credential, organization isolation, review-state, platform-owner isolation, service attribution, and last-owner coverage
+- [x] OIDC endpoint SSRF policy coverage, including private, carrier-grade, dotted/hex mapped, and DNS-pinned address ranges
 - [x] User/application/API-key/configuration secret projection coverage
 - [x] Account deactivation, refresh-token/API-key revocation, and cross-client token-scope coverage
-- [x] Non-burning wrong-client refresh rejection and execution-time workflow authorization coverage
+- [x] Non-burning wrong-client refresh rejection, OAuth2 refresh success/failure audit coverage, and execution-time workflow authorization coverage
 - [x] Fail-closed legacy migration and SAML audience/destination/recipient semantic coverage
 - [x] Authorization audit metadata, top-level tenant attribution, and denied-attempt coverage
 - [x] Runtime role constraints, owner-required organization creation, and legacy-value normalization migration
