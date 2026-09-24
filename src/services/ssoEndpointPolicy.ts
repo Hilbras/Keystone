@@ -3,6 +3,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { customFetch, type FetchImplementation } from "jose";
+import ipaddr from "ipaddr.js";
 import { config } from "../config.js";
 
 export function isPrivateAddress(address: string): boolean {
@@ -24,12 +25,13 @@ export function isPrivateAddress(address: string): boolean {
     );
   }
   if (net.isIPv6(value)) {
-    return (
-      value === "::1" ||
-      value === "::" ||
-      value.startsWith("fc") ||
-      value.startsWith("fd") ||
-      value.startsWith("fe80:")
+    const parsed = ipaddr.parse(value);
+    const ipv6 = parsed as ipaddr.IPv6;
+    if (ipv6.isIPv4MappedAddress()) {
+      return isPrivateAddress(ipv6.toIPv4Address().toString());
+    }
+    return ["unspecified", "loopback", "linkLocal", "uniqueLocal", "ipv4Mapped", "rfc6145", "6to4", "teredo"].includes(
+      parsed.range() as string
     );
   }
   return false;

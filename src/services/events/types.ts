@@ -44,6 +44,8 @@ export type AuditEventType =
   | "oauth_callback"
   | "oauth2_authorize"
   | "oauth2_token"
+  | "oauth2_refresh"
+  | "oauth2_refresh_failed"
   | "oauth2_client_credentials"
   | "oauth2_revoke"
   | "oauth2_consent"

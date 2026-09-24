@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { db } from "./index.js";
+import { db, closeDb } from "./index.js";
 import { oidcConnections } from "./schema.js";
 import { encryptSecret } from "../services/secrets/index.js";
 import { isLegacyOidcSecret, LEGACY_OIDC_SECRET_PREFIX } from "../services/oidcSecretFormat.js";
@@ -32,4 +32,8 @@ async function main(): Promise<void> {
   console.log(`[db] migrated ${migrated} OIDC client secret(s)`);
 }
 
-await main();
+try {
+  await main();
+} finally {
+  await closeDb();
+}

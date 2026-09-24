@@ -215,10 +215,18 @@ export default async function oauth2Routes(app: FastifyInstance) {
 
       if (body.grant_type === "refresh_token") {
         if (!body.refresh_token || !body.client_id || !body.client_secret) {
+          await request.audit("oauth2_refresh_failed", {
+            clientId: body.client_id,
+            reason: "invalid_request",
+          });
           return reply.status(400).send({ error: "invalid_request" });
         }
         const application = await verifyClientSecret(body.client_id, body.client_secret);
         if (!application) {
+          await request.audit("oauth2_refresh_failed", {
+            clientId: body.client_id,
+            reason: "invalid_client",
+          });
           return reply.status(401).send({ error: "invalid_client" });
         }
 
@@ -231,6 +239,14 @@ export default async function oauth2Routes(app: FastifyInstance) {
           application.id
         );
         if (!tokens) {
+          request.state.app = application;
+          request.state.org = await app.container.organizationRepository.findById(application.orgId);
+          await request.audit("oauth2_refresh_failed", {
+            appId: application.id,
+            orgId: application.orgId,
+            clientId: application.clientId,
+            reason: "invalid_grant",
+          });
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
@@ -238,6 +254,12 @@ export default async function oauth2Routes(app: FastifyInstance) {
         request.state.app = application;
         request.state.org = await app.container.organizationRepository.findById(application.orgId);
         request.state.membership = await app.container.organizationRepository.findMembership(application.orgId, tokens.userId);
+        await request.audit("oauth2_refresh", {
+          appId: application.id,
+          orgId: application.orgId,
+          clientId: application.clientId,
+          grantType: "refresh_token",
+        });
         return {
           access_token: tokens.accessToken,
           refresh_token: tokens.refreshToken,

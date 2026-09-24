@@ -22,6 +22,8 @@ describe("Event validation", () => {
       "session_revoked",
       "sessions_revoked_all",
       "workflow_blocked",
+      "oauth2_refresh",
+      "oauth2_refresh_failed",
       "platform_account_reviewed",
       "api_key_used",
     ]) {

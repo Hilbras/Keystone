@@ -726,6 +726,10 @@ describe("Phase 1 authorization security regressions", () => {
     });
     assert.strictEqual(updated.statusCode, 200);
     assert.strictEqual(JSON.parse(updated.body).active, false);
+    const scimAudit = (await db.select().from(auditLog).where(eq(auditLog.event, "scim_user_updated:v1")))
+      .find((entry) => (entry.metadata as { targetUserId?: string } | null)?.targetUserId === target.user.id);
+    assert.strictEqual(scimAudit?.userId, null);
+    assert.strictEqual(scimAudit?.orgId, organization.id);
     const list = await app.inject({ method: "GET", url: "/scim/v2/Users", headers });
     assert.strictEqual(list.statusCode, 200);
     assert.doesNotMatch(list.body, new RegExp(target.user.id));
@@ -747,6 +751,20 @@ describe("Phase 1 authorization security regressions", () => {
       payload: { userName: owner.user.email, active: true },
     });
     assert.strictEqual(response.statusCode, 409);
+    await organizationRepository.addMembership({ orgId: organization.id, userId: owner.user.id, role: "member" });
+    const update = await app.inject({
+      method: "PUT",
+      url: `/scim/v2/Users/${owner.user.id}`,
+      headers: { authorization: "Bearer security-test-scim-owner-token" },
+      payload: { userName: owner.user.email, active: true },
+    });
+    assert.strictEqual(update.statusCode, 409);
+    const removal = await app.inject({
+      method: "DELETE",
+      url: `/scim/v2/Users/${owner.user.id}`,
+      headers: { authorization: "Bearer security-test-scim-owner-token" },
+    });
+    assert.strictEqual(removal.statusCode, 409);
   });
 
   it("does not expose another organization's SAML connection metadata", async () => {

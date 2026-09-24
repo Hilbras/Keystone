@@ -61,6 +61,9 @@ export default async function scimRoutes(app: FastifyInstance) {
       return reply.status(501).send(scimError(501, "SCIM not configured"));
     }
     request.state.scimOrgId = orgId;
+    const organization = await app.container.organizationRepository.findById(orgId);
+    if (!organization) return reply.status(503).send(scimError(503, "SCIM organization not found"));
+    request.state.org = organization;
     if (!auth || !auth.startsWith("Bearer ") || auth.slice(7) !== expected) {
       return reply.status(401).send(scimError(401, "Unauthorized"));
     }
@@ -84,7 +87,6 @@ export default async function scimRoutes(app: FastifyInstance) {
     if (!user || !membership) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
-    request.state.auditUserId = user.id;
     return scimUserResponse(user);
   });
 
@@ -120,7 +122,6 @@ export default async function scimRoutes(app: FastifyInstance) {
       }
     }
 
-    request.state.auditUserId = user.id;
     if (body.active === false && user.isActive) {
       try {
         await app.container.userRepository.deactivate(user.id);
@@ -135,7 +136,12 @@ export default async function scimRoutes(app: FastifyInstance) {
       user = (await app.container.userRepository.update(user.id, { isActive: true })) ?? user;
     }
 
-    await request.audit(isNewUser ? "scim_user_created" : "scim_user_updated", { userId: user.id, email: user.email });
+    await request.audit(isNewUser ? "scim_user_created" : "scim_user_updated", {
+      targetUserId: user.id,
+      email: user.email,
+      actorType: "scim",
+      scimOrgId: request.state.scimOrgId,
+    });
     return reply.status(201).send(scimUserResponse(user));
   });
 
@@ -151,11 +157,9 @@ export default async function scimRoutes(app: FastifyInstance) {
     if (!existing || !membership) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
-    if (existing.accountReviewRequired) {
-      return reply.status(409).send(scimError(409, "Account review must be completed by a platform owner"));
+    if (existing.role === "owner" || existing.accountReviewRequired) {
+      return reply.status(409).send(scimError(409, "Platform owners and review-required accounts cannot be modified by SCIM"));
     }
-    request.state.auditUserId = existing.id;
-
     if (body.active === false && existing.isActive) {
       try {
         await app.container.userRepository.deactivate(userId);
@@ -176,7 +180,12 @@ export default async function scimRoutes(app: FastifyInstance) {
     if (!updated) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
-    await request.audit("scim_user_updated", { userId: updated.id, email: updated.email });
+    await request.audit("scim_user_updated", {
+      targetUserId: updated.id,
+      email: updated.email,
+      actorType: "scim",
+      scimOrgId: request.state.scimOrgId,
+    });
     return scimUserResponse(updated);
   });
 
@@ -190,16 +199,20 @@ export default async function scimRoutes(app: FastifyInstance) {
     if (!user || !membership) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
-    if (user.accountReviewRequired) {
-      return reply.status(409).send(scimError(409, "Account review must be completed by a platform owner"));
+    if (user.role === "owner" || user.accountReviewRequired) {
+      return reply.status(409).send(scimError(409, "Platform owners and review-required accounts cannot be modified by SCIM"));
     }
-    request.state.auditUserId = user.id;
     try {
       await app.container.userRepository.deactivate(user.id);
     } catch {
       return reply.status(400).send(scimError(400, "The last platform owner cannot be deactivated"));
     }
-    await request.audit("scim_user_deleted", { userId, email: user.email });
+    await request.audit("scim_user_deleted", {
+      targetUserId: userId,
+      email: user.email,
+      actorType: "scim",
+      scimOrgId: request.state.scimOrgId,
+    });
     return reply.status(204).send();
   });
 

@@ -15,6 +15,8 @@ describe("SSO endpoint address policy", () => {
       "198.18.0.1",
       "::1",
       "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+      "::ffff:c0a8:1",
     ]) {
       assert.equal(isPrivateAddress(address), true, address);
     }
