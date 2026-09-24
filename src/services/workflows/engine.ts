@@ -138,14 +138,12 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
     isOutOfScope = !membership;
   }
   const eventUserId = typeof event.payload.userId === "string" ? event.payload.userId : undefined;
-  if (inactiveWorkflow || triggerMismatch || isOutOfScope || (workflow.orgId && (!eventUserId || !(await hasWorkflowPermission(eventUserId, workflow.orgId))))) {
+  // Ignore unrelated events before creating audit/run volume for them.
+  if (triggerMismatch || isOutOfScope) return undefined;
+  if (inactiveWorkflow || (workflow.orgId && (!eventUserId || !(await hasWorkflowPermission(eventUserId, workflow.orgId))))) {
     const reason = inactiveWorkflow
       ? "Workflow is inactive"
-      : triggerMismatch
-        ? "Workflow trigger does not match the emitted event"
-        : isOutOfScope
-          ? "Workflow event does not belong to the workflow organization"
-          : "Workflow actor lacks current organization permission";
+      : "Workflow actor lacks current organization permission";
     await emit({
       type: "workflow_blocked",
       payload: {
