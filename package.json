@@ -61,10 +61,12 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@peculiar/x509": "^2.1.0",
     "@types/node": "^20.14.0",
     "@types/nodemailer": "^8.0.1",
     "drizzle-kit": "^0.31.10",
     "light-my-request": "^6.0.0",
+    "reflect-metadata": "^0.2.2",
     "tsx": "^4.15.0",
     "typescript": "^7.0.2"
   }

@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SAML/OIDC public lookups require an organization context; new OIDC client secrets are encrypted at rest, and legacy plaintext values are re-encrypted on first callback use.
 - OAuth/OIDC client context no longer places an organization claim in a user token unless the user is a member of that application's organization.
 - Failed authorization attempts and role transitions now produce structured audit evidence.
-- SAML schema validation, one-time transaction claiming, and OIDC ID-token/JWKS verification are enforced.
+- SAML schema validation now has a signed-response regression test, alongside one-time transaction claiming and OIDC ID-token/JWKS verification.
 - Enterprise SSO no longer auto-links existing global users without an existing organization membership.
 - Refresh-token rotation and OAuth authorization-code consumption are atomic and client-bound.
 - Legacy unverified accounts are quarantined for explicit review during the deactivation migration.
