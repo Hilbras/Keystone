@@ -1,1 +1,1 @@
-ALTER TABLE "users" ADD COLUMN "is_active" boolean DEFAULT true NOT NULL;
+ALTER TABLE "users" ADD COLUMN "is_active" boolean;
