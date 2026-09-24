@@ -40,7 +40,9 @@ export async function completeFederationLogin(
   if (application) {
     const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (!existing) throw new Error("Federation users must be explicitly invited to the application organization");
-    if (!existing.isActive || existing.accountReviewRequired) throw new Error("User account is unavailable");
+    if (!existing.isActive || existing.accountReviewRequired || existing.role === "owner") {
+      throw new Error("User account is unavailable for tenant federation");
+    }
     const [membership] = await db
       .select({ id: orgMemberships.id })
       .from(orgMemberships)
