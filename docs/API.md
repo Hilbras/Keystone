@@ -29,7 +29,7 @@ Endpoints marked **owner** additionally require the platform-owner role.
   (`400` validation, `401` unauthenticated, `403` forbidden, `404` missing,
   `409` conflict, `429` rate-limited).
 - Refresh tokens rotate atomically on every use and are bound to their client/application; replay or client mismatch is rejected.
-- Application-bound OAuth refresh requests must include the original `client_id`.
+- Application-bound OAuth2 refresh requests must include the original `client_id` and `client_secret`; the refresh route authenticates the client before rotation.
 
 ---
 
@@ -186,7 +186,7 @@ Hilbras Keystone acts as an authorization server for first-party and third-party
 
 ## SCIM 2.0 provisioning — `/scim/v2`
 
-Authenticated per connection token (HTTP basic/bearer issued to the IdP).
+Authenticated with `SCIM_BEARER_TOKEN` and restricted to the configured `SCIM_ORG_ID`; operations cannot target platform users or other organizations. Deletion is implemented as account deactivation.
 
 | Method | Path | Description |
 | --- | --- | --- |

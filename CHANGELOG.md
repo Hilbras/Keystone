@@ -38,8 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SAML/OIDC public lookups require an organization context; new OIDC client secrets are encrypted at rest, and legacy plaintext values are re-encrypted on first callback use.
 - OAuth/OIDC client context no longer places an organization claim in a user token unless the user is a member of that application's organization.
 - Failed authorization attempts and role transitions now produce structured audit evidence.
-- SAML schema validation now has a signed-response regression test, alongside one-time transaction claiming and OIDC ID-token/JWKS verification.
-- Enterprise SSO no longer auto-links existing global users without an existing organization membership.
+- SAML schema validation now has a signed-response regression test and audience/destination/recipient checks, alongside one-time transaction claiming and OIDC ID-token/JWKS verification.
+- Enterprise SSO requires an explicit connection/subject identity link and rejects platform-owner tenant login; generic OAuth no longer auto-links by email.
+- SCIM is scoped to `SCIM_ORG_ID`, cannot re-enable quarantined accounts, and deactivates rather than deleting users.
+- OIDC endpoint checks cover private, carrier-grade, benchmarking, IPv4-mapped, and redirecting targets.
+- Legacy account migration quarantines ambiguous unverified rows instead of activating them.
+- SAML semantic validation and OIDC/JWKS checks are covered by signed-response tests.
 - Refresh-token rotation and OAuth authorization-code consumption are atomic and client-bound.
 - Legacy unverified accounts are quarantined for explicit review during the deactivation migration.
 - OIDC endpoint configuration blocks private/redirected targets by default; SCIM reflects account deactivation.
@@ -58,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom organization role names are no longer accepted; only `owner`, `admin`, and `member` are supported.
 - Public SAML/OIDC initiation and metadata URLs require `organizationId`.
 - Direct authorization SDK calls now require both actor and organization IDs.
-- OIDC connections require a JWKS URI; application-bound refresh-token requests must provide the bound `client_id`.
+- OIDC connections require a JWKS URI; OAuth2 application-bound refresh requests must provide the bound `client_id` and `client_secret`.
+- SCIM requires both `SCIM_BEARER_TOKEN` and `SCIM_ORG_ID`, and operates only within that organization.
 - Legacy unverified accounts may be marked `account_review_required` and require explicit review.
 - Tenant workflow definitions containing authorization-mutating, plugin, organization-creation, or arbitrary webhook steps are rejected or blocked.
 
