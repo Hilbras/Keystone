@@ -38,6 +38,7 @@ export async function provisionEnterpriseUser(
       and(
         eq(ssoIdentityLinks.connectionType, connection.type),
         eq(ssoIdentityLinks.connectionId, connection.id),
+        eq(ssoIdentityLinks.orgId, orgId),
         eq(ssoIdentityLinks.externalSub, externalId)
       )
     )
