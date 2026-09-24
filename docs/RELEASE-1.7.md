@@ -8,7 +8,7 @@ This checklist is for the local release candidate. Tagging, GitHub Release creat
 - [x] `npm run typecheck`
 - [x] `npm run build`
 - [x] `npm test` with PostgreSQL and Redis (97 passed, 1 skipped)
-- [x] `npm run test:security` (46 passed)
+- [x] `npm run test:security` (47 passed)
 - [x] `cd frontend && npm run build`
 - [x] `npm pack --dry-run`
 - [x] `git diff --check`
