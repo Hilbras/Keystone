@@ -72,7 +72,10 @@ async function resolvePublicAddress(hostname: string): Promise<{ address: string
   } catch {
     throw new Error("SSO endpoint hostname could not be resolved");
   }
-  const publicAddress = addresses.find(({ address }) => !isPrivateAddress(address));
+  if (addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new Error("SSO endpoint resolved to a private or local address");
+  }
+  const publicAddress = addresses[0];
   if (!publicAddress) throw new Error("SSO endpoint resolved only to private or local addresses");
   return publicAddress;
 }
