@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SAML/OIDC public lookups require an organization context; new OIDC client secrets are encrypted at rest, and legacy plaintext values are re-encrypted on first callback use.
 - OAuth/OIDC client context no longer places an organization claim in a user token unless the user is a member of that application's organization.
 - Failed authorization attempts and role transitions now produce structured audit evidence.
+- SAML schema validation, one-time transaction claiming, and OIDC ID-token/JWKS verification are enforced.
+- Enterprise SSO no longer auto-links existing global users without an existing organization membership.
+- Refresh-token rotation and OAuth authorization-code consumption are atomic and client-bound.
+- Legacy unverified accounts are quarantined for explicit review during the deactivation migration.
+- OIDC endpoint configuration blocks private/redirected targets by default; SCIM reflects account deactivation.
+- API-key validation uses public user projections and emits `api_key_used` audit events.
 
 ### Security
 
@@ -52,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom organization role names are no longer accepted; only `owner`, `admin`, and `member` are supported.
 - Public SAML/OIDC initiation and metadata URLs require `organizationId`.
 - Direct authorization SDK calls now require both actor and organization IDs.
+- OIDC connections require a JWKS URI; application-bound refresh-token requests must provide the bound `client_id`.
+- Legacy unverified accounts may be marked `account_review_required` and require explicit review.
 - Tenant workflow definitions containing authorization-mutating, plugin, organization-creation, or arbitrary webhook steps are rejected or blocked.
 
 ### Migration

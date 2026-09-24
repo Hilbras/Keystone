@@ -51,10 +51,13 @@ Remove `assign_role`, `add_membership`, `add_app_membership`, `create_organizati
 - [ ] Review the role-constraint migration; legacy invalid platform roles are normalized to `user` and invalid organization roles to `member` before constraints are applied.
 - [ ] Remove unsafe legacy workflow definitions.
 - [ ] Configure a stable high-entropy `KEYSTONE_INTERNAL_API_KEY` for SAML transaction binding.
-- [ ] Configure a stable `KEYSTONE_ENCRYPTION_KEY`; legacy plaintext OIDC client secrets are re-encrypted on first callback use.
-- [ ] Update SAML/OIDC initiation and metadata URLs to include `organizationId`; callback state is organization-bound.
+- [ ] Configure a stable `KEYSTONE_ENCRYPTION_KEY`; run `npm run db:reencrypt-oidc-secrets -- --allow-unmarked-plaintext` after reviewing legacy rows, then verify encrypted OIDC secrets.
+- [ ] Review quarantined legacy accounts: migration `0010` marks ambiguous pre-v1.7 unverified accounts `account_review_required` and inactive; do not bulk-reactivate them without review.
+- [ ] Update SAML/OIDC initiation and metadata URLs to include `organizationId`; callback state is organization-bound and existing enterprise users must already be organization members.
 - [ ] Update clients using `/v1/authz/check` to send `organizationId`.
 - [ ] Ensure users are organization members before using organization-bound OAuth/OIDC clients; cross-tenant client context no longer adds an organization claim.
+- [ ] Send the bound `client_id` when rotating application-bound refresh tokens; mismatches and inactive/unauthorized applications are rejected.
+- [ ] Keep OIDC endpoints on approved public HTTPS hosts. Private endpoints require the explicit `ALLOW_PRIVATE_SSO_ENDPOINTS=true` deployment decision.
 - [ ] Move platform-role mutations to the dedicated endpoint.
 - [ ] Treat platform-user deactivation as irreversible account disablement; sessions, refresh tokens, and user API keys are revoked.
 - [ ] Move organization-role mutations to `/members/:userId`.

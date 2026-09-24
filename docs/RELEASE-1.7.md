@@ -7,8 +7,8 @@ This checklist is for the local release candidate. Tagging, GitHub Release creat
 - [x] `npm ci` (2026-09-24 local run; release CI repeats the install)
 - [x] `npm run typecheck`
 - [x] `npm run build`
-- [x] `npm test` with PostgreSQL and Redis (87 passed, 1 skipped)
-- [x] `npm run test:security` (40 passed)
+- [x] `npm test` with PostgreSQL and Redis (92 passed, 1 skipped)
+- [x] `npm run test:security` (44 passed)
 - [x] `cd frontend && npm run build`
 - [x] `npm pack --dry-run`
 - [x] `git diff --check`
@@ -18,7 +18,8 @@ This checklist is for the local release candidate. Tagging, GitHub Release creat
 - [x] Organization-to-platform role escalation regression coverage
 - [x] Organization membership rank and last-owner coverage
 - [x] Workflow allowlist, malformed-definition, and tenant-scope coverage
-- [x] SAML/OIDC organization-scope and one-time RelayState transaction coverage
+- [x] SAML/OIDC organization-scope, schema validation, ID-token verification, and one-time RelayState transaction coverage
+- [x] Existing-user enterprise SSO membership boundary and OIDC endpoint SSRF policy coverage
 - [x] User/application/API-key/configuration secret projection coverage
 - [x] Account deactivation, refresh-token/API-key revocation, and cross-client token-scope coverage
 - [x] Authorization audit metadata, top-level tenant attribution, and denied-attempt coverage
@@ -36,7 +37,7 @@ The repository currently has no real lint script/configuration. `typecheck` is n
 
 ### npm publication
 
-The release workflow now contains an npm publication job requiring the `NPM_TOKEN` GitHub secret. That secret is not currently configured. Verify trusted publishing or configure the secret before release.
+The release workflow now builds the package, runs `npm pack --dry-run`, installs the packed tarball in a clean temporary prefix, and smoke-tests the CLI before publication. The job still requires the `NPM_TOKEN` GitHub secret, which is not currently configured. Verify trusted publishing or configure the secret before release.
 
 ### External actions
 

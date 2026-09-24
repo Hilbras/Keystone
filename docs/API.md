@@ -28,7 +28,8 @@ Endpoints marked **owner** additionally require the platform-owner role.
 - Errors return `{ "error": string, ...details }` with an appropriate HTTP status
   (`400` validation, `401` unauthenticated, `403` forbidden, `404` missing,
   `409` conflict, `429` rate-limited).
-- Refresh tokens rotate on every use; a replayed token revokes the session chain.
+- Refresh tokens rotate atomically on every use and are bound to their client/application; replay or client mismatch is rejected.
+- Application-bound OAuth refresh requests must include the original `client_id`.
 
 ---
 
@@ -176,7 +177,7 @@ Hilbras Keystone acts as an authorization server for first-party and third-party
 | GET | `/sso/saml/:connectionId?orgId=:organizationId` | public | Start SAML login for a connection (organization-scoped) |
 | POST | `/sso/saml/acs` | public | SAML Assertion Consumer Service; signed RelayState binds the organization |
 | GET | `/sso/saml/:connectionId/metadata?orgId=:organizationId` | public | Organization-scoped SAML metadata XML |
-| GET | `/sso/sso/oidc/:connectionId?orgId=:organizationId` | public | Start organization-scoped enterprise OIDC login |
+| GET | `/sso/sso/oidc/:connectionId?orgId=:organizationId` | public | Start organization-scoped enterprise OIDC login; connection requires JWKS URI |
 | GET | `/sso/sso/oidc/:connectionId/callback?orgId=:organizationId` | public | Enterprise OIDC callback; state binds the organization |
 
 > ⚠️ Note the doubled `/sso/sso/oidc` segment — the OIDC enterprise routes declare
@@ -210,6 +211,7 @@ are available to any authenticated member.
 | GET | `/v1/admin/platform/users` | owner | Redacted public users across orgs |
 | PATCH | `/v1/admin/platform/users/:id` | owner | Update non-role platform user fields |
 | PATCH | `/v1/admin/platform/users/:id/role` | owner | Change platform role (`owner` or `user`) |
+| POST | `/v1/admin/platform/users/:id/account-review` | owner | Resolve a quarantined legacy account (`{ "active": true/false }`) |
 | DELETE | `/v1/admin/platform/users/:id` | owner | Deactivate account and revoke sessions/tokens/API keys |
 | GET | `/v1/admin/platform/organizations` | owner | All organizations |
 | GET | `/v1/admin/platform/applications` | owner | All applications |

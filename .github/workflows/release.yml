@@ -106,7 +106,7 @@ jobs:
             SHA256SUMS.txt
 
   publish:
-    needs: verify
+    needs: [verify, npm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -150,6 +150,15 @@ jobs:
           npm pack --dry-run
           test -f dist/cli.js
           node dist/cli.js --help >/dev/null
+
+      - name: Install and smoke-test packed tarball
+        run: |
+          TARBALL="$(npm pack --silent)"
+          rm -rf /tmp/keystone-package-smoke
+          mkdir -p /tmp/keystone-package-smoke
+          npm install --prefix /tmp/keystone-package-smoke --ignore-scripts "./$TARBALL"
+          node /tmp/keystone-package-smoke/node_modules/@hilbras/keystone/dist/cli.js --help >/dev/null
+          rm -f "$TARBALL"
 
       - name: Publish npm package
         run: npm publish --provenance --access public
