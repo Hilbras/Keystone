@@ -71,6 +71,13 @@
       "when": 1790271016658,
       "tag": "0009_daffy_changeling",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790276829374,
+      "tag": "0010_wealthy_shadow_king",
+      "breakpoints": true
     }
   ]
 }

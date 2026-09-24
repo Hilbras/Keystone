@@ -22,6 +22,10 @@ const UpdatePlatformRoleSchema = z.object({
   role: z.enum(["owner", "user"]),
 });
 
+const AccountReviewSchema = z.object({
+  active: z.boolean(),
+});
+
 const FeatureFlagSchema = z.object({
   enabled: z.boolean(),
   description: z.string().max(500).optional(),
@@ -40,6 +44,7 @@ export default async function platformRoutes(app: FastifyInstance) {
         name: users.name,
         role: users.role,
         isActive: users.isActive,
+        accountReviewRequired: users.accountReviewRequired,
         emailVerified: users.emailVerified,
         createdAt: users.createdAt,
       })
@@ -343,6 +348,25 @@ export default async function platformRoutes(app: FastifyInstance) {
       }
       const body = parsed.data;
       const result = await sdk.identity.updateUserProfile(request.user!.id, id, body, {
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+      if (!result.success) return sendResultError(reply, result);
+      return toPublicUser(result.data);
+    }
+  );
+
+  app.post(
+    "/platform/users/:id/account-review",
+    { preHandler: [requirePlatformRole("owner")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const parsed = AccountReviewSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+      }
+      const result = await sdk.identity.reviewAccount(request.user!.id, id, parsed.data.active, {
         requestId: request.id,
         ip: request.ip,
         userAgent: request.headers["user-agent"],

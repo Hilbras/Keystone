@@ -1,10 +1,27 @@
 export const REDACTED_CONFIG_VALUE = "[redacted]";
 
-const SENSITIVE_CONFIG_KEY =
-  /(PASSWORD|SECRET|TOKEN|DATABASE_URL|REDIS_URL|PRIVATE_KEY|CREDENTIAL|AUTHORIZATION|JWT|ENCRYPTION_KEY|API_KEY|CLIENT_KEY)/i;
+const SENSITIVE_CONFIG_KEYS = new Set([
+  "DATABASE_URL",
+  "REDIS_URL",
+  "SMTP_PASS",
+  "ZITADEL_SERVICE_CLIENT_SECRET",
+  "ZITADEL_SERVICE_PAT",
+  "ZITADEL_CLIENT_SECRET",
+  "JWT_PRIVATE_KEY",
+  "JWT_PUBLIC_KEY",
+  "KEYSTONE_ENCRYPTION_KEY",
+  "KEYSTONE_TOTP_ENCRYPTION_KEY",
+  "KEYSTONE_INTERNAL_API_KEY",
+  "HILBRAS_INTERNAL_API_KEY",
+  "SENDGRID_API_KEY",
+  "MAILGUN_API_KEY",
+  "TWILIO_AUTH_TOKEN",
+  "WEBHOOK_SIGNING_SECRET",
+  "KEYSTONE_WEBHOOK_SIGNING_SECRET",
+]);
 
 export function isSensitiveConfigurationKey(key: string): boolean {
-  return SENSITIVE_CONFIG_KEY.test(key);
+  return SENSITIVE_CONFIG_KEYS.has(key.toUpperCase());
 }
 
 export function redactConfigurationValues(values: Record<string, string | undefined>): Record<string, string> {

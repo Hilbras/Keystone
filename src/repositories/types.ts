@@ -29,6 +29,8 @@ export interface UpdateUserInput {
   avatarUrl?: string | null;
   phoneNumber?: string | null;
   phoneVerified?: boolean;
+  isActive?: boolean;
+  accountReviewRequired?: boolean;
   metadata?: Record<string, unknown>;
 }
 

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull, inArray } from "drizzle-orm";
+import { eq, and, gt, isNull, inArray, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   oauth2AuthorizationCodes,
@@ -59,29 +59,23 @@ export async function consumeAuthorizationCode(
   const codeHash = crypto.createHash("sha256").update(code).digest("hex");
   const now = new Date();
 
-  const [record] = await db
-    .select()
-    .from(oauth2AuthorizationCodes)
-    .where(
-      and(
-        eq(oauth2AuthorizationCodes.codeHash, codeHash),
-        eq(oauth2AuthorizationCodes.appId, appId),
-        gt(oauth2AuthorizationCodes.expiresAt, now),
-        isNull(oauth2AuthorizationCodes.usedAt)
-      )
-    )
-    .limit(1);
-
-  if (!record) return undefined;
-  if (redirectUri && record.redirectUri && record.redirectUri !== redirectUri) {
-    return undefined;
+  const conditions = [
+    eq(oauth2AuthorizationCodes.codeHash, codeHash),
+    eq(oauth2AuthorizationCodes.appId, appId),
+    gt(oauth2AuthorizationCodes.expiresAt, now),
+    isNull(oauth2AuthorizationCodes.usedAt),
+  ];
+  if (redirectUri) {
+    conditions.push(
+      or(isNull(oauth2AuthorizationCodes.redirectUri), eq(oauth2AuthorizationCodes.redirectUri, redirectUri))!
+    );
   }
 
-  await db
+  const [record] = await db
     .update(oauth2AuthorizationCodes)
     .set({ usedAt: now })
-    .where(eq(oauth2AuthorizationCodes.id, record.id));
-
+    .where(and(...conditions))
+    .returning();
   return record;
 }
 

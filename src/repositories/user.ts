@@ -41,6 +41,8 @@ export class DrizzleUserRepository implements UserRepository {
       ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
       ...(input.phoneNumber !== undefined ? { phoneNumber: input.phoneNumber } : {}),
       ...(input.phoneVerified !== undefined ? { phoneVerified: input.phoneVerified } : {}),
+      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+      ...(input.accountReviewRequired !== undefined ? { accountReviewRequired: input.accountReviewRequired } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
     const [updated] = await db
@@ -91,7 +93,7 @@ export class DrizzleUserRepository implements UserRepository {
       const now = new Date();
       await tx
         .update(users)
-        .set({ isActive: false, emailVerified: false, passwordHash: null, totpSecret: null, totpEnabled: false, updatedAt: now })
+        .set({ isActive: false, accountReviewRequired: false, emailVerified: false, passwordHash: null, totpSecret: null, totpEnabled: false, updatedAt: now })
         .where(eq(users.id, id));
       await tx.update(refreshTokens).set({ revokedAt: now }).where(and(eq(refreshTokens.userId, id), isNull(refreshTokens.revokedAt)));
       await tx.update(apiKeys).set({ revokedAt: now }).where(and(eq(apiKeys.userId, id), isNull(apiKeys.revokedAt)));

@@ -1,12 +1,15 @@
 import crypto from "node:crypto";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { provisionEnterpriseUser, defaultRoleForOrg } from "../services/enterpriseSso.js";
 import { createTokenSet } from "../services/tokens.js";
 import { setSessionCookies, clearSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
 import { toSelfUser } from "../types.js";
+import { assertSafeSsoEndpoint } from "../services/ssoEndpointPolicy.js";
 import { buildOAuthErrorResponse } from "../lib/errors.js";
 import { decryptSecret } from "../services/secrets/index.js";
+import { isLegacyOidcSecret, LEGACY_OIDC_SECRET_PREFIX } from "../services/oidcSecretFormat.js";
 
 const OIDC_STATE_COOKIE = "keystone_oidc_enterprise_state";
 
@@ -61,8 +64,19 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
     const { connectionId } = request.params as { connectionId: string };
     const query = request.query as { code?: string; state?: string; orgId?: string; error?: string; error_description?: string };
 
+    const cookieState = getStateCookie(request);
+    if (!query.state || !query.orgId || !cookieState) {
+      clearStateCookie(reply);
+      return reply.status(400).send({ error: "Invalid OIDC state" });
+    }
+    const [cookieStateValue, cookieConnectionId, cookieOrgId] = cookieState.split(":");
+    if (cookieStateValue !== query.state || cookieConnectionId !== connectionId || cookieOrgId !== query.orgId) {
+      clearStateCookie(reply);
+      return reply.status(400).send({ error: "Invalid OIDC state" });
+    }
+    clearStateCookie(reply);
+
     if (query.error) {
-      clearSessionCookies(reply);
       const idpError = new Error(
         `Identity provider error: ${query.error}${query.error_description ? ` - ${query.error_description}` : ""}`
       );
@@ -70,14 +84,7 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
       return reply.status(statusCode).send(body);
     }
 
-    const cookieState = getStateCookie(request);
-    clearStateCookie(reply);
-
-    if (!query.code || !query.state || !query.orgId || !cookieState) {
-      return reply.status(400).send({ error: "Invalid OIDC state" });
-    }
-    const [cookieStateValue, cookieConnectionId, cookieOrgId] = cookieState.split(":");
-    if (cookieStateValue !== query.state || cookieConnectionId !== connectionId || cookieOrgId !== query.orgId) {
+    if (!query.code) {
       return reply.status(400).send({ error: "Invalid OIDC state" });
     }
 
@@ -90,16 +97,24 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
     const redirectUri = `${publicUrl()}/sso/oidc/${connectionId}/callback?orgId=${encodeURIComponent(query.orgId)}`;
 
     try {
-      let clientSecret = connection.clientSecret;
-      try {
-        clientSecret = await decryptSecret(connection.clientSecret);
-      } catch (error) {
-        if (connection.clientSecret.startsWith("aes-256-gcm$")) throw error;
-        clientSecret = connection.clientSecret;
+      let clientSecret: string;
+      if (isLegacyOidcSecret(connection.clientSecret)) {
+        clientSecret = connection.clientSecret.slice(LEGACY_OIDC_SECRET_PREFIX.length);
         await app.container.oidcConnectionRepository.updateClientSecret(connection.id, clientSecret);
+      } else {
+        clientSecret = await decryptSecret(connection.clientSecret);
       }
-      const tokenRes = await fetch(connection.tokenEndpoint, {
+      const tokenEndpoint = await assertSafeSsoEndpoint(connection.tokenEndpoint, "tokenEndpoint");
+      const userinfoEndpoint = await assertSafeSsoEndpoint(
+        connection.userinfoEndpoint ||
+          (connection.scopes.includes("openid")
+            ? `${connection.issuer}/oauth/v2/userinfo`
+            : `${connection.issuer}/userinfo`),
+        "userinfoEndpoint"
+      );
+      const tokenRes = await fetch(tokenEndpoint, {
         method: "POST",
+        redirect: "error",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "authorization_code",
@@ -116,29 +131,42 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
       }
 
       const tokenData = (await tokenRes.json()) as { access_token: string; id_token?: string };
-
-      const userinfoRes = await fetch(
-        connection.userinfoEndpoint ||
-          connection.scopes.includes("openid")
-          ? `${connection.issuer}/oauth/v2/userinfo`
-          : `${connection.issuer}/userinfo`,
-        {
-          headers: { Authorization: `Bearer ${tokenData.access_token}` },
-        }
-      );
+      if (!tokenData.id_token || !connection.jwksUri) {
+        throw new Error("OIDC provider did not return a verifiable ID token");
+      }
+      const jwks = createRemoteJWKSet(await assertSafeSsoEndpoint(connection.jwksUri, "jwksUri"));
+      const verifiedIdToken = await jwtVerify(tokenData.id_token, jwks, {
+        issuer: connection.issuer,
+        audience: connection.clientId,
+      });
+      const userinfoRes = await fetch(userinfoEndpoint, {
+        redirect: "error",
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
 
       if (!userinfoRes.ok) {
         throw new Error(`Userinfo request failed: ${userinfoRes.status}`);
       }
 
       const userinfo = (await userinfoRes.json()) as {
+        sub?: string;
         email?: string;
+        email_verified?: boolean;
         name?: string;
         preferred_username?: string;
       };
 
-      if (!userinfo.email) {
-        throw new Error("OIDC provider did not return an email");
+      if (!userinfo.sub || !userinfo.email) {
+        throw new Error("OIDC provider did not return a verified subject and email");
+      }
+      if (userinfo.email_verified !== true || verifiedIdToken.payload.email_verified !== true) {
+        throw new Error("OIDC provider did not verify the email address");
+      }
+      if (
+        verifiedIdToken.payload.sub !== userinfo.sub ||
+        (typeof verifiedIdToken.payload.email === "string" && verifiedIdToken.payload.email.toLowerCase() !== userinfo.email!.toLowerCase())
+      ) {
+        throw new Error("OIDC ID token and userinfo subject did not match");
       }
 
       const org = await app.container.organizationRepository.findById(connection.orgId);

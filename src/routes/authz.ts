@@ -33,6 +33,7 @@ export default async function authzRoutes(app: FastifyInstance) {
         });
       }
 
+      request.state.org = await request.server.container.organizationRepository.findById(body.organizationId);
       const allowed = await sdk.authorization.hasPermission(
         request.user!.id,
         body.organizationId,

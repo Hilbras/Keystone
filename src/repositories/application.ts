@@ -34,7 +34,7 @@ export class DrizzleApplicationRepository implements ApplicationRepository {
     const [app] = await db
       .select()
       .from(applications)
-      .where(eq(applications.clientId, clientId))
+      .where(and(eq(applications.clientId, clientId), eq(applications.isActive, true)))
       .limit(1);
     return app;
   }

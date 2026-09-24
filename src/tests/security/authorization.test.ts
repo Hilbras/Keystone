@@ -34,6 +34,7 @@ const { buildApp } = await import("../../index.js");
 const { createAccessToken, createTokenSet, generateApiKey, hashApiKey, loadSigningKeys, rotateRefreshToken } = await import("../../services/tokens.js");
 const { triggerWorkflowRun } = await import("../../services/workflows/engine.js");
 const { getSdk } = await import("../../sdk/index.js");
+const { provisionEnterpriseUser } = await import("../../services/enterpriseSso.js");
 
 let app: FastifyInstance;
 let userRepository: UserRepository;
@@ -419,6 +420,36 @@ describe("Phase 1 authorization security regressions", () => {
     assert.doesNotMatch(profile.body, /passwordHash|totpSecret|password_hash|totp_secret/);
   });
 
+  it("atomically binds refresh-token rotation to its client and organization", async () => {
+    const owner = await createActor("user", "refresh-binding-owner");
+    const member = await createActor("user", "refresh-binding-member");
+    const organization = await createOrganization("refresh-binding-boundary", [
+      { userId: owner.user.id, role: "owner" },
+      { userId: member.user.id, role: "member" },
+    ]);
+    const application = await app.container.applicationRepository.create({
+      orgId: organization.id,
+      name: "Refresh-bound client",
+    });
+    const options = {
+      appId: application.id,
+      orgId: organization.id,
+      clientId: application.clientId,
+    } as const;
+    const wrongClientSet = await createTokenSet(member.user, "127.0.0.1", "test-agent", options);
+    assert.strictEqual(
+      await rotateRefreshToken(wrongClientSet.refreshToken, "127.0.0.1", "test-agent", "wrong-client"),
+      null
+    );
+
+    const tokenSet = await createTokenSet(member.user, "127.0.0.1", "test-agent", options);
+    const rotations = await Promise.all([
+      rotateRefreshToken(tokenSet.refreshToken, "127.0.0.1", "test-agent", application.clientId),
+      rotateRefreshToken(tokenSet.refreshToken, "127.0.0.1", "test-agent", application.clientId),
+    ]);
+    assert.strictEqual(rotations.filter(Boolean).length, 1);
+  });
+
   it("does not expose application, OIDC, API-key, or configuration secrets", async () => {
     const owner = await createActor("owner", "secret-response-owner");
     const organization = await createOrganization("secret-response-boundary", [
@@ -452,6 +483,7 @@ describe("Phase 1 authorization security regressions", () => {
         issuer: "https://issuer.example.test",
         authorizationEndpoint: "https://issuer.example.test/authorize",
         tokenEndpoint: "https://issuer.example.test/token",
+        jwksUri: "https://issuer.example.test/jwks",
         clientId: "safe-client",
         clientSecret: "safe-client-secret",
       },
@@ -674,6 +706,23 @@ describe("Phase 1 authorization security regressions", () => {
     assert.strictEqual(response.statusCode, 200);
   });
 
+  it("propagates deactivation through SCIM and omits inactive users from lists", async () => {
+    process.env.SCIM_BEARER_TOKEN = "security-test-scim-token";
+    const target = await createActor("user", "scim-deactivation-target");
+    const headers = { authorization: "Bearer security-test-scim-token" };
+    const updated = await app.inject({
+      method: "PUT",
+      url: `/scim/v2/Users/${target.user.id}`,
+      headers,
+      payload: { userName: target.user.email, active: false },
+    });
+    assert.strictEqual(updated.statusCode, 200);
+    assert.strictEqual(JSON.parse(updated.body).active, false);
+    const list = await app.inject({ method: "GET", url: "/scim/v2/Users", headers });
+    assert.strictEqual(list.statusCode, 200);
+    assert.doesNotMatch(list.body, new RegExp(target.user.id));
+  });
+
   it("does not expose another organization's SAML connection metadata", async () => {
     const reader = await createActor("user", "saml-cross-tenant-reader");
     const organization = await createOrganization("saml-cross-tenant-a", [
@@ -856,6 +905,14 @@ describe("Phase 1 authorization security regressions", () => {
     assert.strictEqual((await app.inject(acs)).statusCode, 400);
   });
 
+  it("does not auto-link an existing global user through enterprise SSO", async () => {
+    const owner = await createActor("owner", "enterprise-sso-existing-owner");
+    const organization = await createOrganization("enterprise-sso-existing-boundary", []);
+    await assert.rejects(() => provisionEnterpriseUser(organization.id, { email: owner.user.email }));
+    const membership = await organizationRepository.findMembership(organization.id, owner.user.id);
+    assert.strictEqual(membership, undefined);
+  });
+
   it("enforces organization permissions inside direct SDK application services", async () => {
     const admin = await createActor("user", "sdk-permission-admin");
     const target = await createActor("user", "sdk-permission-target");
@@ -1003,6 +1060,22 @@ describe("Phase 1 authorization security regressions", () => {
       headers: { authorization: `Bearer ${generatedKey.key}` },
     });
     assert.strictEqual(keyValidation.statusCode, 401);
+  });
+
+  it("allows an explicit platform-owner review of quarantined legacy accounts", async () => {
+    const owner = await createActor("owner", "legacy-review-owner");
+    const target = await createActor("user", "legacy-review-target");
+    await userRepository.update(target.user.id, { isActive: false, accountReviewRequired: true });
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/admin/platform/users/${target.user.id}/account-review`,
+      headers: authHeaders(owner),
+      payload: { active: true },
+    });
+    assert.strictEqual(response.statusCode, 200);
+    const reviewed = await userRepository.findById(target.user.id);
+    assert.strictEqual(reviewed?.isActive, true);
+    assert.strictEqual(reviewed?.accountReviewRequired, false);
   });
 
   it("records actor, target, organization, and previous/new membership state", async () => {

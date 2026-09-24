@@ -196,7 +196,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
   }, [navigate]);
 
   const visibleTabs = useMemo(() => {
-    const platformOnly = new Set(["users", "connect-project", "identity-providers", "roles", "keys", "security", "webhooks", "queue", "audit-logs", "plugins", "feature-flags", "billing", "metrics", "settings"]);
+    const platformOnly = new Set(["users", "applications", "connect-project", "identity-providers", "roles", "keys", "security", "webhooks", "queue", "audit-logs", "plugins", "feature-flags", "billing", "metrics", "settings"]);
     const isPlatformOwner = user?.role === "owner";
     return TABS
       .filter((tab) => mode === "advanced" || tab.mode === "simple")

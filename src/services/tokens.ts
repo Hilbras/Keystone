@@ -169,6 +169,7 @@ export interface TokenSet {
   refreshToken: string;
   refreshTokenHash: string;
   expiresAt: Date;
+  userId: string;
 }
 
 export async function createTokenSet(
@@ -207,7 +208,7 @@ export async function createTokenSet(
     // Session tracking is best-effort; token creation must not fail because of it.
   }
 
-  return { accessToken, refreshToken, refreshTokenHash, expiresAt };
+  return { accessToken, refreshToken, refreshTokenHash, expiresAt, userId: user.id };
 }
 
 export async function verifyAccessToken(token: string): Promise<TokenClaims> {
@@ -231,14 +232,17 @@ export async function verifyAccessToken(token: string): Promise<TokenClaims> {
 export async function rotateRefreshToken(
   token: string,
   ip?: string,
-  userAgent?: string
+  userAgent?: string,
+  clientId?: string
 ): Promise<TokenSet | null> {
   const hash = hashToken(token);
   const now = new Date();
 
-  const [existing] = await db
-    .select()
-    .from(refreshTokens)
+  // Claim the token with one conditional update. Concurrent requests cannot
+  // both rotate the same refresh token.
+  const [claimed] = await db
+    .update(refreshTokens)
+    .set({ revokedAt: now })
     .where(
       and(
         eq(refreshTokens.tokenHash, hash),
@@ -246,34 +250,32 @@ export async function rotateRefreshToken(
         isNull(refreshTokens.revokedAt)
       )
     )
-    .limit(1);
+    .returning();
+  if (!claimed) return null;
 
-  if (!existing) return null;
-
-  // Revoke old token immediately.
-  await db
-    .update(refreshTokens)
-    .set({ revokedAt: now })
-    .where(eq(refreshTokens.id, existing.id));
-
-  const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
+  const [user] = await db.select().from(users).where(eq(users.id, claimed.userId)).limit(1);
   if (!user?.isActive) return null;
 
   let appId: string | undefined;
-  if (existing.appId) {
+  let orgId: string | undefined;
+  if (claimed.appId) {
     const [application] = await db
-      .select({ id: applications.id, orgId: applications.orgId })
+      .select({ id: applications.id, orgId: applications.orgId, clientId: applications.clientId })
       .from(applications)
-      .where(and(eq(applications.id, existing.appId), eq(applications.isActive, true)))
+      .where(and(eq(applications.id, claimed.appId), eq(applications.isActive, true)))
       .limit(1);
-    if (application) {
-      const [membership] = await db
-        .select({ id: orgMemberships.id })
-        .from(orgMemberships)
-        .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, user.id)))
-        .limit(1);
-      if (membership) appId = application.id;
-    }
+    if (!application || !clientId || application.clientId !== clientId) return null;
+
+    const [membership] = await db
+      .select({ id: orgMemberships.id })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, user.id)))
+      .limit(1);
+    if (!membership) return null;
+    appId = application.id;
+    orgId = application.orgId;
+  } else if (clientId) {
+    return null;
   }
 
   return createTokenSet(
@@ -282,11 +284,11 @@ export async function rotateRefreshToken(
     userAgent,
     {
       appId,
-      orgId: undefined,
-      clientId: undefined,
-      deviceFingerprint: existing.deviceFingerprint ?? undefined,
+      orgId,
+      clientId,
+      deviceFingerprint: claimed.deviceFingerprint ?? undefined,
     },
-    existing.deviceFingerprint ?? undefined
+    claimed.deviceFingerprint ?? undefined
   );
 }
 

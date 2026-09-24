@@ -22,6 +22,8 @@ describe("Event validation", () => {
       "session_revoked",
       "sessions_revoked_all",
       "workflow_blocked",
+      "platform_account_reviewed",
+      "api_key_used",
     ]) {
       const result = validateEvent(buildEvent(type, { userId: "1" }));
       assert.strictEqual(result.valid, true, `${type} should be valid`);

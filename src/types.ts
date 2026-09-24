@@ -9,6 +9,7 @@ declare module "fastify" {
       app?: Application;
       org?: Organization;
       membership?: OrgMembership;
+      auditUserId?: string;
     };
   }
 
@@ -78,6 +79,7 @@ export interface PublicUser {
   plan: string;
   role: "owner" | "user";
   isActive: boolean;
+  accountReviewRequired?: boolean;
   provider: string;
 }
 
@@ -98,6 +100,7 @@ export function toPublicUser(user: User | PublicUser): PublicUser {
     plan: user.plan,
     role: user.role === "owner" ? "owner" : "user",
     isActive: user.isActive,
+    accountReviewRequired: user.accountReviewRequired,
     provider: user.provider,
   };
 }

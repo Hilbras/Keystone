@@ -72,6 +72,7 @@ const VALID_EVENT_TYPES = new Set([
   "platform_user_updated",
   "platform_role_changed",
   "platform_user_deactivated",
+  "platform_account_reviewed",
   "platform_signing_key_rotated",
   "platform_plugin_unregistered",
   "platform_feature_flag_updated",

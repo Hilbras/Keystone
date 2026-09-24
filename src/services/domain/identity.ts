@@ -3,7 +3,7 @@ import { LastOwnerInvariantError, type UserRepository, type IdentityRepository }
 import type { TokenSet } from "../tokens.js";
 import { createTokenSet } from "../tokens.js";
 import { emit } from "../events/bus.js";
-import { getFederationAuthorizeUrl as getFederationAuthorizeUrlService, completeFederationLogin as completeFederationLoginService } from "../federation.js";
+import { getFederationAuthorizeUrl as getFederationAuthorizeUrlService, completeFederationLogin as completeFederationLoginService, type FederationApplicationContext } from "../federation.js";
 import { ok, err, type Result } from "../../lib/result.js";
 import { canManagePlatformRole, isPlatformRole, type PlatformRole } from "./authorization.js";
 import type { EventContext } from "../events/types.js";
@@ -173,8 +173,62 @@ export class IdentityDomainService {
     return ok(undefined);
   }
 
-  async listOrganizationUsers(orgId: string): Promise<User[]> {
-    return this.users.listByOrg(orgId);
+  async reviewAccount(
+    actorId: string,
+    targetUserId: string,
+    active: boolean,
+    context?: EventContext
+  ): Promise<Result<User>> {
+    const actor = await this.users.findById(actorId);
+    if (!actor) return err({ code: "USER_NOT_FOUND", message: "Actor not found", statusCode: 404 });
+    if (actor.role !== "owner") {
+      await this.auditDenied(actorId, "platform_account_review", targetUserId, context);
+      return err({ code: "FORBIDDEN", message: "Only platform owners can review accounts", statusCode: 403 });
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) return err({ code: "USER_NOT_FOUND", message: "User not found", statusCode: 404 });
+
+    try {
+      if (active) {
+        const updated = await this.users.update(targetUserId, {
+          isActive: true,
+          accountReviewRequired: false,
+          emailVerified: true,
+        });
+        if (!updated) return err({ code: "USER_NOT_FOUND", message: "User not found", statusCode: 404 });
+        await emit({
+          type: "platform_account_reviewed",
+          payload: {
+            userId: actorId,
+            requestId: context?.requestId,
+            ip: context?.ip,
+            userAgent: context?.userAgent,
+            metadata: { targetUserId, active: true, action: "platform_account_review" },
+          },
+        });
+        return ok(updated);
+      }
+      await this.users.deactivate(targetUserId);
+    } catch (error) {
+      if (error instanceof LastOwnerInvariantError) {
+        await this.auditDenied(actorId, "last_platform_owner_protection", targetUserId, context);
+        return err({ code: "LAST_PLATFORM_OWNER", message: error.message, statusCode: 400 });
+      }
+      throw error;
+    }
+    const updated = await this.users.findById(targetUserId);
+    if (!updated) return err({ code: "USER_NOT_FOUND", message: "User not found", statusCode: 404 });
+    await emit({
+      type: "platform_account_reviewed",
+      payload: {
+        userId: actorId,
+        requestId: context?.requestId,
+        ip: context?.ip,
+        userAgent: context?.userAgent,
+        metadata: { targetUserId, active: false, action: "platform_account_review" },
+      },
+    });
+    return ok(updated);
   }
 
   async touchLastSeen(userId: string): Promise<void> {
@@ -207,9 +261,10 @@ export class IdentityDomainService {
   async completeFederationLogin(
     provider: string,
     code: string,
-    redirectUri: string
+    redirectUri: string,
+    application?: FederationApplicationContext
   ): Promise<Result<{ user: User; tokens: { accessToken: string; refreshToken: string } }>> {
-    const result = await completeFederationLoginService(provider, code, redirectUri);
+    const result = await completeFederationLoginService(provider, code, redirectUri, application);
     await emit({
       type: "federation_login",
       payload: { provider, userId: result.user.id, email: result.user.email },

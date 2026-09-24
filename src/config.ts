@@ -32,6 +32,12 @@ function getList(name: string): string[] {
   return value.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+const cookieName = getEnv(
+  "COOKIE_NAME",
+  getEnv("NODE_ENV", "development") === "production" ? "__Host-keystone-session" : "keystone-session"
+);
+const isHostCookie = cookieName.startsWith("__Host-");
+
 export const config = {
   NODE_ENV: getEnv("NODE_ENV", "development"),
   PORT: Number(getEnv("PORT", "4001")),
@@ -58,10 +64,11 @@ export const config = {
   ZITADEL_GOOGLE_IDP_ID: getEnv("ZITADEL_GOOGLE_IDP_ID"),
   ZITADEL_GITHUB_IDP_ID: getEnv("ZITADEL_GITHUB_IDP_ID"),
 
-  COOKIE_NAME: getEnv("COOKIE_NAME", "__Host-keystone-session"),
-  COOKIE_DOMAIN: getEnv("COOKIE_DOMAIN", ".local.hilbras.ai"),
-  COOKIE_SECURE: getEnv("COOKIE_SECURE", "false") === "true",
+  COOKIE_NAME: cookieName,
+  COOKIE_DOMAIN: isHostCookie ? undefined : getEnv("COOKIE_DOMAIN", ".local.hilbras.ai"),
+  COOKIE_SECURE: isHostCookie || getEnv("COOKIE_SECURE", "false") === "true",
   COOKIE_SAME_SITE: getEnv("COOKIE_SAME_SITE", getEnv("NODE_ENV", "development") === "production" ? "strict" : "lax") as "strict" | "lax" | "none",
+  ALLOW_PRIVATE_SSO_ENDPOINTS: getEnv("ALLOW_PRIVATE_SSO_ENDPOINTS", "false") === "true",
 
   AUTH_API_PUBLIC_URL: getEnv("AUTH_API_PUBLIC_URL"),
   ACCESS_TOKEN_TTL_SECONDS: Number(getEnv("JWT_ACCESS_TOKEN_TTL", "900")),

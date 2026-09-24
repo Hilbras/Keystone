@@ -9,6 +9,7 @@ import type { EventContext } from "../services/events/types.js";
 import { getContainer } from "../container.js";
 import { buildApplicationServices } from "../di.js";
 import { toPublicApplication, toPublicUser, toSelfUser } from "../types.js";
+import type { FederationApplicationContext } from "../services/federation.js";
 
 class SdkAuthenticationClient implements AuthenticationSdk {
   constructor(private readonly app: AuthenticationApplicationService) {}
@@ -44,7 +45,7 @@ class SdkAuthenticationClient implements AuthenticationSdk {
   async refresh(refreshToken: string, clientId?: string) {
     const result = await this.app.refresh(refreshToken, clientId);
     if (!result.success) return result;
-    return { success: true as const, data: { accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, expiresAt: result.data.expiresAt } };
+    return { success: true as const, data: { accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, expiresAt: result.data.expiresAt, userId: result.data.userId } };
   }
 
   logout(refreshToken?: string) {
@@ -80,6 +81,12 @@ class SdkIdentityClient implements IdentitySdk {
     return { success: true as const, data: toPublicUser(result.data) };
   }
 
+  async reviewAccount(actorId: string, targetUserId: string, active: boolean, context?: EventContext) {
+    const result = await this.app.reviewAccount(actorId, targetUserId, active, context);
+    if (!result.success) return result;
+    return { success: true as const, data: toPublicUser(result.data) };
+  }
+
   deactivate(actorId: string, targetUserId: string, context?: EventContext) {
     return this.app.deactivate(actorId, targetUserId, context);
   }
@@ -92,8 +99,8 @@ class SdkIdentityClient implements IdentitySdk {
     return this.app.getFederationAuthorizeUrl(provider, state, redirectUri);
   }
 
-  async completeFederationLogin(provider: string, code: string, redirectUri: string) {
-    const result = await this.app.completeFederationLogin(provider, code, redirectUri);
+  async completeFederationLogin(provider: string, code: string, redirectUri: string, application?: FederationApplicationContext) {
+    const result = await this.app.completeFederationLogin(provider, code, redirectUri, application);
     if (!result.success) return result;
     return {
       success: true as const,

@@ -202,14 +202,14 @@ export class AuthenticationDomainService {
   }
 
   async refresh(refreshToken: string, clientId?: string): Promise<Result<{ tokens: TokenSet; userId?: string }>> {
-    const tokens = await rotateRefreshToken(refreshToken, undefined, undefined);
+    const tokens = await rotateRefreshToken(refreshToken, undefined, undefined, clientId);
     if (!tokens) {
       await emit({ type: "token_refresh_failed", payload: { reason: "invalid_refresh_token" } });
       return err({ code: "INVALID_REFRESH_TOKEN", message: "Invalid or expired session.", statusCode: 401 });
     }
 
     await emit({ type: "token_refresh", payload: {} });
-    return ok({ tokens, userId: undefined });
+    return ok({ tokens, userId: tokens.userId });
   }
 
   async logout(refreshToken?: string): Promise<Result<void>> {

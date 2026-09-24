@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { EnvFileConfigWriter, JsonConfigWriter } from "../../services/setup/configWriter.js";
-import { mergeConfigurationUpdates, REDACTED_CONFIG_VALUE } from "../../services/configuration/profiles.js";
+import { mergeConfigurationUpdates, redactConfigurationValues, REDACTED_CONFIG_VALUE } from "../../services/configuration/profiles.js";
 
 describe("EnvFileConfigWriter", () => {
   it("writes and reads values", async () => {
@@ -23,16 +23,33 @@ describe("EnvFileConfigWriter", () => {
   });
 
   it("preserves redacted secret values during a round trip", async () => {
-    const existing = { DATABASE_URL: "postgres://secret", SMTP_PASSWORD: "smtp-secret", PORT: "4001" };
+    const existing = { DATABASE_URL: "postgres://secret", SMTP_PASS: "smtp-secret", ZITADEL_SERVICE_PAT: "pat-secret", PORT: "4001" };
     const merged = mergeConfigurationUpdates(existing, {
       DATABASE_URL: REDACTED_CONFIG_VALUE,
-      SMTP_PASSWORD: REDACTED_CONFIG_VALUE,
+      SMTP_PASS: REDACTED_CONFIG_VALUE,
+      ZITADEL_SERVICE_PAT: REDACTED_CONFIG_VALUE,
       PORT: "5001",
     });
     assert.deepStrictEqual(merged, {
       DATABASE_URL: "postgres://secret",
-      SMTP_PASSWORD: "smtp-secret",
+      SMTP_PASS: "smtp-secret",
+      ZITADEL_SERVICE_PAT: "pat-secret",
       PORT: "5001",
+    });
+  });
+
+  it("redacts the actual configured secret names", () => {
+    const redacted = redactConfigurationValues({
+      DATABASE_URL: "postgres://user:password@host/db",
+      SMTP_PASS: "smtp-secret",
+      ZITADEL_SERVICE_PAT: "pat-secret",
+      PORT: "4001",
+    });
+    assert.deepStrictEqual(redacted, {
+      DATABASE_URL: REDACTED_CONFIG_VALUE,
+      SMTP_PASS: REDACTED_CONFIG_VALUE,
+      ZITADEL_SERVICE_PAT: REDACTED_CONFIG_VALUE,
+      PORT: "4001",
     });
   });
 

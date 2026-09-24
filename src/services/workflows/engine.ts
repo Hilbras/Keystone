@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { workflows, workflowRuns, orgMemberships, users, type Workflow, type WorkflowRun } from "../../db/schema.js";
+import { workflows, workflowRuns, orgMemberships, users, permissions, rolePermissions, type Workflow, type WorkflowRun } from "../../db/schema.js";
 import { findUserById } from "../users.js";
 import { subscribe, emit } from "../events/bus.js";
 import type { KeystoneEvent } from "../events/types.js";
@@ -61,6 +61,21 @@ export async function registerWorkflow(input: {
   if (!membership?.isActive || (membership.role !== "owner" && membership.role !== "admin")) {
     throw new Error("Only organization owners or admins can register workflows");
   }
+  const [permission] = await db
+    .select({ id: permissions.id })
+    .from(permissions)
+    .innerJoin(rolePermissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(
+      and(
+        eq(permissions.resource, "organization"),
+        eq(permissions.action, "update"),
+        eq(rolePermissions.role, membership.role)
+      )
+    )
+    .limit(1);
+  if (!permission) {
+    throw new Error("Organization role lacks workflow registration permission");
+  }
   if (!steps || steps.some(isBlockedWorkflowStep)) {
     throw new Error("Workflow contains an invalid or blocked step");
   }
@@ -88,6 +103,7 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
   const steps = readWorkflowSteps(definition);
   const eventOrgId = typeof event.payload.orgId === "string" ? event.payload.orgId : undefined;
   const hasBlockedStep = steps === null || steps.some(isBlockedWorkflowStep);
+  const inactiveWorkflow = workflow.isActive === false;
   const triggerMismatch = workflow.trigger !== event.type;
   let isOutOfScope = triggerMismatch || Boolean(workflow.orgId && eventOrgId !== workflow.orgId);
   if (!isOutOfScope && workflow.orgId && typeof event.payload.userId === "string") {
@@ -98,13 +114,15 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
       .limit(1);
     isOutOfScope = !membership;
   }
-  const blockedReason = hasBlockedStep
-    ? "Workflow contains a blocked authorization step"
-    : triggerMismatch
-      ? "Workflow trigger does not match the emitted event"
-      : isOutOfScope
-        ? "Workflow event does not belong to the workflow organization"
-        : undefined;
+  const blockedReason = inactiveWorkflow
+    ? "Workflow is inactive"
+    : hasBlockedStep
+      ? "Workflow contains a blocked authorization step"
+      : triggerMismatch
+        ? "Workflow trigger does not match the emitted event"
+        : isOutOfScope
+          ? "Workflow event does not belong to the workflow organization"
+          : undefined;
   const now = new Date();
   const [run] = await db
     .insert(workflowRuns)
@@ -154,6 +172,25 @@ export async function executeRunById(runId: string, workflowId: string): Promise
 }
 
 async function executeRun(run: WorkflowRun, workflow: Workflow): Promise<void> {
+  if (!workflow.isActive) {
+    await db
+      .update(workflowRuns)
+      .set({
+        status: "blocked",
+        finishedAt: new Date(),
+        log: [{ status: "blocked", error: "Workflow is inactive" }],
+      })
+      .where(eq(workflowRuns.id, run.id));
+    await emit({
+      type: "workflow_blocked",
+      payload: {
+        orgId: workflow.orgId ?? undefined,
+        metadata: { workflowId: workflow.id, runId: run.id, reason: "inactive_workflow" },
+      },
+    });
+    return;
+  }
+
   const definition = (workflow.definition ?? { steps: [] }) as WorkflowDefinition;
   const payload = (run.payload ?? {}) as Record<string, unknown>;
   const steps = readWorkflowSteps(definition);

@@ -103,6 +103,8 @@ export default async function oauth2Routes(app: FastifyInstance) {
           .send({ error: "invalid_redirect_uri", error_description: "Redirect URI not registered" });
       }
 
+      request.state.membership = membership;
+      request.state.org = await app.container.organizationRepository.findById(application.orgId);
       const scopes = query.scope ? query.scope.split(" ").filter(Boolean) : [];
 
       const consent = await hasConsent(request.user!.id, application.id, scopes);
@@ -193,6 +195,8 @@ export default async function oauth2Routes(app: FastifyInstance) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
+        request.state.membership = membership;
+        request.state.org = await app.container.organizationRepository.findById(application.orgId);
         await request.audit("oauth2_token", {
           appId: application.id,
           clientId: application.clientId,
@@ -209,12 +213,17 @@ export default async function oauth2Routes(app: FastifyInstance) {
       }
 
       if (body.grant_type === "refresh_token") {
-        if (!body.refresh_token) {
+        if (!body.refresh_token || !body.client_id) {
           return reply.status(400).send({ error: "invalid_request" });
         }
 
         // Lazy import to avoid circular dependency.
-        const tokens = await rotateRefreshToken(body.refresh_token, request.ip, request.headers["user-agent"]);
+        const tokens = await rotateRefreshToken(
+          body.refresh_token,
+          request.ip,
+          request.headers["user-agent"],
+          body.client_id
+        );
         if (!tokens) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
@@ -308,6 +317,8 @@ export default async function oauth2Routes(app: FastifyInstance) {
         return reply.status(403).send({ error: "not_member" });
       }
 
+      request.state.membership = membership;
+      request.state.org = await app.container.organizationRepository.findById(application.orgId);
       if (body.grant) {
         await grantConsent(request.user!.id, application.id, body.scopes);
       } else {

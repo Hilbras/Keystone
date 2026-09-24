@@ -3,6 +3,7 @@ import type { User } from "../../db/schema.js";
 import type { Result } from "../../lib/result.js";
 import type { PlatformRole } from "../domain/authorization.js";
 import type { EventContext } from "../events/types.js";
+import type { FederationApplicationContext } from "../federation.js";
 
 export class IdentityApplicationService {
   constructor(private readonly domain: IdentityDomainService) {}
@@ -37,12 +38,12 @@ export class IdentityApplicationService {
     return this.domain.updatePlatformRole(actorId, targetUserId, role, context);
   }
 
-  async deactivate(actorId: string, targetUserId: string, context?: EventContext): Promise<Result<void>> {
-    return this.domain.deactivate(actorId, targetUserId, context);
+  async reviewAccount(actorId: string, targetUserId: string, active: boolean, context?: EventContext): Promise<Result<User>> {
+    return this.domain.reviewAccount(actorId, targetUserId, active, context);
   }
 
-  async listOrganizationUsers(orgId: string): Promise<User[]> {
-    return this.domain.listOrganizationUsers(orgId);
+  async deactivate(actorId: string, targetUserId: string, context?: EventContext): Promise<Result<void>> {
+    return this.domain.deactivate(actorId, targetUserId, context);
   }
 
   async linkUserIdentity(
@@ -63,8 +64,9 @@ export class IdentityApplicationService {
   async completeFederationLogin(
     provider: string,
     code: string,
-    redirectUri: string
+    redirectUri: string,
+    application?: FederationApplicationContext
   ): Promise<Result<{ user: User; tokens: { accessToken: string; refreshToken: string } }>> {
-    return this.domain.completeFederationLogin(provider, code, redirectUri);
+    return this.domain.completeFederationLogin(provider, code, redirectUri, application);
   }
 }

@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { ServiceProvider, IdentityProvider } from "samlify";
+import { ServiceProvider, IdentityProvider, setSchemaValidator } from "samlify";
+import * as samlSchemaValidator from "@authenio/samlify-node-xmllint";
 import type { SamlConnection } from "../db/schema.js";
 import { provisionEnterpriseUser, defaultRoleForOrg } from "../services/enterpriseSso.js";
 import { createTokenSet } from "../services/tokens.js";
@@ -11,6 +12,8 @@ import { toSelfUser } from "../types.js";
 import { config } from "../config.js";
 import { escapeXml } from "./helpers.js";
 import { redis } from "../services/redis.js";
+
+setSchemaValidator(samlSchemaValidator);
 
 const SAML_TRANSACTION_COOKIE = "keystone_saml_transaction";
 const SAML_TRANSACTION_TTL_SECONDS = 600;
@@ -62,6 +65,16 @@ async function storeTransaction(transactionId: string, transaction: SamlTransact
     "NX"
   );
   if (stored !== "OK") throw new Error("SAML transaction collision");
+}
+
+async function getTransaction(transactionId: string): Promise<SamlTransaction | undefined> {
+  const raw = await redis.get(transactionKey(transactionId));
+  if (typeof raw !== "string") return undefined;
+  try {
+    return JSON.parse(raw) as SamlTransaction;
+  } catch {
+    return undefined;
+  }
 }
 
 async function consumeTransaction(transactionId: string): Promise<SamlTransaction | undefined> {
@@ -254,8 +267,7 @@ export default async function samlRoutes(app: FastifyInstance) {
       clearTransactionCookie(reply);
       return reply.status(400).send({ error: "Invalid SAML transaction" });
     }
-    const transaction = await consumeTransaction(relayState.transactionId);
-    clearTransactionCookie(reply);
+    const transaction = await getTransaction(relayState.transactionId);
     if (
       !transaction ||
       transaction.connectionId !== relayState.connectionId ||
@@ -264,6 +276,7 @@ export default async function samlRoutes(app: FastifyInstance) {
       transaction.browserNonce.length !== browserNonce.length ||
       !crypto.timingSafeEqual(Buffer.from(transaction.browserNonce), Buffer.from(browserNonce))
     ) {
+      clearTransactionCookie(reply);
       return reply.status(400).send({ error: "Invalid SAML transaction" });
     }
 
@@ -276,6 +289,7 @@ export default async function samlRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "SAML connection not found" });
     }
 
+    let transactionClaimed = false;
     try {
       const { sp, idp } = buildSamlEntities(connection);
       const result = await sp.parseLoginResponse(idp, "post", { body });
@@ -288,6 +302,14 @@ export default async function samlRoutes(app: FastifyInstance) {
       if (!claims.email) {
         return reply.status(400).send({ error: "SAML response did not contain an email" });
       }
+
+      const claimedTransaction = await consumeTransaction(relayState.transactionId);
+      if (!claimedTransaction || claimedTransaction.requestId !== transaction.requestId) {
+        clearTransactionCookie(reply);
+        return reply.status(400).send({ error: "SAML transaction already consumed" });
+      }
+      transactionClaimed = true;
+      clearTransactionCookie(reply);
 
       const org = await app.container.organizationRepository.findById(connection.orgId);
 
@@ -318,7 +340,7 @@ export default async function samlRoutes(app: FastifyInstance) {
 
       return { user: toSelfUser(user) };
     } catch (err) {
-      clearTransactionCookie(reply);
+      if (transactionClaimed) clearTransactionCookie(reply);
       request.log.error({ err }, "SAML ACS validation failed");
       const { statusCode, body } = sanitizeSamlError(err);
       return reply.status(statusCode).send(body);

@@ -26,6 +26,17 @@ export async function provisionEnterpriseUser(
     throw new Error("User account is deactivated");
   }
 
+  if (user) {
+    const [membership] = await db
+      .select({ id: orgMemberships.id })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, user.id)))
+      .limit(1);
+    if (!membership) {
+      throw new Error("Existing users must be explicitly invited before enterprise SSO login");
+    }
+  }
+
   if (!user) {
     const baseUsername = claims.username || claims.email.split("@")[0];
     const username = await ensureUniqueUsername(slugifyUsername(baseUsername));

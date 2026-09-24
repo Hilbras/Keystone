@@ -4,6 +4,7 @@ import { requireOrganizationRole } from "./helpers.js";
 import { config } from "../../config.js";
 import { escapeXml } from "../helpers.js";
 import { toPublicOidcConnection, toPublicSamlConnection } from "../../types.js";
+import { validateSsoEndpoint } from "../../services/ssoEndpointPolicy.js";
 
 const SamlConnectionSchema = z.object({
   name: z.string().min(1).max(255),
@@ -22,7 +23,7 @@ const OidcConnectionSchema = z.object({
   authorizationEndpoint: z.string().url(),
   tokenEndpoint: z.string().url(),
   userinfoEndpoint: z.string().url().optional(),
-  jwksUri: z.string().url().optional(),
+  jwksUri: z.string().url(),
   clientId: z.string().min(1),
   clientSecret: z.string().min(1),
   scopes: z.array(z.string()).optional(),
@@ -51,6 +52,12 @@ export default async function ssoRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = SamlConnectionSchema.parse(request.body);
+      try {
+        if (body.idpSsoUrl) validateSsoEndpoint(body.idpSsoUrl, "idpSsoUrl");
+        validateSsoEndpoint(body.spAcsUrl, "spAcsUrl");
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : "Invalid SAML endpoint" });
+      }
       const connection = await app.container.samlConnectionRepository.create({ orgId: id, ...body });
       await request.audit("saml_connection_created", { orgId: id, connectionId: connection.id });
       return reply.status(201).send(toPublicSamlConnection(connection));
@@ -104,6 +111,15 @@ export default async function ssoRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = OidcConnectionSchema.parse(request.body);
+      try {
+        validateSsoEndpoint(body.issuer, "issuer");
+        validateSsoEndpoint(body.authorizationEndpoint, "authorizationEndpoint");
+        validateSsoEndpoint(body.tokenEndpoint, "tokenEndpoint");
+        if (body.userinfoEndpoint) validateSsoEndpoint(body.userinfoEndpoint, "userinfoEndpoint");
+        if (body.jwksUri) validateSsoEndpoint(body.jwksUri, "jwksUri");
+      } catch (error) {
+        return reply.status(400).send({ error: error instanceof Error ? error.message : "Invalid OIDC endpoint" });
+      }
       const connection = await app.container.oidcConnectionRepository.create({ orgId: id, ...body });
       await request.audit("oidc_connection_created", { orgId: id, connectionId: connection.id });
       return reply.status(201).send(toPublicOidcConnection(connection));

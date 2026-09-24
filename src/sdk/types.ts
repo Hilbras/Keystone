@@ -2,6 +2,7 @@ import type { Organization, OrgMembership } from "../db/schema.js";
 import type { PublicApplication, PublicUser, SelfUser } from "../types.js";
 import type { Result } from "../lib/result.js";
 import type { EventContext } from "../services/events/types.js";
+import type { FederationApplicationContext } from "../services/federation.js";
 
 export interface AuthResponse {
   user: SelfUser;
@@ -13,7 +14,7 @@ export interface AuthResponse {
 export interface AuthenticationSdk {
   register(input: { username: string; email: string; password: string; name?: string; clientId?: string; metadata?: Record<string, unknown> }): Promise<Result<AuthResponse>>;
   login(input: { email: string; password: string; clientId?: string }): Promise<Result<AuthResponse>>;
-  refresh(refreshToken: string, clientId?: string): Promise<Result<{ accessToken: string; refreshToken: string; expiresAt: Date }>>;
+  refresh(refreshToken: string, clientId?: string): Promise<Result<{ accessToken: string; refreshToken: string; expiresAt: Date; userId?: string }>>;
   logout(refreshToken?: string): Promise<Result<void>>;
   createPasswordResetToken(email: string): Promise<Result<{ token: string; user: SelfUser } | null>>;
   resetPasswordWithToken(token: string, newPassword: string): Promise<Result<SelfUser>>;
@@ -23,9 +24,10 @@ export interface IdentitySdk {
   updateUserProfile(actorId: string, userId: string, updates: Partial<{ name: string; username: string; emailVerified: boolean }>, context?: EventContext): Promise<Result<PublicUser>>;
   updatePlatformRole(actorId: string, targetUserId: string, role: "owner" | "user", context?: EventContext): Promise<Result<PublicUser>>;
   deactivate(actorId: string, targetUserId: string, context?: EventContext): Promise<Result<void>>;
+  reviewAccount(actorId: string, targetUserId: string, active: boolean, context?: EventContext): Promise<Result<PublicUser>>;
   linkUserIdentity(actorId: string, userId: string, providerId: string, providerType: string, externalSub: string, email?: string): Promise<Result<void>>;
   getFederationAuthorizeUrl(provider: string, state: string, redirectUri: string): Promise<Result<{ url: string }>>;
-  completeFederationLogin(provider: string, code: string, redirectUri: string): Promise<Result<{ user: SelfUser; tokens: { accessToken: string; refreshToken: string } }>>;
+  completeFederationLogin(provider: string, code: string, redirectUri: string, application?: FederationApplicationContext): Promise<Result<{ user: SelfUser; tokens: { accessToken: string; refreshToken: string } }>>;
 }
 
 export interface OrganizationSdk {

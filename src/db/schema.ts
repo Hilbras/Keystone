@@ -45,6 +45,7 @@ export const users = pgTable(
     plan: text("plan").default("free").notNull(),
     role: text("role").default("user").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
+    accountReviewRequired: boolean("account_review_required").default(false).notNull(),
     defaultOrgId: uuid("default_org_id").references(() => organizations.id, { onDelete: "set null" }),
     phoneNumber: text("phone_number"),
     phoneVerified: boolean("phone_verified").default(false).notNull(),

@@ -11,14 +11,40 @@ declare module "fastify" {
   }
 }
 
-function buildPayload(request: FastifyRequest, metadata?: Record<string, unknown>): EventPayload {
+async function buildPayload(request: FastifyRequest, metadata?: Record<string, unknown>): Promise<EventPayload> {
+  const metadataOrgId = typeof metadata?.orgId === "string" ? metadata.orgId : undefined;
+  const metadataAppId = typeof metadata?.appId === "string" ? metadata.appId : undefined;
+  let orgId = request.state?.org?.id;
+  let appId: string | undefined;
+
+  if (
+    request.user &&
+    request.state?.membership &&
+    request.state.app?.orgId === request.state.membership.orgId
+  ) {
+    appId = request.state.app.id;
+  }
+
+  if (!orgId && metadataOrgId && request.state?.membership?.orgId === metadataOrgId) {
+    orgId = metadataOrgId;
+  }
+
+  if (!orgId && request.user && metadataOrgId && request.state?.app?.orgId === metadataOrgId) {
+    const membership = await request.server.container.organizationRepository.findMembership(
+      metadataOrgId,
+      request.user.id
+    );
+    if (membership) orgId = metadataOrgId;
+  }
+
+  if (!appId && metadataAppId && request.state?.app?.id === metadataAppId && orgId === request.state.app?.orgId) {
+    appId = metadataAppId;
+  }
+
   return {
-    userId: request.user?.id,
-    orgId: request.state?.org?.id,
-    appId:
-      request.user && request.state?.membership && request.state.app?.orgId === request.state.membership.orgId
-        ? request.state.app.id
-        : undefined,
+    userId: request.user?.id ?? request.state?.auditUserId,
+    orgId,
+    appId,
     requestId: request.id,
     ip: request.ip,
     userAgent: request.headers["user-agent"],
@@ -32,7 +58,7 @@ export default fp(async function auditPlugin(app: FastifyInstance) {
     event: AuditEvent,
     metadata?: Record<string, unknown>
   ) {
-    await audit({ ...buildPayload(this, metadata), event });
+    await audit({ ...(await buildPayload(this, metadata)), event });
   });
 
   app.decorateRequest("emitEvent", async function (
@@ -40,6 +66,6 @@ export default fp(async function auditPlugin(app: FastifyInstance) {
     event: string,
     metadata?: Record<string, unknown>
   ) {
-    await emit({ type: event, payload: buildPayload(this, metadata) });
+    await emit({ type: event, payload: await buildPayload(this, metadata) });
   });
 });

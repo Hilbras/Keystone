@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import { generateApiKey, hashApiKey } from "../services/tokens.js";
-import { toPublicApiKey, toSelfUser } from "../types.js";
+import { toPublicApiKey, toPublicUser } from "../types.js";
 
 const CreateKeySchema = z.object({
   name: z.string().min(1).max(100),
@@ -65,6 +65,6 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
 
   app.get("/validate", { preHandler: [app.authenticateOrApiKey] }, async (request) => {
     const user = request.user!;
-    return { valid: true, user: toSelfUser(user) };
+    return { valid: true, user: toPublicUser(user) };
   });
 }

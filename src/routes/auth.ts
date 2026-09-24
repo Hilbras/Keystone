@@ -13,6 +13,7 @@ import { checkIpAllowed } from "../services/ipControls.js";
 import { toSelfUser } from "../types.js";
 import { verifyTOTP } from "../services/totp.js";
 import { sendResultError } from "./helpers.js";
+import { findApplicationByClientId } from "../services/applications.js";
 
 /**
  * Fire-and-forget impossible-travel check after a successful login.
@@ -88,6 +89,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
       if (!result.success) return sendResultError(reply, result);
 
+      request.state.auditUserId = result.data.user.id;
       await request.audit("user_registered", { userId: result.data.user.id, email: result.data.user.email });
       setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, body.client_id);
       return { user: toSelfUser(result.data.user) };
@@ -128,6 +130,7 @@ export default async function authRoutes(app: FastifyInstance) {
         }
       }
 
+      request.state.auditUserId = result.data.user.id;
       await request.audit("user_login", { userId: result.data.user.id });
       detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
       setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, body.client_id);
@@ -169,6 +172,7 @@ export default async function authRoutes(app: FastifyInstance) {
         }
       }
 
+      request.state.auditUserId = result.data.user.id;
       await request.audit("user_token_login", { userId: result.data.user.id });
       detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
       return {
@@ -194,7 +198,19 @@ export default async function authRoutes(app: FastifyInstance) {
     const result = await sdk.authentication.refresh(refreshToken, clientId);
     if (!result.success) return sendResultError(reply, result);
 
-    await request.audit("token_refresh", {});
+    if (result.data.userId) request.state.auditUserId = result.data.userId;
+    if (clientId) {
+      const application = await findApplicationByClientId(clientId);
+      if (application && result.data.userId) {
+        const membership = await request.server.container.organizationRepository.findMembership(application.orgId, result.data.userId);
+        if (membership) {
+          request.state.app = application;
+          request.state.membership = membership;
+          request.state.org = await request.server.container.organizationRepository.findById(application.orgId);
+        }
+      }
+    }
+    await request.audit("token_refresh", { userId: result.data.userId, clientId, appId: request.state.app?.id, orgId: request.state.org?.id });
     setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, clientId);
     return { success: true };
   });

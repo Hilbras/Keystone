@@ -13,6 +13,7 @@ import { validateDatabase, validateRedis, validateEmail, validateSms } from "../
 import { createConfigWriter } from "../services/setup/configWriter.js";
 import { getSetupToken, validateSetupToken } from "../services/setup/token.js";
 import { runSetupDiagnostics } from "../services/setup/diagnostics.js";
+import { redactConfigurationValues } from "../services/configuration/profiles.js";
 import { queue } from "../services/queue/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -158,9 +159,7 @@ export default async function setupRoutes(app: FastifyInstance) {
       ok: validationErrors.length === 0,
       validationErrors,
       wouldWrite: Object.keys(body.env),
-      mergedPreview: Object.fromEntries(
-        Object.entries(merged).map(([k, v]) => [k, k.includes("KEY") || k.includes("SECRET") || k.includes("PASS") ? "***" : v])
-      ),
+      mergedPreview: redactConfigurationValues(merged),
     };
   });
 

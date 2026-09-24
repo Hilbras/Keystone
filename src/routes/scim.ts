@@ -11,7 +11,7 @@ const ScimUserSchema = z.object({
   active: z.boolean().optional(),
 });
 
-function scimUserResponse(user: { id: string; email: string; name: string | null }): Record<string, unknown> {
+function scimUserResponse(user: { id: string; email: string; name: string | null; isActive?: boolean }): Record<string, unknown> {
   return {
     schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"],
     id: user.id,
@@ -21,7 +21,7 @@ function scimUserResponse(user: { id: string; email: string; name: string | null
       familyName: user.name?.split(" ").slice(1).join(" ") || "",
     },
     emails: [{ value: user.email, primary: true }],
-    active: true,
+    active: user.isActive !== false,
     meta: {
       resourceType: "User",
     },
@@ -65,7 +65,7 @@ export default async function scimRoutes(app: FastifyInstance) {
   });
 
   app.get("/scim/v2/Users", async () => {
-    const allUsers = await app.container.userRepository.listAll();
+    const allUsers = (await app.container.userRepository.listAll()).filter((user) => user.isActive);
     return {
       schemas: ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
       totalResults: allUsers.length,
@@ -104,6 +104,13 @@ export default async function scimRoutes(app: FastifyInstance) {
       isNewUser = true;
     }
 
+    if (body.active === false && user.isActive) {
+      await app.container.userRepository.deactivate(user.id);
+      user = (await app.container.userRepository.findById(user.id)) ?? user;
+    } else if (body.active === true && !user.isActive) {
+      user = (await app.container.userRepository.update(user.id, { isActive: true })) ?? user;
+    }
+
     await request.audit(isNewUser ? "scim_user_created" : "scim_user_updated", { userId: user.id, email: user.email });
     return reply.status(201).send(scimUserResponse(user));
   });
@@ -112,13 +119,24 @@ export default async function scimRoutes(app: FastifyInstance) {
     const { userId } = request.params as { userId: string };
     const body = ScimUserSchema.parse(request.body);
 
-    const updated = await app.container.userRepository.update(userId, {
-      email: body.userName.toLowerCase().trim(),
-      name: body.name
-        ? `${body.name.givenName || ""} ${body.name.familyName || ""}`.trim()
-        : undefined,
-    });
+    const existing = await app.container.userRepository.findById(userId);
+    if (!existing) {
+      return reply.status(404).send(scimError(404, "User not found"));
+    }
 
+    if (body.active === false && existing.isActive) {
+      await app.container.userRepository.deactivate(userId);
+    } else {
+      await app.container.userRepository.update(userId, {
+        email: body.userName.toLowerCase().trim(),
+        name: body.name
+          ? `${body.name.givenName || ""} ${body.name.familyName || ""}`.trim()
+          : undefined,
+        isActive: body.active,
+      });
+    }
+
+    const updated = await app.container.userRepository.findById(userId);
     if (!updated) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
