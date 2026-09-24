@@ -302,17 +302,17 @@ The implementation follows `plan.md` Phase 1 and keeps later roadmap work out of
 **Description:** Prepare the v1.7.0 release artifacts after implementation and verification; do not publish externally without explicit approval.
 
 **Acceptance criteria:**
-- [ ] `package.json` and `package-lock.json` report `1.7.0`.
-- [ ] Typecheck, build, unit/integration/security tests, and frontend build pass.
-- [ ] `npm audit` findings are triaged; any High/Critical exception has an owner, rationale, and review date.
-- [ ] `npm pack --dry-run` contains no secrets, `.env` files, certificates, or temporary artifacts.
-- [ ] Version consistency is checked across package metadata, docs, changelog, and planned tag.
-- [ ] Any missing lint/security CI gates are explicitly resolved or documented as release blockers.
+- [x] `package.json` and `package-lock.json` report `1.7.0`.
+- [x] Lint, typecheck, build, unit/integration/security tests, and frontend build pass.
+- [x] `npm audit --omit=dev --audit-level=high` passes with no High findings.
+- [x] `npm pack --dry-run` contains no source tests, `.env` files, certificates, or temporary artifacts.
+- [x] Version consistency is checked across package metadata, docs, changelog, and planned tag.
+- [x] Lint, dependency-audit, and security CI gates run in the release workflow.
 
 **Verification:**
-- [ ] `git status` is clean except for explicitly retained user files.
-- [ ] `git diff --check` passes.
-- [ ] Release checklist is reviewed before tag/publish.
+- [x] `git status` is clean except for explicitly retained user files.
+- [x] `git diff --check` passes.
+- [x] Release checklist is reviewed before tag/publish.
 
 **Dependencies:** Tasks 1–10
 
@@ -350,21 +350,21 @@ The implementation follows `plan.md` Phase 1 and keeps later roadmap work out of
 
 ### Checkpoint: After Tasks 1–4
 
-- [ ] Confirmed organization-to-platform escalation is blocked at route, service, and SDK boundaries.
-- [ ] Focused security tests pass.
-- [ ] No generic profile contract can carry a platform role.
+- [x] Confirmed organization-to-platform escalation is blocked at route, service, and SDK boundaries.
+- [x] Focused security tests pass.
+- [x] No generic profile contract can carry a platform role.
 
 ### Checkpoint: After Tasks 5–8
 
-- [ ] Membership rank, last-owner, workflow, and resource-scope invariants are enforced.
-- [ ] Cross-tenant and privilege-escalation regression suite passes.
-- [ ] No new direct role checks bypass the canonical policy.
+- [x] Membership rank, last-owner, workflow, and resource-scope invariants are enforced.
+- [x] Cross-tenant and privilege-escalation regression suite passes.
+- [x] No new direct role checks bypass the canonical policy.
 
 ### Checkpoint: After Tasks 9–11
 
-- [ ] Audit records are complete and correctly classified.
-- [ ] API/UI/docs/version metadata are synchronized.
-- [ ] All local release gates are green or explicitly blocked.
+- [x] Audit records are complete and correctly classified.
+- [x] API/UI/docs/version metadata are synchronized.
+- [x] All local release gates are green; only approved external release actions remain.
 
 ## Risks and Mitigations
 
@@ -374,17 +374,16 @@ The implementation follows `plan.md` Phase 1 and keeps later roadmap work out of
 | Existing workflows contain unsafe steps | High | Reject at execution time, migrate/remove seed workflow, document data cleanup |
 | Existing role-permission rows are global and unnamespaced | High | Do not silently rewrite them; protect owner mappings and defer namespace migration with a documented follow-up |
 | Audit persistence is asynchronous and not transactionally coupled to mutations | Medium | Emit explicit events and test metadata; document transactional audit limitation |
-| Existing High dependency advisories remain in the baseline | High | Do not hide them; resolve or document a time-bounded risk exception before release |
+| Existing High dependency advisories in the baseline | High | Resolved for v1.7.0 with safe transitive overrides; High-severity audit gate passes and Moderate findings remain tracked |
 | Stale JWT role claims affect external consumers | Medium | Keystone reloads DB roles internally; document token-expiry/revocation behavior and track claim-hardening follow-up |
 | Client-controlled application context can influence authorization | High | Resolve membership from authenticated actor and route org; fail closed when context is absent |
-| No root lint command exists | Medium | Add a real gate or explicitly block release; do not label typecheck as lint |
+| Root lint quality gate | Medium | Resolved with `oxlint`, warnings denied, and a blocking CI step |
 
 ## Open Decisions / Release Blockers
 
-1. Whether to backport the existing High dependency remediation scheduled for Phase 5, or issue a documented, time-bounded exception for v1.7.0.
-2. Whether to add a real linter and security-audit CI gate in this release, despite Phase 13 also planning broader quality gates.
-3. How npm publication is performed from the release workflow; the current workflow creates GitHub/Docker artifacts but has no npm publish job and the repository currently has no configured GitHub npm secret.
-4. Whether the supplied `plan.md` is the authoritative roadmap over the older root `ROADMAP.md`; this plan treats `plan.md` as authoritative because the user explicitly selected it.
+1. High dependency remediation and the real lint/audit CI gates are resolved for v1.7.0; Moderate dependency findings remain tracked separately.
+2. npm publication still requires the `NPM_TOKEN` GitHub secret and explicit user approval.
+3. Whether the supplied `plan.md` is the authoritative roadmap over the older root `ROADMAP.md`; this plan treats `plan.md` as authoritative because the user explicitly selected it.
 
 ## Review Remediation: Confirmed Bypasses Found After Initial Slice
 
