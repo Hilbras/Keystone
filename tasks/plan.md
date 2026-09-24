@@ -15,7 +15,7 @@ The implementation follows `plan.md` Phase 1 and keeps later roadmap work out of
 | Organization membership table | Owner/admin/member authority | Admin self-promotion, owner invitation, or last-owner demotion | Central role-rank policy and last-owner invariant |
 | Generic identity SDK/repository | `users.role` | Any caller smuggles `role` through a profile update | Remove `role` from generic profile contracts; expose a dedicated platform-role use case |
 | Organization user responses | Password hashes, TOTP secrets, internal fields | Full `User` rows are returned to tenant members | Serialize every user response through `toPublicUser()` |
-| Authorization context | Permission decisions | Client-controlled app/org context or stale membership is trusted | Resolve organization and membership from authenticated actor and route parameters |
+| Authorization context | Permission decisions and token claims | Client-controlled app/org context or stale membership is trusted | Resolve organization and membership from authenticated actor and route parameters; only membership-backed client context may add organization claims |
 | Resource repositories | Cross-tenant SSO/application data | Connection IDs are looked up globally | Add organization-scoped resource lookups |
 | Audit log | Role-transition evidence | Mutations are mislabeled, omit old/new state, and failed checks are silent | Add explicit event contracts and structured actor/target/org/before/after metadata |
 
@@ -199,6 +199,7 @@ The implementation follows `plan.md` Phase 1 and keeps later roadmap work out of
 - [ ] Positive permission checks work after authentication; missing organization context fails closed.
 - [ ] Organization/application/resource ownership checks are explicit and reusable.
 - [ ] Legacy `requireOwner`/`requireAuthAndRole` callers are migrated or reduced to compatibility wrappers without bypassing the canonical policy.
+- [ ] Application-bound OAuth/OIDC and session token claims are only issued with organization context after membership verification.
 
 **Verification:**
 - [ ] Authorization context unit/integration tests pass.
@@ -385,7 +386,65 @@ The implementation follows `plan.md` Phase 1 and keeps later roadmap work out of
 3. How npm publication is performed from the release workflow; the current workflow creates GitHub/Docker artifacts but has no npm publish job and the repository currently has no configured GitHub npm secret.
 4. Whether the supplied `plan.md` is the authoritative roadmap over the older root `ROADMAP.md`; this plan treats `plan.md` as authoritative because the user explicitly selected it.
 
-## Definition of Done
+## Review Remediation: Confirmed Bypasses Found After Initial Slice
+
+The first implementation slice passed its focused tests but an adversarial review identified paths below the HTTP boundary and adjacent response leaks. These are part of Phase 1 because they can produce the same privilege escalation or credential disclosure.
+
+### Task 13: Enforce a closed workflow step contract
+
+- Replace the three-name denylist with a tenant-safe allowlist.
+- Reject unknown/plugin alias steps at creation and execution.
+- Block `create_organization` until organization creation has an owner and trusted actor.
+- Restrict global workflows to platform owners; require membership for organization workflows.
+- Add regression tests for plugin aliases, global workflow access, and malformed definitions.
+
+### Task 14: Remove actorless global mutation APIs
+
+- Make identity deactivation require a platform-owner actor and protect the last owner.
+- Remove or make private the organization-domain global deactivation/removal helpers.
+- Require an owner user whenever an organization is created, including SDK/CLI paths.
+- Audit trusted bootstrap, CLI, seed, and SSO membership transitions.
+
+### Task 15: Enforce application-layer permissions and scoped SDK authorization
+
+- Require organization permissions in application services, not only route pre-handlers.
+- Replace actorless authorization SDK methods with actor-plus-organization methods.
+- Add revoked-permission and cross-tenant direct-SDK tests.
+
+### Task 6A: Make owner invariants atomic
+
+- Lock owner rows during platform-role and organization-membership transitions.
+- Reject concurrent last-owner demotion/removal with a stable error.
+- Add concurrent transition tests.
+
+### Task 16: Enforce runtime role vocabularies and namespace boundaries
+
+- Validate repository-level role writes at runtime.
+- Reject custom/unknown permission role names and protect organization-owner mappings.
+- Normalize or reject legacy invalid platform roles before token issuance.
+- Remove the invalid `viewer` default role.
+
+### Task 17: Close secret and configuration response leaks
+
+- Project application, OIDC, and API-key responses through safe DTOs.
+- Return OIDC/API-key plaintext credentials only once at creation.
+- Redact configuration/profile values and remove arbitrary public metadata.
+- Add response-leak regression tests.
+
+### Task 18: Repair audit contracts and transition writers
+
+- Synchronize `AuditEventType` and runtime validation.
+- Emit denial/transition events from service-level denials and trusted writers.
+- Record organization membership role separately from platform role in member lists.
+- Add audit tests for each transition source.
+
+### Task 19: Complete frontend and release contract follow-up
+
+- Make organization selectors available to organization owners.
+- Remove unsupported custom-role messaging and unsafe workflow controls.
+- Preserve trusted API-key organization context.
+- Update docs and rerun release gates.
+
 
 - [ ] Every confirmed Critical/High Phase 1 finding has a fix and permanent regression test.
 - [ ] No organization membership role can modify a platform role.

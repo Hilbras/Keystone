@@ -173,12 +173,13 @@ curl -X POST http://localhost:4001/v1/authz/check \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "subjectId": "api-key-id",
+    "organizationId": "00000000-0000-0000-0000-000000000000",
     "resource": "order",
-    "action": "create",
-    "context": { "orgId": "..." }
+    "action": "create"
   }'
 ```
+
+Authorization checks are organization-scoped. Platform roles (`owner`/`user`) and organization roles (`owner`/`admin`/`member`) are separate; never infer one from the other. User-management responses are redacted and do not include password hashes or TOTP secrets.
 
 ---
 

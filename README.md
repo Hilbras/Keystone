@@ -1,5 +1,7 @@
 # Hilbras Keystone
 
+**Current version: `1.7.0`**
+
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
 Keystone is a **standalone identity platform**, not a wrapper around another identity system. It authenticates users, issues signed tokens, enforces authorization, audits every security decision, and federates identities from any OIDC provider.
@@ -16,9 +18,19 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Federation Broker** — delegate login to Google, GitHub, Azure, Okta, Keycloak, Zitadel, or any OIDC provider and issue Keystone tokens.
 - **Enterprise SSO** — SAML 2.0 and OIDC enterprise connectors with SCIM user provisioning.
 - **Audit & Compliance** — immutable audit log, event bus, webhooks, and anomaly detection.
-- **Workflow Platform** — configurable post-auth workflows (assign roles, create orgs, send email, fire webhooks).
+- **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v1.7.0
+
+- **Authorization boundary hardening** — platform roles (`owner`/`user`) and organization roles (`owner`/`admin`/`member`) are now separate namespaces.
+- **Dedicated platform-role API** — platform role changes use `PATCH /v1/admin/platform/users/:userId/role` and require a platform owner.
+- **Tenant-safe workflows** — organization workflows can no longer assign global roles or add cross-organization memberships.
+- **Secret-safe user responses** — administrative and organization user responses use a redacted public projection.
+- **Authorization auditing** — role, membership, permission, and denied-authorization events include actor, target, organization, and transition metadata.
+
+> **Migration:** organization user PATCH/DELETE endpoints no longer mutate global accounts. Use the platform user administration endpoint for account-wide changes and organization member endpoints for membership roles.
 
 ## What's new in v1.6.0
 
@@ -544,11 +556,13 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 | GET | `/v1/admin/organizations/:id` | Organization details |
 | POST/GET | `/v1/admin/organizations/:id/applications` | Create / list apps |
 | PATCH | `/v1/admin/organizations/:id/applications/:appId` | Update app |
-| POST/GET | `/v1/admin/organizations/:id/invites` | Invite / list invites |
-| GET | `/v1/admin/organizations/:id/members` | List members |
-| PATCH/DELETE | `/v1/admin/organizations/:id/members/:userId` | Update / remove member |
-| GET | `/v1/admin/organizations/:id/users` | List users in org |
-| GET/PATCH/DELETE | `/v1/admin/organizations/:id/users/:userId` | Manage user |
+| POST | `/v1/admin/organizations/:id/invites` | Invite a member with an organization role |
+| GET | `/v1/admin/organizations/:id/members` | List redacted organization members |
+| PATCH/DELETE | `/v1/admin/organizations/:id/members/:userId` | Update/remove an organization membership role |
+| GET | `/v1/admin/organizations/:id/users` | List redacted users in the organization |
+| GET | `/v1/admin/organizations/:id/users/:userId` | Read a redacted organization user |
+| PATCH | `/v1/admin/platform/users/:userId` | Update non-role platform user fields (**owner only**) |
+| PATCH | `/v1/admin/platform/users/:userId/role` | Change a platform role (`owner`/`user`, **owner only**) |
 | GET | `/v1/admin/permissions` | **Owner only** — list all permissions |
 | GET/POST/DELETE | `/v1/admin/roles/:role/permissions` | **Owner only** — manage role permissions |
 | GET/DELETE | `/v1/admin/organizations/:id/api-keys` | Org-scoped API keys |
@@ -621,11 +635,11 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/workflows` | List workflows (requires orgId) |
-| POST | `/workflows` | Create workflow |
-| GET | `/workflows/:id` | Get workflow |
-| DELETE | `/workflows/:id` | Delete workflow |
-| GET | `/workflows/:id/runs` | List workflow runs |
+| GET | `/v1/admin/workflows?orgId=...` | List organization-scoped workflows |
+| POST | `/v1/admin/workflows` | Create a workflow with safe steps and an `orgId` |
+| GET | `/v1/admin/workflows/:id` | Get a workflow |
+| DELETE | `/v1/admin/workflows/:id` | Delete a workflow |
+| GET | `/v1/admin/workflows/:id/runs` | List workflow runs |
 
 ### Discovery
 
@@ -657,7 +671,7 @@ npx keystone migrate
 # Validate required configuration
 npx keystone config:validate
 
-# Create the first platform owner
+# Create a local platform user (use --role owner for a platform owner)
 npx keystone user:create --email admin@example.com --password 'Str0ngP@ss!' --role owner
 
 # Create an organization from the command line
@@ -675,8 +689,10 @@ npx keystone org:create --name "Acme" --owner-email admin@example.com
 - Every authentication decision is audited.
 - Cookies use `HttpOnly`, `Secure`, and `SameSite`.
 - OAuth2 public clients must use PKCE.
-- All admin endpoints require owner or role-based authorization.
-- All workflow operations require organization membership.
+- Platform roles (`owner`, `user`) are never interchangeable with organization roles (`owner`, `admin`, `member`).
+- Only platform owners can change platform roles; organization member APIs cannot mutate global users.
+- User responses use a redacted public projection and never include password hashes, TOTP secrets, or sensitive metadata.
+- All workflow operations require organization membership and reject authorization-mutating tenant steps.
 - XML output (SAML metadata) is escaped to prevent injection.
 - Rate limit nonces use cryptographically secure random bytes.
 - Internal implementation details are not exposed in API responses.

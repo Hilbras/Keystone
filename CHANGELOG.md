@@ -5,6 +5,73 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-09-24
+
+### Added
+
+- Dedicated owner-only platform-role endpoint at `PATCH /v1/admin/platform/users/:userId/role`.
+- Centralized platform and organization authorization guards with explicit organization context.
+- Versioned audit events for platform-role, membership, permission, and denied-authorization transitions.
+- Dedicated authorization regression suite covering privilege escalation, tenant isolation, workflow safety, secret disclosure, and audit metadata.
+- RBAC and authorization-boundary documentation.
+
+### Changed
+
+- Platform roles are explicitly limited to `owner` and `user`.
+- Organization roles are explicitly limited to `owner`, `admin`, and `member`.
+- Authorization checks now require an explicit `organizationId`.
+- Frontend administration clients use the dedicated platform-role endpoint and safe workflow definitions.
+- SAML metadata lookups require both connection and organization identifiers.
+
+### Fixed
+
+- Organization user routes can no longer mutate global users or deactivate shared accounts.
+- Generic profile and in-process identity contracts can no longer carry a platform role.
+- Organization admins cannot promote themselves or other members to organization owner.
+- The sole organization owner cannot be demoted or removed.
+- Tenant workflows now use a closed safe-step allowlist; plugin aliases, arbitrary webhooks, organization creation, and authorization-mutating steps fail closed.
+- Global workflows require platform-owner access, and workflow execution rechecks organization membership.
+- Organization creation always assigns an owner; actorless global deactivation APIs were removed from the organization domain.
+- Last-owner transitions use database row locks to prevent concurrent demotion/removal.
+- Platform-user deactivation now disables login, invalidates existing sessions, revokes refresh tokens and user API keys, and preserves the last active owner invariant.
+- User-management responses redact application secret hashes, OIDC/API-key credentials, configuration values, password hashes, TOTP secrets, and metadata.
+- SAML/OIDC public lookups require an organization context; new OIDC client secrets are encrypted at rest, and legacy plaintext values are re-encrypted on first callback use.
+- OAuth/OIDC client context no longer places an organization claim in a user token unless the user is a member of that application's organization.
+- Failed authorization attempts and role transitions now produce structured audit evidence.
+
+### Security
+
+- Critical organization-admin-to-platform-owner escalation paths are closed at HTTP, application, domain, SDK, and repository boundaries.
+- Cross-tenant authorization context is resolved from authenticated database membership rather than client-controlled application context.
+- Workflow definitions that are malformed or contain blocked authorization steps fail closed.
+
+### Breaking Changes
+
+- Organization user PATCH/DELETE endpoints no longer mutate global accounts; they return a migration response. Use platform user administration or organization member endpoints.
+- `/v1/authz/check` requests must include `organizationId`.
+- Custom organization role names are no longer accepted; only `owner`, `admin`, and `member` are supported.
+- Public SAML/OIDC initiation and metadata URLs require `organizationId`.
+- Direct authorization SDK calls now require both actor and organization IDs.
+- Tenant workflow definitions containing authorization-mutating, plugin, organization-creation, or arbitrary webhook steps are rejected or blocked.
+
+### Migration
+
+- Move platform role changes to `PATCH /v1/admin/platform/users/:userId/role`.
+- Use `/v1/admin/organizations/:id/members/:userId` for organization role changes.
+- Remove unsafe workflow steps before deployment.
+- Update SAML/OIDC URLs to include the organization ID.
+- Update authorization-check clients to send the organization ID explicitly.
+
+### Dependencies
+
+- No dependency changes in this release. Existing dependency audit findings remain tracked for the planned supply-chain phase.
+
+### Testing
+
+- Backend typecheck and build pass.
+- Backend test suite passes with the security regression suite enabled.
+- Frontend production build passes.
+
 ## [1.1.0] - 2026-09-19
 
 Security hardening, architecture improvements, and enterprise SSO enhancements.
@@ -144,6 +211,7 @@ Frontend upgrades — React 19, Vite 8, Tailwind 4, TypeScript 7.
 - `postcss.config.js` deleted — Tailwind 4 uses Vite plugin directly.
 - `src/index.css` updated to use `@import "./tailwind.css"` instead of `@tailwind base/components/utilities`.
 
+[1.7.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.7.0
 [1.6.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.4.0

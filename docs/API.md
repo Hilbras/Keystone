@@ -1,6 +1,6 @@
 # Hilbras Keystone — HTTP API Reference
 
-Version 1.0.0
+Version 1.7.0
 
 Every route also ships an interactive OpenAPI description served by the API itself:
 
@@ -152,7 +152,9 @@ Hilbras Keystone acts as an authorization server for first-party and third-party
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/v1/authz/check` | auth | Evaluate RBAC/ABAC policy: `{ action, resource, context }` → `{ allowed, reason }` |
+| POST | `/v1/authz/check` | auth | Evaluate organization RBAC: `{ organizationId, action, resource }` → `{ allowed }` |
+
+`organizationId` is required. Keystone resolves the authenticated user's membership for that organization and returns `403` when the actor is not a member.
 
 ---
 
@@ -171,11 +173,11 @@ Hilbras Keystone acts as an authorization server for first-party and third-party
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/sso/saml/:connectionId` | public | Start SAML login for a connection (SP-initiated) |
-| POST | `/sso/saml/acs` | public | SAML Assertion Consumer Service |
-| GET | `/sso/saml/:connectionId/metadata` | public | SAML metadata XML |
-| GET | `/sso/sso/oidc/:connectionId` | public | Start enterprise OIDC login |
-| GET | `/sso/sso/oidc/:connectionId/callback` | public | Enterprise OIDC callback |
+| GET | `/sso/saml/:connectionId?orgId=:organizationId` | public | Start SAML login for a connection (organization-scoped) |
+| POST | `/sso/saml/acs` | public | SAML Assertion Consumer Service; signed RelayState binds the organization |
+| GET | `/sso/saml/:connectionId/metadata?orgId=:organizationId` | public | Organization-scoped SAML metadata XML |
+| GET | `/sso/sso/oidc/:connectionId?orgId=:organizationId` | public | Start organization-scoped enterprise OIDC login |
+| GET | `/sso/sso/oidc/:connectionId/callback?orgId=:organizationId` | public | Enterprise OIDC callback; state binds the organization |
 
 > ⚠️ Note the doubled `/sso/sso/oidc` segment — the OIDC enterprise routes declare
 > `/sso/oidc/...` paths *and* are mounted under the `/sso` prefix. This is slated
@@ -205,7 +207,10 @@ are available to any authenticated member.
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/v1/admin/platform/users` | owner | All users across orgs |
+| GET | `/v1/admin/platform/users` | owner | Redacted public users across orgs |
+| PATCH | `/v1/admin/platform/users/:id` | owner | Update non-role platform user fields |
+| PATCH | `/v1/admin/platform/users/:id/role` | owner | Change platform role (`owner` or `user`) |
+| DELETE | `/v1/admin/platform/users/:id` | owner | Deactivate account and revoke sessions/tokens/API keys |
 | GET | `/v1/admin/platform/organizations` | owner | All organizations |
 | GET | `/v1/admin/platform/applications` | owner | All applications |
 | GET | `/v1/admin/platform/audit-logs` | owner | Query audit trail |
@@ -240,35 +245,42 @@ are available to any authenticated member.
 | --- | --- | --- | --- |
 | GET | `/v1/admin/organizations` | auth | Organizations of current user |
 | GET | `/v1/admin/organizations/:id` | auth | Org detail (members, apps) |
-| GET | `/v1/admin/permissions` | auth | Effective permission catalog |
+| POST | `/v1/admin/organizations/:id/invites` | org owner/admin | Invite a member with an organization role |
+| GET | `/v1/admin/organizations/:id/members` | org member | Redacted members with `membershipRole` and separate `platformRole` fields |
+| PATCH/DELETE | `/v1/admin/organizations/:id/members/:userId` | org owner/admin | Change/remove an organization membership |
+| GET | `/v1/admin/organizations/:id/users` | org member | Redacted organization users |
+| GET | `/v1/admin/organizations/:id/users/:userId` | org member | Redacted organization user |
+| GET | `/v1/admin/permissions` | owner | Effective permission catalog |
 | POST | `/v1/admin/permissions` | owner | Create custom permission |
 | DELETE | `/v1/admin/permissions/:id` | owner | Delete custom permission |
-| GET | `/v1/admin/roles` | auth | Role catalog |
-| GET | `/v1/admin/roles/:role/permissions` | auth | Permissions mapped to a role |
-| POST | `/v1/admin/organizations/:id/service-accounts` | owner | Create service account |
-| GET | `/v1/admin/organizations/:id/service-accounts` | owner | List service accounts |
-| GET | `/v1/admin/organizations/:id/service-accounts/:accountId` | owner | Service account detail |
-| PATCH | `/v1/admin/organizations/:id/service-accounts/:accountId` | owner | Update service account |
-| POST | `/v1/admin/organizations/:id/service-accounts/:accountId/api-keys` | owner | Issue API key for service account |
+| GET | `/v1/admin/roles` | owner | Built-in organization role catalog |
+| GET | `/v1/admin/roles/:role/permissions` | owner | Permissions mapped to an organization role |
+| POST | `/v1/admin/organizations/:id/service-accounts` | org permission | Create service account |
+| GET | `/v1/admin/organizations/:id/service-accounts` | org permission | List service accounts |
+| GET | `/v1/admin/organizations/:id/service-accounts/:accountId` | org permission | Service account detail |
+| PATCH | `/v1/admin/organizations/:id/service-accounts/:accountId` | org permission | Update service account |
+| POST | `/v1/admin/organizations/:id/service-accounts/:accountId/api-keys` | org permission | Issue API key for service account |
+
+Organization user PATCH/DELETE routes are retained only as explicit migration tombstones (`410`) for clients that used them to mutate global accounts. Use platform user administration for account-wide changes and `/members/:userId` for organization roles.
 
 ### Workflows
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| GET | `/v1/admin/workflows` | auth | List workflows |
-| POST | `/v1/admin/workflows` | auth | Create workflow |
-| GET | `/v1/admin/workflows/:id` | auth | Workflow detail |
-| DELETE | `/v1/admin/workflows/:id` | auth | Remove workflow |
-| GET | `/v1/admin/workflows/:id/runs` | auth | Execution history |
+| GET | `/v1/admin/workflows?orgId=:organizationId` | org member | List organization workflows |
+| POST | `/v1/admin/workflows` | org owner/admin | Create workflow with safe email steps and an `orgId` |
+| GET | `/v1/admin/workflows/:id` | org member / platform owner for global | Workflow detail |
+| DELETE | `/v1/admin/workflows/:id` | org owner/admin / platform owner for global | Remove workflow |
+| GET | `/v1/admin/workflows/:id/runs` | org member / platform owner for global | Execution history |
 
 ### Billing & runtime configuration
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | GET | `/v1/admin/billing/plans` | auth | Available plans |
-| GET | `/v1/admin/config` | auth | Runtime configuration view |
-| PUT | `/v1/admin/config` | auth | Update configuration |
-| POST | `/v1/admin/config/restart` | auth | Graceful restart of services |
+| GET | `/v1/admin/config` | owner | Redacted runtime configuration view |
+| PUT | `/v1/admin/config` | owner | Update configuration |
+| POST | `/v1/admin/config/restart` | owner | Graceful restart of services |
 
 ---
 
@@ -279,7 +291,7 @@ are available to any authenticated member.
 | GET | `/sdk/keystone-dropin.js` | public | Drop-in browser widget (self-hosted build) |
 | GET | `/sdk/keystone-dropin.js.sri` | public | Subresource-integrity hash for the drop-in |
 | GET | `/sdk/branding/:clientId` | public | Per-application branding payload |
-| POST | `/sdk/connect` | public | Handshake used by embedded SDK components |
+| POST | `/sdk/connect` | owner | Handshake used by embedded SDK components |
 
 ---
 

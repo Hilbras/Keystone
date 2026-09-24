@@ -16,12 +16,21 @@ This document outlines the security model and operational practices for Hilbras 
 - **API keys** are opaque, prefix-searchable, and hashed at rest.
 - **JWT signing keys** are rotatable. The JWKS endpoint publishes the active key plus recently rotated keys for a 24-hour grace period.
 - **Cookies** use `HttpOnly`, `Secure` (configurable), and `SameSite=lax`.
+- Configuration and profile responses redact secret-like values before leaving the API; raw database URLs, credentials, signing keys, and provider secrets are not returned.
+- SAML RelayState is bound to a short-lived, one-time Redis transaction and initiating browser cookie; production requires a high-entropy `KEYSTONE_INTERNAL_API_KEY`.
+- Deactivated users are rejected by password, token, API-key, refresh, magic-link, WebAuthn, OAuth, SAML, and OIDC authentication; deactivation revokes refresh tokens, sessions, and user API keys.
 
 ## Authorization
 
-- RBAC permissions are checked through `/v1/authz/check`.
-- Permissions can be scoped to organizations and applications.
-- Future releases will support ABAC and custom policy plugins.
+- Platform roles are exactly `owner` and `user`; organization roles are exactly `owner`, `admin`, and `member`.
+- The namespaces are independent. Organization membership never grants platform-owner access.
+- Platform role changes use the dedicated owner-only endpoint `PATCH /v1/admin/platform/users/:userId/role`.
+- Organization member APIs may change only `organizationMembership.role`; global account writes and deactivation are rejected.
+- Organization permission checks resolve the authenticated actor and route organization explicitly. Client-controlled application/origin context is not an authorization decision.
+- `/v1/authz/check` requires an explicit `organizationId` and fails closed when the actor is not a member.
+- The last platform owner and the last organization owner cannot be demoted.
+- Tenant workflows cannot assign roles or add memberships across organizations.
+- See [RBAC.md](RBAC.md) for the role matrix and migration guidance.
 
 ## Secrets
 
@@ -32,6 +41,10 @@ The secrets provider abstraction stores:
 - Password hashes
 
 Default provider stores secrets in PostgreSQL. Production deployments should use `EnvironmentSecretsProvider` or an enterprise backend (AWS KMS, HashiCorp Vault, Azure Key Vault) via plugin.
+
+## User data exposure
+
+Administrative and organization user responses use a redacted public projection. Password hashes, TOTP secrets, setup tokens, and sensitive metadata are never returned by user-management endpoints. Treat any client that depends on those fields as requiring a separate, explicitly authorized migration.
 
 ## Rate limiting
 
@@ -45,8 +58,10 @@ Every security-relevant action emits a versioned event:
 - `oauth_callback`, `saml_sso_login`, `oidc_enterprise_login`
 - `api_key_created`, `api_key_revoked`
 - `authz_check`, `password_reset_requested`, `password_reset_completed`
+- `platform_role_changed`, `organization_member_role_updated`, `organization_member_invited`, `organization_member_removed`
+- `permission_role_updated`, `workflow_blocked`, `unauthorized_access`
 
-Events are written to the audit log, exported to webhooks, and consumed by anomaly detection.
+Events are written to the audit log, exported to webhooks, and consumed by anomaly detection. Authorization transitions include actor, target, organization, previous/new state, request ID, IP address, and user agent where available. Audit persistence is asynchronous; production deployments should monitor subscriber failures.
 
 ## Reporting vulnerabilities
 
