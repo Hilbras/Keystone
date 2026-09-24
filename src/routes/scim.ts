@@ -79,6 +79,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     if (!user) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
+    request.state.auditUserId = user.id;
     return scimUserResponse(user);
   });
 
@@ -104,6 +105,7 @@ export default async function scimRoutes(app: FastifyInstance) {
       isNewUser = true;
     }
 
+    request.state.auditUserId = user.id;
     if (body.active === false && user.isActive) {
       await app.container.userRepository.deactivate(user.id);
       user = (await app.container.userRepository.findById(user.id)) ?? user;
@@ -123,6 +125,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     if (!existing) {
       return reply.status(404).send(scimError(404, "User not found"));
     }
+    request.state.auditUserId = existing.id;
 
     if (body.active === false && existing.isActive) {
       await app.container.userRepository.deactivate(userId);
@@ -147,6 +150,7 @@ export default async function scimRoutes(app: FastifyInstance) {
   app.delete("/scim/v2/Users/:userId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { userId } = request.params as { userId: string };
     const user = await app.container.userRepository.findById(userId);
+    if (user) request.state.auditUserId = user.id;
     await app.container.userRepository.deleteById(userId);
     await request.audit("scim_user_deleted", { userId, email: user?.email });
     return reply.status(204).send();

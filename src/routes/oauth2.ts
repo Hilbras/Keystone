@@ -228,6 +228,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
+        request.state.auditUserId = tokens.userId;
         return {
           access_token: tokens.accessToken,
           refresh_token: tokens.refreshToken,
