@@ -68,9 +68,13 @@ export function initializeContainer(overrides?: Partial<Container>): Container {
 
 export function buildApplicationServices(container: Container) {
   const authorizationDomain = new AuthorizationDomainService(container.organizationRepository, container.permissionRepository);
-  const authenticationDomain = new AuthenticationDomainService(container.userRepository, container.applicationRepository);
+  const authenticationDomain = new AuthenticationDomainService(
+    container.userRepository,
+    container.applicationRepository,
+    container.organizationRepository
+  );
   const identityDomain = new IdentityDomainService(container.userRepository, container.identityRepository);
-  const organizationDomain = new OrganizationDomainService(container.organizationRepository, container.applicationRepository, container.userRepository);
+  const organizationDomain = new OrganizationDomainService(container.organizationRepository, container.applicationRepository);
 
   return {
     auth: new AuthenticationApplicationService(authenticationDomain),

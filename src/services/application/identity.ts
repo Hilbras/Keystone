@@ -20,10 +20,12 @@ export class IdentityApplicationService {
   }
 
   async updateUserProfile(
+    actorId: string,
     userId: string,
-    updates: Partial<{ name: string; username: string; emailVerified: boolean }>
+    updates: Partial<{ name: string; username: string; emailVerified: boolean }>,
+    context?: EventContext
   ): Promise<Result<User>> {
-    return this.domain.updateUserProfile(userId, updates);
+    return this.domain.updateUserProfile(actorId, userId, updates, context);
   }
 
   async updatePlatformRole(
@@ -35,8 +37,8 @@ export class IdentityApplicationService {
     return this.domain.updatePlatformRole(actorId, targetUserId, role, context);
   }
 
-  async deactivate(userId: string): Promise<Result<void>> {
-    return this.domain.deactivate(userId);
+  async deactivate(actorId: string, targetUserId: string, context?: EventContext): Promise<Result<void>> {
+    return this.domain.deactivate(actorId, targetUserId, context);
   }
 
   async listOrganizationUsers(orgId: string): Promise<User[]> {
@@ -44,13 +46,14 @@ export class IdentityApplicationService {
   }
 
   async linkUserIdentity(
+    actorId: string,
     userId: string,
     providerId: string,
     providerType: string,
     externalSub: string,
     email?: string
   ): Promise<Result<void>> {
-    return this.domain.linkUserIdentity(userId, providerId, providerType, externalSub, email);
+    return this.domain.linkUserIdentity(actorId, userId, providerId, providerType, externalSub, email);
   }
 
   async getFederationAuthorizeUrl(provider: string, state: string, redirectUri: string): Promise<Result<{ url: string }>> {

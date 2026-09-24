@@ -1,6 +1,8 @@
 import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { organizations, orgMemberships, users, type Organization, type OrgMembership } from "../db/schema.js";
+import { emit } from "./events/bus.js";
+import { DrizzleOrganizationRepository } from "../repositories/organization.js";
 
 export type OrgRole = "owner" | "admin" | "member";
 
@@ -13,22 +15,24 @@ export function slugify(name: string): string {
     .slice(0, 64);
 }
 
-export async function createOrganization(input: {
-  name: string;
-  slug?: string;
-  plan?: string;
-}): Promise<Organization> {
-  const baseSlug = input.slug || slugify(input.name);
-  const slug = await ensureUniqueSlug(baseSlug);
-
-  const [org] = await db
-    .insert(organizations)
-    .values({
-      name: input.name,
-      slug,
-      plan: input.plan || "free",
-    })
-    .returning();
+export async function createOrganization(
+  input: {
+    name: string;
+    slug?: string;
+    plan?: string;
+  },
+  userId: string
+): Promise<Organization> {
+  const repository = new DrizzleOrganizationRepository();
+  const org = await repository.createWithOwner(input, userId);
+  await emit({
+    type: "organization_member_invited",
+    payload: {
+      userId,
+      orgId: org.id,
+      metadata: { targetUserId: userId, previousRole: null, newRole: "owner", action: "organization_created_sdk" },
+    },
+  });
   return org;
 }
 
@@ -51,31 +55,6 @@ export async function findOrganizationsByUserId(userId: string): Promise<Organiz
   return rows.map((r) => r.org);
 }
 
-export async function addOrgMembership(input: {
-  orgId: string;
-  userId: string;
-  role: OrgRole;
-}): Promise<OrgMembership> {
-  const [membership] = await db
-    .insert(orgMemberships)
-    .values({
-      orgId: input.orgId,
-      userId: input.userId,
-      role: input.role,
-    })
-    .onConflictDoNothing({ target: [orgMemberships.orgId, orgMemberships.userId] })
-    .returning();
-
-  if (membership) return membership;
-
-  const [existing] = await db
-    .select()
-    .from(orgMemberships)
-    .where(and(eq(orgMemberships.orgId, input.orgId), eq(orgMemberships.userId, input.userId)))
-    .limit(1);
-  return existing;
-}
-
 export async function findMembership(
   orgId: string,
   userId: string
@@ -86,27 +65,6 @@ export async function findMembership(
     .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
     .limit(1);
   return membership;
-}
-
-export async function updateMembershipRole(
-  orgId: string,
-  userId: string,
-  role: OrgRole
-): Promise<OrgMembership | undefined> {
-  const [updated] = await db
-    .update(orgMemberships)
-    .set({ role, updatedAt: sql`now()` })
-    .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
-    .returning();
-  return updated;
-}
-
-export async function removeMembership(orgId: string, userId: string): Promise<boolean> {
-  const deleted = await db
-    .delete(orgMemberships)
-    .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
-    .returning();
-  return deleted.length > 0;
 }
 
 export async function countOwners(orgId: string): Promise<number> {
@@ -153,19 +111,4 @@ export async function listOrgMembers(orgId: string) {
     .from(orgMemberships)
     .where(eq(orgMemberships.orgId, orgId))
     .innerJoin(users, eq(orgMemberships.userId, users.id));
-}
-
-async function ensureUniqueSlug(base: string): Promise<string> {
-  let slug = base || "org";
-  let counter = 2;
-  while (true) {
-    const existing = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.slug, slug))
-      .limit(1);
-    if (existing.length === 0) return slug;
-    slug = `${base}-${counter}`;
-    counter++;
-  }
 }

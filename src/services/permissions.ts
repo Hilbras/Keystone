@@ -60,7 +60,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     "api_key:read",
     "sso_connection:read",
   ],
-  viewer: ["organization:read", "application:read", "audit_log:read"],
 };
 
 export function permissionKey(resource: string, action: string): string {

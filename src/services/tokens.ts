@@ -13,6 +13,8 @@ import { db } from "../db/index.js";
 import {
   refreshTokens,
   users,
+  applications,
+  orgMemberships,
   type User,
   type RefreshToken,
   type Application,
@@ -84,6 +86,7 @@ export interface AccessTokenOptions {
 }
 
 export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Promise<string> {
+  if (!user.isActive) throw new Error("Cannot issue a token for a deactivated account");
   if (!activeKey) throw new Error("JWT signing keys not loaded");
   const claims: TokenClaims = {
     sub: user.id,
@@ -91,7 +94,7 @@ export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Pr
     username: user.username,
     name: user.name ?? undefined,
     plan: user.plan,
-    role: user.role,
+    role: user.role === "owner" ? "owner" : "user",
     provider: user.provider,
   };
   if (opts.orgId) claims.org_id = opts.orgId;
@@ -254,14 +257,31 @@ export async function rotateRefreshToken(
     .where(eq(refreshTokens.id, existing.id));
 
   const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
-  if (!user) return null;
+  if (!user?.isActive) return null;
+
+  let appId: string | undefined;
+  if (existing.appId) {
+    const [application] = await db
+      .select({ id: applications.id, orgId: applications.orgId })
+      .from(applications)
+      .where(and(eq(applications.id, existing.appId), eq(applications.isActive, true)))
+      .limit(1);
+    if (application) {
+      const [membership] = await db
+        .select({ id: orgMemberships.id })
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, user.id)))
+        .limit(1);
+      if (membership) appId = application.id;
+    }
+  }
 
   return createTokenSet(
     user,
     ip,
     userAgent,
     {
-      appId: existing.appId ?? undefined,
+      appId,
       orgId: undefined,
       clientId: undefined,
       deviceFingerprint: existing.deviceFingerprint ?? undefined,

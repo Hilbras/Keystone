@@ -81,6 +81,22 @@ export default async function oauth2Routes(app: FastifyInstance) {
         return reply.status(400).send({ error: "invalid_client", error_description: "Unknown client" });
       }
 
+      const membership = await app.container.organizationRepository.findMembership(
+        application.orgId,
+        request.user!.id
+      );
+      if (!membership) {
+        await request.audit("unauthorized_access", {
+          action: "oauth_application_tenant_membership",
+          appId: application.id,
+          orgId: application.orgId,
+        });
+        return reply.status(403).send({
+          error: "not_member",
+          error_description: "You are not a member of the application organization",
+        });
+      }
+
       if (!application.redirectUris.includes(query.redirect_uri)) {
         return reply
           .status(400)
@@ -160,7 +176,20 @@ export default async function oauth2Routes(app: FastifyInstance) {
         }
 
         const user = await findUserById(record.userId);
-        if (!user) {
+        if (!user?.isActive) {
+          return reply.status(400).send({ error: "invalid_grant" });
+        }
+
+        const membership = await app.container.organizationRepository.findMembership(
+          application.orgId,
+          user.id
+        );
+        if (!membership) {
+          await request.audit("unauthorized_access", {
+            action: "oauth_application_tenant_membership",
+            appId: application.id,
+            orgId: application.orgId,
+          });
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
@@ -264,6 +293,19 @@ export default async function oauth2Routes(app: FastifyInstance) {
       const application = await findApplicationByClientId(body.client_id);
       if (!application) {
         return reply.status(400).send({ error: "invalid_client" });
+      }
+
+      const membership = await app.container.organizationRepository.findMembership(
+        application.orgId,
+        request.user!.id
+      );
+      if (!membership) {
+        await request.audit("unauthorized_access", {
+          action: "oauth_application_tenant_membership",
+          appId: application.id,
+          orgId: application.orgId,
+        });
+        return reply.status(403).send({ error: "not_member" });
       }
 
       if (body.grant) {

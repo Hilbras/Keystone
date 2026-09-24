@@ -14,7 +14,7 @@ import {
 import { createTokenSet } from "../services/tokens.js";
 import { setSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
-import { toPublicUser } from "../types.js";
+import { toSelfUser } from "../types.js";
 
 const ChallengeCookieName = "keystone_webauthn_challenge";
 
@@ -135,7 +135,7 @@ export default async function webauthnRoutes(app: FastifyInstance) {
 
       await request.audit("webauthn_authenticated", { userId: user.id });
       return {
-        user: toPublicUser(user),
+        user: toSelfUser(user),
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
       };

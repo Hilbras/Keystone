@@ -24,6 +24,7 @@ export function requirePlatformRole(requiredRole: PlatformRole = "owner") {
       await request.audit("unauthorized_access", {
         action: "platform_role_required",
         requiredRole,
+        targetUserId: (request.params as { id?: string }).id,
       });
       return reply.status(403).send({ error: "Forbidden" });
     }
@@ -69,7 +70,12 @@ export function requireOrganizationRole(
     if (organization) request.state.org = organization;
 
     if (permission) {
-      const permResult = await sdk.authorization.requirePermission(membership.role, permission.resource, permission.action);
+      const permResult = await sdk.authorization.requirePermission(
+        request.user!.id,
+        orgId,
+        permission.resource,
+        permission.action
+      );
       if (!permResult.success) {
         await request.audit("unauthorized_access", {
           action: "organization_permission_required",

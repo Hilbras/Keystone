@@ -135,6 +135,12 @@ export default async function oauthRoutes(app: FastifyInstance) {
       const user = await upsertOAuthUser(identity, provider);
 
       const app = clientId ? await findApplicationByClientId(clientId) : undefined;
+      const membership = app
+        ? await request.server.container.organizationRepository.findMembership(app.orgId, user.id)
+        : undefined;
+      if (app && !membership) {
+        throw new Error("not_member");
+      }
       const tokens = await createTokenSet(user, request.ip, request.headers["user-agent"], {
         appId: app?.id,
         orgId: app?.orgId,

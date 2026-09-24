@@ -12,6 +12,8 @@ const RolePermissionSchema = z.object({
   permissionId: z.string().uuid(),
 });
 
+const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
+
 export default async function permissionsRoutes(app: FastifyInstance) {
   app.get("/permissions", { preHandler: [requirePlatformRole("owner")] }, async () => {
     return { permissions: await app.container.permissionRepository.list() };
@@ -23,6 +25,7 @@ export default async function permissionsRoutes(app: FastifyInstance) {
     if (!created) {
       return reply.status(409).send({ error: `Permission ${body.resource}:${body.action} already exists` });
     }
+    await app.container.permissionRepository.assignToRole("owner", created.id);
     await request.audit("permission_created", {
       permissionId: created.id,
       resource: created.resource,
@@ -50,16 +53,20 @@ export default async function permissionsRoutes(app: FastifyInstance) {
     return { roles };
   });
 
-  app.get("/roles/:role/permissions", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
-    const { role } = request.params as { role: string };
-    return { role, permissions: await app.container.permissionRepository.listForRole(role) };
+  app.get("/roles/:role/permissions", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
+    const parsed = OrganizationRoleSchema.safeParse((request.params as { role: string }).role);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid organization role" });
+    return { role: parsed.data, permissions: await app.container.permissionRepository.listForRole(parsed.data) };
   });
 
   app.post(
     "/roles/:role/permissions",
     { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
-      const { role } = request.params as { role: string };
+      const parsedRole = OrganizationRoleSchema.safeParse((request.params as { role: string }).role);
+      if (!parsedRole.success) return reply.status(400).send({ error: "Invalid organization role" });
+      if (parsedRole.data === "owner") return reply.status(400).send({ error: "Organization owner permissions are protected" });
+      const role = parsedRole.data;
       const body = RolePermissionSchema.parse(request.body);
       const existing = await app.container.permissionRepository.listForRole(role);
       const wasAssigned = existing.some((permission) => permission.id === body.permissionId);
@@ -79,7 +86,11 @@ export default async function permissionsRoutes(app: FastifyInstance) {
     "/roles/:role/permissions/:permissionId",
     { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
-      const { role, permissionId } = request.params as { role: string; permissionId: string };
+      const parsedRole = OrganizationRoleSchema.safeParse((request.params as { role: string }).role);
+      if (!parsedRole.success) return reply.status(400).send({ error: "Invalid organization role" });
+      if (parsedRole.data === "owner") return reply.status(400).send({ error: "Organization owner permissions are protected" });
+      const role = parsedRole.data;
+      const { permissionId } = request.params as { permissionId: string };
       const existing = await app.container.permissionRepository.listForRole(role);
       const wasAssigned = existing.some((permission) => permission.id === permissionId);
       if (!wasAssigned) {

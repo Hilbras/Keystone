@@ -40,7 +40,7 @@ interface WorkflowPanelProps {
 }
 
 const TRIGGERS = ["user_registered", "user_login", "organization_created"];
-const STEP_TYPES = ["send_welcome_email", "send_email", "webhook", "create_organization"];
+const STEP_TYPES = ["send_welcome_email", "send_email"];
 
 export function WorkflowPanel({
   workflowsState,

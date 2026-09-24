@@ -1,5 +1,14 @@
 import type { User, Organization, OrgMembership, Application, auditLog, Permission } from "../db/schema.js";
 
+export class LastOwnerInvariantError extends Error {
+  readonly code = "LAST_OWNER" as const;
+
+  constructor(message = "The last owner cannot be removed or demoted") {
+    super(message);
+    this.name = "LastOwnerInvariantError";
+  }
+}
+
 export interface CreateUserInput {
   email: string;
   username: string;
@@ -51,7 +60,7 @@ export interface CreateOrganizationInput {
 }
 
 export interface OrganizationRepository {
-  create(input: CreateOrganizationInput): Promise<Organization>;
+  createWithOwner(input: CreateOrganizationInput, userId: string): Promise<Organization>;
   findById(id: string): Promise<Organization | undefined>;
   findBySlug(slug: string): Promise<Organization | undefined>;
   listByUserId(userId: string): Promise<Organization[]>;
@@ -63,7 +72,7 @@ export interface OrganizationRepository {
   updateMembershipRole(orgId: string, userId: string, role: "owner" | "admin" | "member"): Promise<OrgMembership | undefined>;
   removeMembership(orgId: string, userId: string): Promise<boolean>;
   countOwners(orgId: string): Promise<number>;
-  listMembers(orgId: string): Promise<{ membership: OrgMembership; user: { id: string; email: string; username: string; name: string | null; avatarUrl: string | null } }[]>;
+  listMembers(orgId: string): Promise<{ membership: OrgMembership; user: { id: string; email: string; username: string; name: string | null; avatarUrl: string | null; platformRole: string } }[]>;
 }
 
 export interface IdentityLinkInput {

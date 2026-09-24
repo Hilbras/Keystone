@@ -68,6 +68,7 @@ const VALID_EVENT_TYPES = new Set([
   "workflow_step_executed",
   "workflow_created",
   "workflow_deleted",
+  "workflow_blocked",
   "platform_user_updated",
   "platform_role_changed",
   "platform_user_deactivated",
@@ -79,7 +80,13 @@ const VALID_EVENT_TYPES = new Set([
   "email_verification_sent",
   "email_verified",
   "platform_webhook_created",
+  "platform_webhook_updated",
   "platform_webhook_deleted",
+  "platform_webhook_secret_rotated",
+  "federation_identity_linked",
+  "user_token_login",
+  "session_revoked",
+  "sessions_revoked_all",
 ]);
 
 export function validateEvent(event: EmittableEvent): EventValidationResult {

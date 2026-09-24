@@ -1,7 +1,13 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, notInArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { permissions, rolePermissions, orgMemberships, type Permission } from "../db/schema.js";
 import type { PermissionRepository } from "./types.js";
+
+const ORGANIZATION_ROLES = new Set(["owner", "admin", "member"]);
+
+function assertOrganizationRole(role: string): void {
+  if (!ORGANIZATION_ROLES.has(role)) throw new Error("Invalid organization role");
+}
 
 const DEFAULT_PERMISSIONS = [
   { resource: "organization", action: "read" },
@@ -56,7 +62,6 @@ const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     "api_key:read",
     "sso_connection:read",
   ],
-  viewer: ["organization:read", "application:read", "audit_log:read"],
 };
 
 function permissionKey(resource: string, action: string): string {
@@ -78,6 +83,7 @@ export class DrizzlePermissionRepository implements PermissionRepository {
   }
 
   async ensureRolePermissionsSeeded(): Promise<void> {
+    await db.delete(rolePermissions).where(notInArray(rolePermissions.role, ["owner", "admin", "member"]));
     await this.ensureSeeded();
     const allPermissions = await db.select().from(permissions);
     const permissionByKey = new Map(allPermissions.map((p) => [permissionKey(p.resource, p.action), p.id]));
@@ -102,9 +108,14 @@ export class DrizzlePermissionRepository implements PermissionRepository {
 
   async listDistinctRoles(): Promise<string[]> {
     const rows = await db.selectDistinct({ role: rolePermissions.role }).from(rolePermissions);
-    const roles = new Set<string>(["owner", "admin", "member", ...rows.map((r) => r.role)]);
+    const roles = new Set<string>(["owner", "admin", "member"]);
+    for (const row of rows) {
+      if (ORGANIZATION_ROLES.has(row.role)) roles.add(row.role);
+    }
     const memberships = await db.selectDistinct({ role: orgMemberships.role }).from(orgMemberships);
-    for (const m of memberships) roles.add(m.role);
+    for (const membership of memberships) {
+      if (ORGANIZATION_ROLES.has(membership.role)) roles.add(membership.role);
+    }
     return [...roles].sort();
   }
 
@@ -137,6 +148,7 @@ export class DrizzlePermissionRepository implements PermissionRepository {
   }
 
   async assignToRole(role: string, permissionId: string): Promise<void> {
+    assertOrganizationRole(role);
     await db
       .insert(rolePermissions)
       .values({ role, permissionId })
@@ -144,6 +156,7 @@ export class DrizzlePermissionRepository implements PermissionRepository {
   }
 
   async removeFromRole(role: string, permissionId: string): Promise<void> {
+    assertOrganizationRole(role);
     await db
       .delete(rolePermissions)
       .where(and(eq(rolePermissions.role, role), eq(rolePermissions.permissionId, permissionId)));

@@ -44,7 +44,7 @@ interface EnterpriseSsoPanelProps {
   scimState: DataTabState<ScimConfig>;
   selectedOrgId: string | null;
   onRefresh: () => void;
-  onCreateSaml: (input: { name: string; spEntityId: string; spAcsUrl: string }) => Promise<void>;
+  onCreateSaml: (input: { name: string; spEntityId: string; spAcsUrl: string; idpEntityId: string; idpSsoUrl: string; idpCertificate: string }) => Promise<void>;
   onDeleteSaml: (id: string) => Promise<void>;
   onCreateOidc: (input: { name: string; issuer: string; authorizationEndpoint: string; tokenEndpoint: string; clientId: string; clientSecret: string }) => Promise<void>;
   onDeleteOidc: (id: string) => Promise<void>;
@@ -62,7 +62,7 @@ export function EnterpriseSsoPanel({
   onDeleteOidc,
 }: EnterpriseSsoPanelProps) {
   const [activeSubtab, setActiveSubtab] = useState<"saml" | "oidc" | "scim">("saml");
-  const [samlForm, setSamlForm] = useState({ name: "", spEntityId: "", spAcsUrl: "" });
+  const [samlForm, setSamlForm] = useState({ name: "", spEntityId: "", spAcsUrl: "", idpEntityId: "", idpSsoUrl: "", idpCertificate: "" });
   const [oidcForm, setOidcForm] = useState({ name: "", issuer: "", authorizationEndpoint: "", tokenEndpoint: "", clientId: "", clientSecret: "" });
 
   if (samlState.loading || oidcState.loading || scimState.loading) {
@@ -163,15 +163,27 @@ export function EnterpriseSsoPanel({
                 <Label className="text-[12px]">SP ACS URL</Label>
                 <Input value={samlForm.spAcsUrl} onChange={(e) => setSamlForm({ ...samlForm, spAcsUrl: e.target.value })} placeholder="https://keystone.example.com/sso/saml/callback" />
               </div>
+              <div>
+                <Label className="text-[12px]">IdP Entity ID</Label>
+                <Input value={samlForm.idpEntityId} onChange={(e) => setSamlForm({ ...samlForm, idpEntityId: e.target.value })} placeholder="https://idp.example.com/metadata" />
+              </div>
+              <div>
+                <Label className="text-[12px]">IdP SSO URL</Label>
+                <Input value={samlForm.idpSsoUrl} onChange={(e) => setSamlForm({ ...samlForm, idpSsoUrl: e.target.value })} placeholder="https://idp.example.com/sso" />
+              </div>
+              <div className="md:col-span-2">
+                <Label className="text-[12px]">IdP Signing Certificate</Label>
+                <Input type="password" value={samlForm.idpCertificate} onChange={(e) => setSamlForm({ ...samlForm, idpCertificate: e.target.value })} placeholder="PEM certificate" />
+              </div>
             </div>
             <Button
               size="sm"
               className="w-full sm:w-auto"
               onClick={() => {
                 onCreateSaml(samlForm);
-                setSamlForm({ name: "", spEntityId: "", spAcsUrl: "" });
+                setSamlForm({ name: "", spEntityId: "", spAcsUrl: "", idpEntityId: "", idpSsoUrl: "", idpCertificate: "" });
               }}
-              disabled={!samlForm.name || !samlForm.spEntityId || !samlForm.spAcsUrl}
+              disabled={!samlForm.name || !samlForm.spEntityId || !samlForm.spAcsUrl || !samlForm.idpEntityId || !samlForm.idpSsoUrl || !samlForm.idpCertificate}
             >
               Create SAML Connection
             </Button>

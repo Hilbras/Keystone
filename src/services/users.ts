@@ -68,6 +68,7 @@ export async function upsertOAuthUser(
 
     if (existingLink) {
       const existing = existingLink.user;
+      if (!existing.isActive) throw new Error("User account is deactivated");
       const [updated] = await db
         .update(users)
         .set({
@@ -88,6 +89,7 @@ export async function upsertOAuthUser(
   // Fall back to email-based matching.
   const existing = await findUserByEmail(email);
   if (existing) {
+    if (!existing.isActive) throw new Error("User account is deactivated");
     const [updated] = await db
       .update(users)
       .set({
@@ -163,7 +165,10 @@ export async function findOrCreateUserByEmail(input: {
   username?: string;
 }): Promise<User> {
   const existing = await findUserByEmail(input.email);
-  if (existing) return existing;
+  if (existing) {
+    if (!existing.isActive) throw new Error("User account is deactivated");
+    return existing;
+  }
 
   const baseUsername = input.username || input.email.split("@")[0];
   const username = await ensureUniqueUsername(slugifyUsername(baseUsername));

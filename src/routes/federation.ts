@@ -138,6 +138,7 @@ export default async function federationRoutes(app: FastifyInstance) {
       const body = LinkIdentitySchema.parse(request.body);
       const result = await sdk.identity.linkUserIdentity(
         request.user!.id,
+        request.user!.id,
         body.providerId,
         body.providerType,
         body.externalSub,

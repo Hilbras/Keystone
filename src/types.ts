@@ -1,4 +1,4 @@
-import type { User, Application, Organization, OrgMembership } from "./db/schema.js";
+import type { User, Application, Organization, OrgMembership, ApiKey, OidcConnection, SamlConnection } from "./db/schema.js";
 import type { KeystonePlugin } from "./services/plugins/types.js";
 import type { Container } from "./container.js";
 
@@ -29,12 +29,41 @@ export interface TokenClaims {
   username?: string;
   name?: string;
   plan?: string;
-  role?: string;
+  role?: "owner" | "user";
   provider?: string;
   org_id?: string;
   app_id?: string;
   client_id?: string;
   device_fingerprint?: string;
+}
+
+export type PublicApplication = Omit<Application, "clientSecretHash">;
+export type PublicApiKey = Omit<ApiKey, "keyHash">;
+export type PublicOidcConnection = Omit<OidcConnection, "clientSecret">;
+export type PublicSamlConnection = Omit<SamlConnection, "idpCertificate">;
+
+export function toPublicSamlConnection(connection: SamlConnection): PublicSamlConnection {
+  const { idpCertificate: _idpCertificate, ...safeConnection } = connection;
+  return safeConnection;
+}
+
+export function toPublicOidcConnection(connection: OidcConnection): PublicOidcConnection {
+  const { clientSecret: _clientSecret, ...safeConnection } = connection;
+  return safeConnection;
+}
+
+export function toPublicApiKey(apiKey: ApiKey): PublicApiKey {
+  const { keyHash: _keyHash, ...safeApiKey } = apiKey;
+  return safeApiKey;
+}
+
+export function toPublicApplication(
+  application: Application | (PublicApplication & { clientSecret?: string })
+): PublicApplication & { clientSecret?: string } {
+  const { clientSecretHash: _clientSecretHash, ...safeApplication } = application as Application & {
+    clientSecret?: string;
+  };
+  return safeApplication;
 }
 
 export interface PublicUser {
@@ -47,26 +76,16 @@ export interface PublicUser {
   phoneNumber?: string | null;
   phoneVerified?: boolean;
   plan: string;
-  role: string;
+  role: "owner" | "user";
+  isActive: boolean;
   provider: string;
+}
+
+export interface SelfUser extends PublicUser {
   metadata: Record<string, unknown>;
 }
 
-const SENSITIVE_METADATA_KEY = /(password|secret|token|hash|private.?key|credential|otp|totp)/i;
-
-export function redactPublicMetadata(value: unknown, depth = 0): unknown {
-  if (depth > 5) return "[redacted]";
-  if (Array.isArray(value)) return value.map((item) => redactPublicMetadata(item, depth + 1));
-  if (!value || typeof value !== "object") return value;
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => !SENSITIVE_METADATA_KEY.test(key))
-      .map(([key, nested]) => [key, redactPublicMetadata(nested, depth + 1)])
-  );
-}
-
-export function toPublicUser(user: User): PublicUser {
+export function toPublicUser(user: User | PublicUser): PublicUser {
   return {
     id: user.id,
     email: user.email,
@@ -77,8 +96,16 @@ export function toPublicUser(user: User): PublicUser {
     phoneNumber: user.phoneNumber,
     phoneVerified: user.phoneVerified,
     plan: user.plan,
-    role: user.role,
+    role: user.role === "owner" ? "owner" : "user",
+    isActive: user.isActive,
     provider: user.provider,
-    metadata: redactPublicMetadata(user.metadata ?? {}) as Record<string, unknown>,
+  };
+}
+
+export function toSelfUser(user: User | SelfUser): SelfUser {
+  const metadata = "metadata" in user ? user.metadata : undefined;
+  return {
+    ...toPublicUser(user),
+    metadata: metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>) : {},
   };
 }

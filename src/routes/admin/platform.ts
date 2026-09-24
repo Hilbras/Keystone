@@ -7,7 +7,7 @@ import { toPublicUser } from "../../types.js";
 import { getSdk } from "../../sdk/index.js";
 import { listRegisteredPlugins, listExtensionPoints, unregisterPlugin } from "../../services/plugins/registry.js";
 import { isFeatureEnabled, listFeatureFlags, setFeatureFlag, deleteFeatureFlag } from "../../services/featureFlags.js";
-import { listConfigurationProfiles, getConfigurationProfile } from "../../services/configuration/profiles.js";
+import { listConfigurationProfiles, getConfigurationProfile, redactConfigurationValues } from "../../services/configuration/profiles.js";
 import { z } from "zod";
 
 const UpdateUserSchema = z
@@ -39,6 +39,7 @@ export default async function platformRoutes(app: FastifyInstance) {
         username: users.username,
         name: users.name,
         role: users.role,
+        isActive: users.isActive,
         emailVerified: users.emailVerified,
         createdAt: users.createdAt,
       })
@@ -308,7 +309,7 @@ export default async function platformRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const profile = getConfigurationProfile(id);
     if (!profile) return reply.status(404).send({ error: "Profile not found" });
-    return { profile };
+    return { profile: { ...profile, values: redactConfigurationValues(profile.values) } };
   });
 
   app.patch(
@@ -325,7 +326,6 @@ export default async function platformRoutes(app: FastifyInstance) {
         requestId: request.id,
         ip: request.ip,
         userAgent: request.headers["user-agent"],
-        appId: request.state.app?.id,
       });
       if (!result.success) return sendResultError(reply, result);
       return toPublicUser(result.data);
@@ -342,9 +342,12 @@ export default async function platformRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
       }
       const body = parsed.data;
-      const result = await sdk.identity.updateUserProfile(id, body);
+      const result = await sdk.identity.updateUserProfile(request.user!.id, id, body, {
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
       if (!result.success) return sendResultError(reply, result);
-      await request.audit("platform_user_updated", { userId: id, updates: body });
       return toPublicUser(result.data);
     }
   );
@@ -357,9 +360,12 @@ export default async function platformRoutes(app: FastifyInstance) {
       if (request.user!.id === id) {
         return reply.status(400).send({ error: "Cannot deactivate yourself" });
       }
-      const result = await sdk.identity.deactivate(id);
+      const result = await sdk.identity.deactivate(request.user!.id, id, {
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
       if (!result.success) return sendResultError(reply, result);
-      await request.audit("platform_user_deactivated", { userId: id });
       return { success: true };
     }
   );

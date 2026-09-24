@@ -8,12 +8,12 @@ import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type TokenSet }
 import { isPasswordBreached } from "../hibp.js";
 import { recordFailedLogin, isFailedLoginAnomaly } from "../anomalyDetection.js";
 import { emit } from "../events/bus.js";
-import type { UserRepository, ApplicationRepository } from "../../repositories/types.js";
+import type { UserRepository, ApplicationRepository, OrganizationRepository } from "../../repositories/types.js";
 import { ok, err, type Result } from "../../lib/result.js";
 import { hashPassword, verifyPassword } from "../secrets/index.js";
 
 export interface AuthContext {
-  app?: { id: string; clientId: string; orgId: string };
+  app?: { id: string; clientId: string; orgId?: string };
   org?: { id: string };
 }
 
@@ -41,16 +41,19 @@ export interface TokenResponse {
 export class AuthenticationDomainService {
   constructor(
     private readonly users: UserRepository,
-    private readonly applications: ApplicationRepository
+    private readonly applications: ApplicationRepository,
+    private readonly organizations: OrganizationRepository
   ) {}
 
-  private async loadAppContext(clientId?: string): Promise<AuthContext> {
+  private async loadAppContext(userId: string, clientId?: string): Promise<AuthContext> {
     if (!clientId) return {};
     const app = await this.applications.findByClientId(clientId);
     if (!app) return {};
+
+    const membership = await this.organizations.findMembership(app.orgId, userId);
     return {
-      app: { id: app.id, clientId: app.clientId, orgId: app.orgId },
-      org: { id: app.orgId },
+      app: { id: app.id, clientId: app.clientId, ...(membership ? { orgId: app.orgId } : {}) },
+      ...(membership ? { org: { id: app.orgId } } : {}),
     };
   }
 
@@ -108,11 +111,11 @@ export class AuthenticationDomainService {
       }
     }
 
-    const context = await this.loadAppContext(input.clientId);
+    const context = await this.loadAppContext(user.id, input.clientId);
     const tokens = await createTokenSet(user, undefined, undefined, {
-      appId: context.app?.id,
+      appId: context.org ? context.app?.id : undefined,
       orgId: context.org?.id,
-      clientId: context.app?.clientId,
+      clientId: context.org ? context.app?.clientId : undefined,
     });
 
     await emit({
@@ -124,7 +127,7 @@ export class AuthenticationDomainService {
         username: user.username,
         email: user.email,
         client_id: input.clientId,
-        appId: context.app?.id,
+        appId: context.org ? context.app?.id : undefined,
         orgId: context.org?.id,
       },
     });
@@ -145,6 +148,11 @@ export class AuthenticationDomainService {
         return err({ code: "TOO_MANY_ATTEMPTS", message: "Too many failed attempts. Please try again later.", statusCode: 429 });
       }
       return err({ code: "INVALID_CREDENTIALS", message: "Invalid email or password.", statusCode: 401 });
+    }
+
+    if (!user.isActive) {
+      await emit({ type: "user_login_failed", payload: { reason: "account_deactivated", userId: user.id } });
+      return err({ code: "ACCOUNT_DEACTIVATED", message: "This account is deactivated", statusCode: 403 });
     }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
@@ -178,16 +186,16 @@ export class AuthenticationDomainService {
 
     await this.users.resetFailedLogins(user.id);
     await this.users.updateLastSeen(user.id);
-    const context = await this.loadAppContext(input.clientId);
+    const context = await this.loadAppContext(user.id, input.clientId);
     const tokens = await createTokenSet(user, undefined, undefined, {
-      appId: context.app?.id,
+      appId: context.org ? context.app?.id : undefined,
       orgId: context.org?.id,
-      clientId: context.app?.clientId,
+      clientId: context.org ? context.app?.clientId : undefined,
     });
 
     await emit({
       type: "user_login",
-      payload: { provider: user.provider, userId: user.id, appId: context.app?.id, orgId: context.org?.id },
+      payload: { provider: user.provider, userId: user.id, appId: context.org ? context.app?.id : undefined, orgId: context.org?.id },
     });
 
     return ok({ user, tokens, context });
@@ -213,7 +221,7 @@ export class AuthenticationDomainService {
 
   async createPasswordResetToken(email: string): Promise<Result<{ token: string; user: User } | null>> {
     const user = await this.users.findByEmail(email);
-    if (!user) return ok(null);
+    if (!user || !user.isActive) return ok(null);
 
     const token = crypto.randomBytes(48).toString("base64url");
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
@@ -250,8 +258,8 @@ export class AuthenticationDomainService {
     }
 
     const user = await this.users.findById(record.userId);
-    if (!user) {
-      return err({ code: "USER_NOT_FOUND", message: "User not found.", statusCode: 400 });
+    if (!user?.isActive) {
+      return err({ code: "ACCOUNT_DEACTIVATED", message: "This account is deactivated.", statusCode: 403 });
     }
 
     if (config.HIBP_CHECK_ENABLED) {

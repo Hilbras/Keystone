@@ -15,7 +15,9 @@ export default async function authzRoutes(app: FastifyInstance) {
     "/authz/check",
     { preHandler: [app.authenticate] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const body = CheckSchema.parse(request.body);
+      const parsed = CheckSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+      const body = parsed.data;
       const membership = await sdk.authorization.isOrgMember(request.user!.id, body.organizationId);
 
       if (!membership) {
@@ -31,7 +33,12 @@ export default async function authzRoutes(app: FastifyInstance) {
         });
       }
 
-      const allowed = await sdk.authorization.hasPermission(membership.role, body.resource, body.action);
+      const allowed = await sdk.authorization.hasPermission(
+        request.user!.id,
+        body.organizationId,
+        body.resource,
+        body.action
+      );
       await request.audit("authz_check", {
         orgId: body.organizationId,
         resource: body.resource,

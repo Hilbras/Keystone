@@ -39,6 +39,7 @@ export function SettingsPanel() {
   const { mode } = useUiMode();
   const { lang, t, changeLanguage } = useTranslation();
   const [config, setConfig] = useState<ConfigValues | null>(null);
+  const [initialConfig, setInitialConfig] = useState<ConfigValues | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -55,6 +56,7 @@ export function SettingsPanel() {
     try {
       const data = (await api.getConfig()) as { values: ConfigValues };
       setConfig(data.values);
+      setInitialConfig(data.values);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -72,7 +74,12 @@ export function SettingsPanel() {
     setError(null);
     setMessage(null);
     try {
-      await api.updateConfig({ values: config as Record<string, string> });
+      const initial = initialConfig ?? {};
+      const changedValues = Object.fromEntries(
+        Object.entries(config).filter(([key, value]) => initial[key as keyof ConfigValues] !== value)
+      ) as Record<string, string>;
+      await api.updateConfig({ values: changedValues });
+      setInitialConfig(config);
       setMessage("Configuration saved. Restart Keystone to apply all changes.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

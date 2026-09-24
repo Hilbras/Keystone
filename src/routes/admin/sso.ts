@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { requireOrganizationRole } from "./helpers.js";
 import { config } from "../../config.js";
 import { escapeXml } from "../helpers.js";
+import { toPublicOidcConnection, toPublicSamlConnection } from "../../types.js";
 
 const SamlConnectionSchema = z.object({
   name: z.string().min(1).max(255),
@@ -52,7 +53,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
       const body = SamlConnectionSchema.parse(request.body);
       const connection = await app.container.samlConnectionRepository.create({ orgId: id, ...body });
       await request.audit("saml_connection_created", { orgId: id, connectionId: connection.id });
-      return reply.status(201).send(connection);
+      return reply.status(201).send(toPublicSamlConnection(connection));
     }
   );
 
@@ -105,7 +106,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
       const body = OidcConnectionSchema.parse(request.body);
       const connection = await app.container.oidcConnectionRepository.create({ orgId: id, ...body });
       await request.audit("oidc_connection_created", { orgId: id, connectionId: connection.id });
-      return reply.status(201).send(connection);
+      return reply.status(201).send(toPublicOidcConnection(connection));
     }
   );
 

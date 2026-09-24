@@ -130,7 +130,7 @@ export async function buildAuthenticationOptions(email?: string) {
 
   if (email) {
     const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase())).limit(1);
-    if (user) {
+    if (user && user.isActive) {
       userId = user.id;
       const credentials = await listCredentialsByUser(user.id);
       allowCredentials = credentials.map((c) => ({
@@ -185,8 +185,8 @@ export async function verifyAuthentication(response: AuthenticationResponseJSON,
     .where(eq(webauthnCredentials.id, credential.id));
 
   const [user] = await db.select().from(users).where(eq(users.id, credential.userId)).limit(1);
-  if (!user) {
-    throw new Error("User not found");
+  if (!user?.isActive) {
+    throw new Error("User account is deactivated");
   }
 
   return { verified: true, user };

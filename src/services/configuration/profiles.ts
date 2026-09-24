@@ -1,3 +1,38 @@
+export const REDACTED_CONFIG_VALUE = "[redacted]";
+
+const SENSITIVE_CONFIG_KEY =
+  /(PASSWORD|SECRET|TOKEN|DATABASE_URL|REDIS_URL|PRIVATE_KEY|CREDENTIAL|AUTHORIZATION|JWT|ENCRYPTION_KEY|API_KEY|CLIENT_KEY)/i;
+
+export function isSensitiveConfigurationKey(key: string): boolean {
+  return SENSITIVE_CONFIG_KEY.test(key);
+}
+
+export function redactConfigurationValues(values: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values)
+      .filter((entry): entry is [string, string] => entry[1] !== undefined)
+      .map(([key, value]) => [key, isSensitiveConfigurationKey(key) ? REDACTED_CONFIG_VALUE : value])
+  );
+}
+
+export function mergeConfigurationUpdates(
+  existing: Record<string, string | undefined>,
+  updates: Record<string, string>
+): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const [key, value] of Object.entries(existing)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === REDACTED_CONFIG_VALUE) {
+      if (merged[key] === undefined) throw new Error(`Cannot preserve unset configuration key: ${key}`);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
 export interface ConfigurationProfile {
   name: string;
   description: string;

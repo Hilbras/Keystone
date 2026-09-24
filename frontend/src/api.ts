@@ -180,7 +180,7 @@ export const api = {
     fetchJson<LoginTokenResponse>("/auth/token-login", { method: "POST", body: JSON.stringify(input) }),
   getMe: () => fetchJson<{ user: unknown }>("/auth/me"),
   getUsers: () => fetchJson<{ users: unknown[] }>("/v1/admin/platform/users"),
-  getOrganizations: () => fetchJson<{ organizations: unknown[] }>("/v1/admin/platform/organizations"),
+  getOrganizations: () => fetchJson<{ organizations: unknown[] }>("/v1/admin/organizations"),
   getApplications: () => fetchJson<{ applications: unknown[] }>("/v1/admin/platform/applications"),
   getAuditLogs: (event?: string) =>
     fetchJson<{ logs: unknown[] }>(`/v1/admin/platform/audit-logs${event ? `?event=${encodeURIComponent(event)}` : ""}`),

@@ -4,8 +4,9 @@ import { provisionEnterpriseUser, defaultRoleForOrg } from "../services/enterpri
 import { createTokenSet } from "../services/tokens.js";
 import { setSessionCookies, clearSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
-import { toPublicUser } from "../types.js";
+import { toSelfUser } from "../types.js";
 import { buildOAuthErrorResponse } from "../lib/errors.js";
+import { decryptSecret } from "../services/secrets/index.js";
 
 const OIDC_STATE_COOKIE = "keystone_oidc_enterprise_state";
 
@@ -34,16 +35,18 @@ function clearStateCookie(reply: FastifyReply): void {
 export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
   app.get("/sso/oidc/:connectionId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
-    const connection = await app.container.oidcConnectionRepository.findActiveById(connectionId);
+    const orgId = (request.query as { orgId?: string }).orgId;
+    if (!orgId) return reply.status(400).send({ error: "orgId is required" });
+    const connection = await app.container.oidcConnectionRepository.findActiveByIdAndOrgId(connectionId, orgId);
 
     if (!connection) {
       return reply.status(404).send({ error: "OIDC connection not found" });
     }
 
     const state = crypto.randomBytes(24).toString("base64url");
-    setStateCookie(reply, `${state}:${connectionId}`);
+    setStateCookie(reply, `${state}:${connectionId}:${orgId}`);
 
-    const redirectUri = `${publicUrl()}/sso/oidc/${connectionId}/callback`;
+    const redirectUri = `${publicUrl()}/sso/oidc/${connectionId}/callback?orgId=${encodeURIComponent(orgId)}`;
     const url = new URL(connection.authorizationEndpoint);
     url.searchParams.set("client_id", connection.clientId);
     url.searchParams.set("response_type", "code");
@@ -56,7 +59,7 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
 
   app.get("/sso/oidc/:connectionId/callback", async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
-    const query = request.query as { code?: string; state?: string; error?: string; error_description?: string };
+    const query = request.query as { code?: string; state?: string; orgId?: string; error?: string; error_description?: string };
 
     if (query.error) {
       clearSessionCookies(reply);
@@ -70,26 +73,38 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
     const cookieState = getStateCookie(request);
     clearStateCookie(reply);
 
-    if (!query.code || !query.state || !cookieState || !cookieState.startsWith(`${query.state}:`)) {
+    if (!query.code || !query.state || !query.orgId || !cookieState) {
+      return reply.status(400).send({ error: "Invalid OIDC state" });
+    }
+    const [cookieStateValue, cookieConnectionId, cookieOrgId] = cookieState.split(":");
+    if (cookieStateValue !== query.state || cookieConnectionId !== connectionId || cookieOrgId !== query.orgId) {
       return reply.status(400).send({ error: "Invalid OIDC state" });
     }
 
-    const connection = await app.container.oidcConnectionRepository.findActiveById(connectionId);
+    const connection = await app.container.oidcConnectionRepository.findActiveByIdAndOrgId(connectionId, query.orgId);
 
     if (!connection) {
       return reply.status(400).send({ error: "OIDC connection not found" });
     }
 
-    const redirectUri = `${publicUrl()}/sso/oidc/${connectionId}/callback`;
+    const redirectUri = `${publicUrl()}/sso/oidc/${connectionId}/callback?orgId=${encodeURIComponent(query.orgId)}`;
 
     try {
+      let clientSecret = connection.clientSecret;
+      try {
+        clientSecret = await decryptSecret(connection.clientSecret);
+      } catch (error) {
+        if (connection.clientSecret.startsWith("aes-256-gcm$")) throw error;
+        clientSecret = connection.clientSecret;
+        await app.container.oidcConnectionRepository.updateClientSecret(connection.id, clientSecret);
+      }
       const tokenRes = await fetch(connection.tokenEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id: connection.clientId,
-          client_secret: connection.clientSecret,
+          client_secret: clientSecret,
           code: query.code,
           redirect_uri: redirectUri,
         }).toString(),
@@ -137,6 +152,8 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
         },
         org ? defaultRoleForOrg(org) : "member"
       );
+      request.user = user;
+      if (org) request.state.org = org;
 
       const fingerprint = fingerprintFromRequest(request);
       await recordDevice(user.id, fingerprint, request.ip, request.headers["user-agent"]);
@@ -155,7 +172,7 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
         userId: user.id,
       });
 
-      return { user: toPublicUser(user) };
+      return { user: toSelfUser(user) };
     } catch (err) {
       request.log.error({ err }, "OIDC enterprise callback failed");
       clearSessionCookies(reply);

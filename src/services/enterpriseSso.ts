@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, orgMemberships, type Organization } from "../db/schema.js";
 import { slugifyUsername, ensureUniqueUsername } from "./users.js";
+import { emit } from "./events/bus.js";
 
 export interface EnterpriseUserClaims {
   email: string;
@@ -16,8 +17,14 @@ export async function provisionEnterpriseUser(
   defaultRole: "owner" | "admin" | "member" = "member"
 ) {
   const email = claims.email.toLowerCase().trim();
+  if (!["owner", "admin", "member"].includes(defaultRole)) {
+    throw new Error("Invalid organization role");
+  }
 
   let [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  if (user && !user.isActive) {
+    throw new Error("User account is deactivated");
+  }
 
   if (!user) {
     const baseUsername = claims.username || claims.email.split("@")[0];
@@ -50,6 +57,19 @@ export async function provisionEnterpriseUser(
         role: defaultRole,
       })
       .onConflictDoNothing({ target: [orgMemberships.orgId, orgMemberships.userId] });
+    await emit({
+      type: "organization_member_invited",
+      payload: {
+        userId: user.id,
+        orgId,
+        metadata: {
+          targetUserId: user.id,
+          previousRole: null,
+          newRole: defaultRole,
+          action: "enterprise_sso_provisioned",
+        },
+      },
+    });
   }
 
   return user;

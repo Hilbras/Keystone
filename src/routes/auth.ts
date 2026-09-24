@@ -10,7 +10,7 @@ import { rateLimit } from "../plugins/rateLimit.js";
 import { checkImpossibleTravel } from "../services/anomalyDetection.js";
 import { sendSuspiciousLoginAlert } from "../services/email.js";
 import { checkIpAllowed } from "../services/ipControls.js";
-import { toPublicUser } from "../types.js";
+import { toSelfUser } from "../types.js";
 import { verifyTOTP } from "../services/totp.js";
 import { sendResultError } from "./helpers.js";
 
@@ -90,7 +90,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
       await request.audit("user_registered", { userId: result.data.user.id, email: result.data.user.email });
       setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, body.client_id);
-      return { user: toPublicUser(result.data.user) };
+      return { user: toSelfUser(result.data.user) };
     }
   );
 
@@ -131,7 +131,7 @@ export default async function authRoutes(app: FastifyInstance) {
       await request.audit("user_login", { userId: result.data.user.id });
       detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
       setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, body.client_id);
-      return { user: toPublicUser(result.data.user) };
+      return { user: toSelfUser(result.data.user) };
     }
   );
 
@@ -173,13 +173,13 @@ export default async function authRoutes(app: FastifyInstance) {
       detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
       return {
         accessToken: result.data.accessToken,
-        user: toPublicUser(result.data.user),
+        user: toSelfUser(result.data.user),
       };
     }
   );
 
   app.get("/me", { preHandler: [app.authenticate] }, async (request) => {
-    return { user: request.user ? toPublicUser(request.user) : null };
+    return { user: request.user ? toSelfUser(request.user) : null };
   });
 
   app.post("/refresh", async (request, reply) => {

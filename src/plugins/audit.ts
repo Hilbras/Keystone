@@ -15,7 +15,10 @@ function buildPayload(request: FastifyRequest, metadata?: Record<string, unknown
   return {
     userId: request.user?.id,
     orgId: request.state?.org?.id,
-    appId: request.state?.app?.id,
+    appId:
+      request.user && request.state?.membership && request.state.app?.orgId === request.state.membership.orgId
+        ? request.state.app.id
+        : undefined,
     requestId: request.id,
     ip: request.ip,
     userAgent: request.headers["user-agent"],

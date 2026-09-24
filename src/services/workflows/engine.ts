@@ -1,8 +1,8 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { workflows, workflowRuns, type Workflow, type WorkflowRun } from "../../db/schema.js";
+import { workflows, workflowRuns, orgMemberships, type Workflow, type WorkflowRun } from "../../db/schema.js";
 import { findUserById } from "../users.js";
-import { subscribe } from "../events/bus.js";
+import { subscribe, emit } from "../events/bus.js";
 import type { KeystoneEvent } from "../events/types.js";
 import { queue } from "../queue/index.js";
 import { executeStep, isBlockedWorkflowStep, type WorkflowStep } from "./steps.js";
@@ -41,12 +41,16 @@ export async function loadWorkflows(): Promise<void> {
 }
 
 export async function registerWorkflow(input: {
-  orgId?: string;
+  orgId: string;
   name: string;
   trigger: string;
   definition: WorkflowDefinition;
+  isActive?: boolean;
 }): Promise<Workflow> {
   const steps = readWorkflowSteps(input.definition);
+  if (!input.orgId) {
+    throw new Error("Organization-scoped workflows require an organization ID");
+  }
   if (!steps || steps.some(isBlockedWorkflowStep)) {
     throw new Error("Workflow contains an invalid or blocked step");
   }
@@ -54,15 +58,18 @@ export async function registerWorkflow(input: {
   const [workflow] = await db
     .insert(workflows)
     .values({
-      orgId: input.orgId ?? null,
+      orgId: input.orgId,
       name: input.name,
       trigger: input.trigger,
       definition: input.definition,
+      isActive: input.isActive ?? true,
     })
     .returning();
-  subscribe(workflow.trigger, async (event) => {
-    await triggerWorkflowRun(workflow, event);
-  });
+  if (workflow.isActive) {
+    subscribe(workflow.trigger, async (event) => {
+      await triggerWorkflowRun(workflow, event);
+    });
+  }
   return workflow;
 }
 
@@ -71,12 +78,23 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
   const steps = readWorkflowSteps(definition);
   const eventOrgId = typeof event.payload.orgId === "string" ? event.payload.orgId : undefined;
   const hasBlockedStep = steps === null || steps.some(isBlockedWorkflowStep);
-  const isOutOfScope = Boolean(workflow.orgId && eventOrgId !== workflow.orgId);
+  const triggerMismatch = workflow.trigger !== event.type;
+  let isOutOfScope = triggerMismatch || Boolean(workflow.orgId && eventOrgId !== workflow.orgId);
+  if (!isOutOfScope && workflow.orgId && typeof event.payload.userId === "string") {
+    const [membership] = await db
+      .select({ id: orgMemberships.id })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, workflow.orgId), eq(orgMemberships.userId, event.payload.userId)))
+      .limit(1);
+    isOutOfScope = !membership;
+  }
   const blockedReason = hasBlockedStep
     ? "Workflow contains a blocked authorization step"
-    : isOutOfScope
-      ? "Workflow event does not belong to the workflow organization"
-      : undefined;
+    : triggerMismatch
+      ? "Workflow trigger does not match the emitted event"
+      : isOutOfScope
+        ? "Workflow event does not belong to the workflow organization"
+        : undefined;
   const now = new Date();
   const [run] = await db
     .insert(workflowRuns)
@@ -91,7 +109,16 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
     })
     .returning();
 
-  if (blockedReason) return run;
+  if (blockedReason) {
+    await emit({
+      type: "workflow_blocked",
+      payload: {
+        orgId: workflow.orgId ?? undefined,
+        metadata: { workflowId: workflow.id, runId: run.id, reason: blockedReason },
+      },
+    });
+    return run;
+  }
 
   // Dispatch to the background queue so the HTTP response is not blocked.
   await queue.enqueue({
@@ -103,7 +130,11 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
 }
 
 export async function executeRunById(runId: string, workflowId: string): Promise<void> {
-  const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).limit(1);
+  const [run] = await db
+    .select()
+    .from(workflowRuns)
+    .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.workflowId, workflowId)))
+    .limit(1);
   const [workflow] = await db.select().from(workflows).where(eq(workflows.id, workflowId)).limit(1);
   if (!run || !workflow) {
     console.error(`[workflow-engine] run or workflow not found: ${runId}, ${workflowId}`);
@@ -125,9 +156,41 @@ async function executeRun(run: WorkflowRun, workflow: Workflow): Promise<void> {
         log: [{ status: "blocked", error: "Workflow contains an invalid or blocked authorization step" }],
       })
       .where(eq(workflowRuns.id, run.id));
+    await emit({
+      type: "workflow_blocked",
+      payload: {
+        orgId: workflow.orgId ?? undefined,
+        metadata: { workflowId: workflow.id, runId: run.id, reason: "invalid_or_blocked_step" },
+      },
+    });
     return;
   }
-  const userId = payload.userId as string | undefined;
+  const userId = typeof payload.userId === "string" ? payload.userId : undefined;
+  if (workflow.orgId && userId) {
+    const [membership] = await db
+      .select({ id: orgMemberships.id })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, workflow.orgId), eq(orgMemberships.userId, userId)))
+      .limit(1);
+    if (!membership) {
+      await db
+        .update(workflowRuns)
+        .set({
+          status: "blocked",
+          finishedAt: new Date(),
+          log: [{ status: "blocked", error: "Workflow actor is not a member of the workflow organization" }],
+        })
+        .where(eq(workflowRuns.id, run.id));
+      await emit({
+        type: "workflow_blocked",
+        payload: {
+          orgId: workflow.orgId ?? undefined,
+          metadata: { workflowId: workflow.id, runId: run.id, reason: "actor_not_member" },
+        },
+      });
+      return;
+    }
+  }
   const user = userId ? await findUserById(userId) : undefined;
   const outputs: Record<string, string> = {};
   const log: Array<{ step: string; status: string; output?: Record<string, string>; error?: string }> = [];

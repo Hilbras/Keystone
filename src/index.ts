@@ -100,7 +100,7 @@ export async function buildApp() {
       info: {
         title: "Hilbras Keystone API",
         description: "Identity platform API for Hilbras products and third-party apps.",
-        version: "1.0.0",
+        version: "1.7.0",
       },
       servers: [{ url: config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}` }],
       tags: [
@@ -245,7 +245,13 @@ export async function buildApp() {
   await app.register(setupRoutes, { prefix: "/setup" });
 
   app.setErrorHandler((error: unknown, request, reply) => {
-    if (error instanceof ZodError || (error && typeof error === "object" && "issues" in error && Array.isArray((error as { issues?: unknown }).issues))) {
+    const isZodLike = error instanceof ZodError || (
+      error &&
+      typeof error === "object" &&
+      ((error as { name?: unknown }).name === "ZodError" ||
+        ("issues" in error && Array.isArray((error as { issues?: unknown }).issues)))
+    );
+    if (isZodLike) {
       const issues = error instanceof ZodError
         ? error.issues
         : (error as { issues: Array<{ path?: Array<string | number>; message?: string }> }).issues;

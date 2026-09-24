@@ -11,6 +11,7 @@ import {
   unique,
   smallint,
   integer,
+  check,
 } from "drizzle-orm/pg-core";
 
 export const organizations = pgTable(
@@ -43,6 +44,7 @@ export const users = pgTable(
     provider: text("provider").default("password").notNull(),
     plan: text("plan").default("free").notNull(),
     role: text("role").default("user").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
     defaultOrgId: uuid("default_org_id").references(() => organizations.id, { onDelete: "set null" }),
     phoneNumber: text("phone_number"),
     phoneVerified: boolean("phone_verified").default(false).notNull(),
@@ -60,6 +62,7 @@ export const users = pgTable(
     emailIdx: index("users_email_idx").on(table.email),
     zitadelIdx: index("users_zitadel_idx").on(table.zitadelUserId),
     defaultOrgIdx: index("users_default_org_idx").on(table.defaultOrgId),
+    platformRoleCheck: check("users_platform_role_check", sql`role in ('owner', 'user')`),
   })
 );
 
@@ -127,6 +130,7 @@ export const orgMemberships = pgTable(
     orgIdx: index("org_memberships_org_idx").on(table.orgId),
     userIdx: index("org_memberships_user_idx").on(table.userId),
     uniqueMembership: unique("org_memberships_unique").on(table.orgId, table.userId),
+    organizationRoleCheck: check("org_memberships_role_check", sql`role in ('owner', 'admin', 'member')`),
   })
 );
 

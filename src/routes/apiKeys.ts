@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import { generateApiKey, hashApiKey } from "../services/tokens.js";
-import { toPublicUser } from "../types.js";
+import { toPublicApiKey, toSelfUser } from "../types.js";
 
 const CreateKeySchema = z.object({
   name: z.string().min(1).max(100),
@@ -12,8 +12,18 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
   app.post("/api-keys", { preHandler: [app.authenticate] }, async (request, reply) => {
     const body = CreateKeySchema.parse(request.body);
     const user = request.user!;
-    const orgId = request.state?.org?.id;
-    const appId = request.state?.app?.id;
+    let orgId = user.defaultOrgId ?? null;
+    let appId: string | undefined;
+    if (request.state?.app) {
+      const membership = await app.container.organizationRepository.findMembership(
+        request.state.app.orgId,
+        user.id
+      );
+      if (membership) {
+        orgId = request.state.app.orgId;
+        appId = request.state.app.id;
+      }
+    }
 
     const { key, prefix } = generateApiKey();
     const record = await app.container.apiKeyRepository.create({
@@ -31,7 +41,7 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
       name: record.name,
     });
 
-    return { key, apiKey: record };
+    return { key, apiKey: toPublicApiKey(record) };
   });
 
   app.get("/api-keys", { preHandler: [app.authenticate] }, async (request) => {
@@ -55,6 +65,6 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
 
   app.get("/validate", { preHandler: [app.authenticateOrApiKey] }, async (request) => {
     const user = request.user!;
-    return { valid: true, user: toPublicUser(user) };
+    return { valid: true, user: toSelfUser(user) };
   });
 }

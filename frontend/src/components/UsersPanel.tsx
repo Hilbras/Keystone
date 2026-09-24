@@ -80,7 +80,7 @@ export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
 
       <DataTable
         state={state}
-        columns={isSimple ? ["email", "name", "role"] : ["id", "email", "username", "name", "role", "emailVerified", "createdAt"]}
+        columns={isSimple ? ["email", "name", "role", "isActive"] : ["id", "email", "username", "name", "role", "isActive", "emailVerified", "createdAt"]}
         rows={state.data?.users ?? []}
         emptyMessage="No users found."
         renderRowActions={
@@ -110,9 +110,9 @@ export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
                       <Pencil className="w-3 h-3 mr-1" />
                       Role
                     </Button>
-                    <Button size="sm" variant="danger" onClick={() => handleDeactivate(String(row.id))} disabled={busy}>
+                    <Button size="sm" variant="danger" onClick={() => handleDeactivate(String(row.id))} disabled={busy || row.isActive === false}>
                       <Trash2 className="w-3 h-3 mr-1" />
-                      Deactivate
+                      {row.isActive === false ? "Deactivated" : "Deactivate"}
                     </Button>
                   </div>
                 )

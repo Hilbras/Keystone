@@ -95,6 +95,7 @@ export type AuditEventType =
   | "workflow_step_executed"
   | "workflow_created"
   | "workflow_deleted"
+  | "workflow_blocked"
   | "platform_user_updated"
   | "platform_role_changed"
   | "platform_user_deactivated"

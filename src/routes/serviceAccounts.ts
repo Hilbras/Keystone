@@ -8,6 +8,7 @@ import {
   listServiceAccountApiKeys,
 } from "../services/serviceAccounts.js";
 import { generateApiKey, hashApiKey } from "../services/tokens.js";
+import { toPublicApiKey } from "../types.js";
 
 const CreateSchema = z.object({
   name: z.string().min(1).max(100),
@@ -118,7 +119,7 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
         keyId: record.id,
       });
 
-      return { key, apiKey: record };
+      return { key, apiKey: toPublicApiKey(record) };
     }
   );
 }

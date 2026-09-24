@@ -59,6 +59,31 @@ export class AuthorizationDomainService {
     return this.permissions.hasAnyPermission(role, required);
   }
 
+  async requireOrganizationPermission(
+    userId: string,
+    orgId: string,
+    allowedRoles: OrgRole[],
+    resource: string,
+    action: string
+  ): Promise<Result<OrgMembership>> {
+    const roleResult = await this.requireOrgRole(userId, orgId, allowedRoles);
+    if (!roleResult.success) return roleResult;
+    const permissionResult = await this.requirePermission(roleResult.data.role, resource, action);
+    if (!permissionResult.success) return permissionResult;
+    return roleResult;
+  }
+
+  async hasOrganizationPermission(
+    userId: string,
+    orgId: string,
+    resource: string,
+    action: string
+  ): Promise<boolean> {
+    const membership = await this.requireOrgRole(userId, orgId, ["owner", "admin", "member"]);
+    if (!membership.success) return false;
+    return this.permissions.hasPermission(membership.data.role, resource, action);
+  }
+
   async requireOrgRole(userId: string, orgId: string, allowedRoles: OrgRole[]): Promise<Result<OrgMembership>> {
     const membership = await this.organizations.findMembership(orgId, userId);
     if (!membership) {

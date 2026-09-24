@@ -3,7 +3,7 @@ import { Command } from "commander";
 
 const program = new Command();
 
-program.name("keystone").description("Hilbras Keystone CLI").version("1.0.0");
+program.name("keystone").description("Hilbras Keystone CLI").version("1.7.0");
 
 program
   .command("init")
@@ -72,7 +72,11 @@ program
       }
 
       const container = initializeContainer();
-      const authService = new AuthenticationDomainService(container.userRepository, container.applicationRepository);
+      const authService = new AuthenticationDomainService(
+        container.userRepository,
+        container.applicationRepository,
+        container.organizationRepository
+      );
       const result = await authService.register({
         email: options.email,
         password: options.password,
@@ -89,6 +93,11 @@ program
 
       if (options.role === "owner") {
         await container.userRepository.updateRole(result.data.user.id, "owner");
+        const { persistAudit } = await import("./services/audit.js");
+        await persistAudit({
+          event: "platform_role_changed",
+          metadata: { actor: "cli", targetUserId: result.data.user.id, newRole: "owner" },
+        });
       }
 
       console.log(`Created user ${result.data.user.id} (${result.data.user.email}) with role ${options.role}`);
@@ -101,43 +110,36 @@ program
   .requiredOption("--name <name>", "Organization name")
   .option("--slug <slug>", "Organization slug")
   .option("--plan <plan>", "Billing plan", "free")
-  .option("--owner-email <email>", "Owner email")
-  .action(async (options: { name: string; slug?: string; plan: string; ownerEmail?: string }) => {
+  .requiredOption("--owner-email <email>", "Existing platform user email that will own the organization")
+  .action(async (options: { name: string; slug?: string; plan: string; ownerEmail: string }) => {
     const { initializeContainer } = await import("./di.js");
     const { OrganizationDomainService } = await import("./services/domain/index.js");
-    const { DrizzleUserRepository, DrizzleOrganizationRepository } = await import(
-      "./repositories/index.js"
-    );
+    const { DrizzleUserRepository } = await import("./repositories/index.js");
     const container = initializeContainer();
     const orgService = new OrganizationDomainService(
       container.organizationRepository,
-      container.applicationRepository,
-      container.userRepository
+      container.applicationRepository
     );
-    const orgResult = await orgService.createOrganization({
-      name: options.name,
-      slug: options.slug,
-      plan: options.plan,
-    });
+    const users = new DrizzleUserRepository();
+    const owner = await users.findByEmail(options.ownerEmail);
+    if (!owner) {
+      console.error(`Owner email ${options.ownerEmail} not found; organization was not created`);
+      process.exit(1);
+    }
+
+    const orgResult = await orgService.createOrganization(
+      {
+        name: options.name,
+        slug: options.slug,
+        plan: options.plan,
+      },
+      owner.id
+    );
     if (!orgResult.success) {
       console.error(`Failed to create organization: ${orgResult.error.message}`);
       process.exit(1);
     }
     const org = orgResult.data;
-    if (options.ownerEmail) {
-      const users = new DrizzleUserRepository();
-      const owner = await users.findByEmail(options.ownerEmail);
-      if (owner) {
-        const orgs = new DrizzleOrganizationRepository();
-        await orgs.addMembership({
-          orgId: org.id,
-          userId: owner.id,
-          role: "owner",
-        });
-      } else {
-        console.warn(`Owner email ${options.ownerEmail} not found; organization created without owner`);
-      }
-    }
     console.log(`Created organization ${org.id} (${org.slug})`);
   });
 

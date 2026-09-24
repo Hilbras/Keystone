@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getSdk } from "../../sdk/index.js";
-import { toPublicUser } from "../../types.js";
+import { toPublicApplication, toPublicUser } from "../../types.js";
 import { requireOrganizationRole, sendResultError, ipEntry, BrandingSchema } from "./helpers.js";
 import { rateLimit } from "../../plugins/rateLimit.js";
 import type { EventContext } from "../../services/events/types.js";
@@ -49,7 +49,10 @@ function requestEventContext(request: FastifyRequest): EventContext {
     requestId: request.id,
     ip: request.ip,
     userAgent: request.headers["user-agent"],
-    appId: request.state.app?.id,
+    appId:
+      request.state.membership && request.state.app?.orgId === request.state.membership.orgId
+        ? request.state.app.id
+        : undefined,
   };
 }
 
@@ -72,13 +75,16 @@ export default async function organizationsRoutes(app: FastifyInstance) {
       const body = CreateOrgSchema.parse(request.body);
       const result = await sdk.organization.createOrganization(request.user!.id, body);
       if (!result.success) return sendResultError(reply, result);
+      request.state.org = result.data;
       await request.audit("organization_created", { orgId: result.data.id });
       return reply.status(201).send(result.data);
     }
   );
 
   app.get("/organizations", { preHandler: [app.authenticate] }, async (request) => {
-    const orgs = await sdk.organization.listUserOrganizations(request.user!.id);
+    const orgs = request.user!.role === "owner"
+      ? await app.container.organizationRepository.listAll()
+      : await sdk.organization.listUserOrganizations(request.user!.id);
     return { organizations: orgs };
   });
 
@@ -103,7 +109,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
       const body = CreateAppSchema.parse(request.body);
       const result = await sdk.organization.createApplication(request.user!.id, id, body);
       if (!result.success) return sendResultError(reply, result);
-      return reply.status(201).send({ ...result.data, clientSecret: result.data.clientSecret });
+      return reply.status(201).send(toPublicApplication(result.data));
     }
   );
 
@@ -114,7 +120,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const result = await sdk.organization.listOrganizationApplications(request.user!.id, id);
       if (!result.success) return sendResultError(reply, result);
-      return { applications: result.data };
+      return { applications: result.data.map(toPublicApplication) };
     }
   );
 
@@ -146,7 +152,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
       const result = await sdk.organization.updateApplication(request.user!.id, id, appId, body);
       if (!result.success) return sendResultError(reply, result);
       await request.audit("application_updated", { orgId: id, appId, updates: Object.keys(body) });
-      return result.data;
+      return toPublicApplication(result.data);
     }
   );
 
@@ -170,8 +176,13 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "organization", action: "read" })] },
     async (request) => {
       const { id } = request.params as { id: string };
-      const members = await sdk.identity.listOrganizationUsers(id);
-      return { members: members.map(toPublicUser) };
+      const members = await app.container.organizationRepository.listMembers(id);
+      return {
+        members: members.map(({ membership, user }) => ({
+          ...user,
+          membershipRole: membership.role,
+        })),
+      };
     }
   );
 
@@ -181,8 +192,6 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string };
       const body = UpdateMemberSchema.parse(request.body);
-      const previous = await sdk.authorization.isOrgMember(userId, id);
-      if (!previous) return reply.status(404).send({ error: "Membership not found" });
       const result = await sdk.organization.updateMemberRole(request.user!.id, id, userId, body.role, requestEventContext(request));
       if (!result.success) return sendResultError(reply, result);
       return result.data;
@@ -194,8 +203,6 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "organization", action: "manage_members" })] },
     async (request, reply) => {
       const { id, userId } = request.params as { id: string; userId: string };
-      const previous = await sdk.authorization.isOrgMember(userId, id);
-      if (!previous) return reply.status(404).send({ error: "Membership not found" });
       const result = await sdk.organization.removeMember(request.user!.id, id, userId, requestEventContext(request));
       if (!result.success) return sendResultError(reply, result);
       return result.data;
@@ -207,8 +214,13 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "organization", action: "read" })] },
     async (request) => {
       const { id } = request.params as { id: string };
-      const users = await sdk.identity.listOrganizationUsers(id);
-      return { users: users.map(toPublicUser) };
+      const members = await app.container.organizationRepository.listMembers(id);
+      return {
+        users: members.map(({ membership, user }) => ({
+          ...user,
+          membershipRole: membership.role,
+        })),
+      };
     }
   );
 
@@ -219,10 +231,10 @@ export default async function organizationsRoutes(app: FastifyInstance) {
       const { id, userId } = request.params as { id: string; userId: string };
       const membership = await sdk.authorization.isOrgMember(userId, id);
       if (!membership) return reply.status(404).send({ error: "User is not a member of this organization" });
-      const users = await sdk.identity.listOrganizationUsers(id);
-      const user = users.find((u) => u.id === userId);
-      if (!user) return reply.status(404).send({ error: "User not found" });
-      return { user: toPublicUser(user), membership };
+      const members = await app.container.organizationRepository.listMembers(id);
+      const member = members.find(({ membership: memberMembership }) => memberMembership.userId === userId);
+      if (!member) return reply.status(404).send({ error: "User not found" });
+      return { user: { ...member.user, membershipRole: member.membership.role }, membership };
     }
   );
 

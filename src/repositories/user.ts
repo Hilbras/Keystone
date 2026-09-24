@@ -1,7 +1,7 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, orgMemberships, userIdentities, identityProviders, type User } from "../db/schema.js";
-import type { CreateUserInput, UpdateUserInput, UserRepository } from "./types.js";
+import { users, orgMemberships, userIdentities, identityProviders, refreshTokens, apiKeys, userSessions, type User } from "../db/schema.js";
+import { LastOwnerInvariantError, type CreateUserInput, type UpdateUserInput, type UserRepository } from "./types.js";
 
 export class DrizzleUserRepository implements UserRepository {
   async findById(id: string): Promise<User | undefined> {
@@ -52,16 +52,51 @@ export class DrizzleUserRepository implements UserRepository {
   }
 
   async updateRole(id: string, role: "owner" | "user"): Promise<User | undefined> {
-    const [updated] = await db
-      .update(users)
-      .set({ role, updatedAt: sql`now()` })
-      .where(eq(users.id, id))
-      .returning();
-    return updated;
+    if (role !== "owner" && role !== "user") throw new Error("Invalid platform role");
+
+    return db.transaction(async (tx) => {
+      const [target] = await tx.select().from(users).where(eq(users.id, id)).limit(1);
+      if (!target) return undefined;
+
+      if (target.role === "owner" && role === "user") {
+        const owners = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.role, "owner"), eq(users.isActive, true)))
+          .for("update");
+        if (owners.length <= 1) throw new LastOwnerInvariantError("Cannot demote the last platform owner");
+      }
+
+      const [updated] = await tx
+        .update(users)
+        .set({ role, updatedAt: sql`now()` })
+        .where(eq(users.id, id))
+        .returning();
+      return updated;
+    });
   }
 
   async deactivate(id: string): Promise<void> {
-    await db.update(users).set({ emailVerified: false, updatedAt: sql`now()` }).where(eq(users.id, id));
+    await db.transaction(async (tx) => {
+      const [target] = await tx.select().from(users).where(eq(users.id, id)).limit(1);
+      if (!target) return;
+      if (target.role === "owner" && target.isActive) {
+        const owners = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.role, "owner"), eq(users.isActive, true)))
+          .for("update");
+        if (owners.length <= 1) throw new LastOwnerInvariantError("Cannot deactivate the last platform owner");
+      }
+      const now = new Date();
+      await tx
+        .update(users)
+        .set({ isActive: false, emailVerified: false, passwordHash: null, totpSecret: null, totpEnabled: false, updatedAt: now })
+        .where(eq(users.id, id));
+      await tx.update(refreshTokens).set({ revokedAt: now }).where(and(eq(refreshTokens.userId, id), isNull(refreshTokens.revokedAt)));
+      await tx.update(apiKeys).set({ revokedAt: now }).where(and(eq(apiKeys.userId, id), isNull(apiKeys.revokedAt)));
+      await tx.delete(userSessions).where(eq(userSessions.userId, id));
+    });
   }
 
   async listByOrg(orgId: string): Promise<User[]> {
@@ -122,7 +157,7 @@ export class DrizzleUserRepository implements UserRepository {
     const [row] = await db
       .select({ count: sql<number>`count(*)`.mapWith(Number) })
       .from(users)
-      .where(eq(users.role, role));
+      .where(and(eq(users.role, role), eq(users.isActive, true)));
     return row?.count ?? 0;
   }
 

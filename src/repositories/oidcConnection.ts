@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { oidcConnections, type OidcConnection } from "../db/schema.js";
+import { encryptSecret } from "../services/secrets/index.js";
 
 export type OidcConnectionListItem = {
   id: string;
@@ -18,8 +19,8 @@ export type OidcConnectionListItem = {
 
 export interface OidcConnectionRepository {
   listByOrgId(orgId: string): Promise<OidcConnectionListItem[]>;
-  findById(id: string): Promise<OidcConnection | undefined>;
-  findActiveById(id: string): Promise<OidcConnection | undefined>;
+  findActiveByIdAndOrgId(id: string, orgId: string): Promise<OidcConnection | undefined>;
+  updateClientSecret(id: string, clientSecret: string): Promise<boolean>;
   create(input: {
     orgId: string;
     name: string;
@@ -57,14 +58,22 @@ export class DrizzleOidcConnectionRepository implements OidcConnectionRepository
       .where(eq(oidcConnections.orgId, orgId));
   }
 
-  async findById(id: string) {
-    const [connection] = await db.select().from(oidcConnections).where(eq(oidcConnections.id, id)).limit(1);
+  async findActiveByIdAndOrgId(id: string, orgId: string) {
+    const [connection] = await db
+      .select()
+      .from(oidcConnections)
+      .where(and(eq(oidcConnections.id, id), eq(oidcConnections.orgId, orgId), eq(oidcConnections.isActive, true)))
+      .limit(1);
     return connection;
   }
 
-  async findActiveById(id: string) {
-    const [connection] = await db.select().from(oidcConnections).where(and(eq(oidcConnections.id, id), eq(oidcConnections.isActive, true))).limit(1);
-    return connection;
+  async updateClientSecret(id: string, clientSecret: string) {
+    const [updated] = await db
+      .update(oidcConnections)
+      .set({ clientSecret: await encryptSecret(clientSecret), updatedAt: new Date() })
+      .where(eq(oidcConnections.id, id))
+      .returning({ id: oidcConnections.id });
+    return Boolean(updated);
   }
 
   async create(input: {
@@ -92,7 +101,7 @@ export class DrizzleOidcConnectionRepository implements OidcConnectionRepository
         userinfoEndpoint: input.userinfoEndpoint,
         jwksUri: input.jwksUri,
         clientId: input.clientId,
-        clientSecret: input.clientSecret,
+        clientSecret: await encryptSecret(input.clientSecret),
         scopes: input.scopes ?? ["openid", "profile", "email"],
         attributeMapping: input.attributeMapping ?? {},
         isActive: input.isActive ?? true,

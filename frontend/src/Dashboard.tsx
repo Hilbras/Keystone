@@ -195,17 +195,20 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     navigate(`/dashboard/${encodeURIComponent(tab)}`);
   }, [navigate]);
 
-  const visibleTabs = useMemo(
-    () =>
-      TABS.filter((tab) => mode === "advanced" || tab.mode === "simple").map((tab) => ({
+  const visibleTabs = useMemo(() => {
+    const platformOnly = new Set(["users", "connect-project", "identity-providers", "roles", "keys", "security", "webhooks", "queue", "audit-logs", "plugins", "feature-flags", "billing", "metrics", "settings"]);
+    const isPlatformOwner = user?.role === "owner";
+    return TABS
+      .filter((tab) => mode === "advanced" || tab.mode === "simple")
+      .filter((tab) => isPlatformOwner || !platformOnly.has(tab.id))
+      .map((tab) => ({
         ...tab,
         label: t(`nav.${tab.id}`) !== `nav.${tab.id}` ? t(`nav.${tab.id}`) : tab.label,
         group: t(`group.${tab.group.toLowerCase().replace(/ /g, "-")}`) !== `group.${tab.group.toLowerCase().replace(/ /g, "-")}`
           ? t(`group.${tab.group.toLowerCase().replace(/ /g, "-")}`)
           : tab.group,
-      })),
-    [mode, t]
-  );
+      }));
+  }, [mode, t, user?.role]);
 
   // Keep tab in sync with URL hash (e.g. browser back/forward).
   useEffect(() => {
@@ -234,10 +237,10 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     const [health, config, queueStatus] = await Promise.all([
       api.getHealth(),
       api.getOpenIdConfig(),
-      api.getQueueStatus(),
+      user?.role === "owner" ? api.getQueueStatus() : Promise.resolve(null),
     ]);
     return { health, config, queueStatus };
-  }, [token]);
+  }, [token, user?.role]);
 
   // Tab data states
   const [users, setUsers] = useState<DataTabState<{ users: unknown[] }>>({ data: null, loading: false, error: null });
@@ -296,12 +299,19 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     loadTab({ data: null, loading: false, error: null }, setOidcConnections, () => api.getOidcConnections(selectedOrgId));
     loadTab({ data: null, loading: false, error: null }, setScimConfig, () => api.getScimConfig(selectedOrgId));
   }, [selectedOrgId]);
-  const refreshWorkflows = useCallback(() => {
-    if (!selectedOrgId) {
+  const refreshWorkflows = useCallback(async () => {
+    let organizationId = selectedOrgId;
+    if (!organizationId) {
+      const data = await api.getOrganizations();
+      setOrganizations({ data, loading: false, error: null });
+      organizationId = (data.organizations as Array<{ id: string }>)[0]?.id;
+      if (organizationId) setSelectedOrgId(organizationId);
+    }
+    if (!organizationId) {
       setWorkflows({ data: null, loading: false, error: null });
       return;
     }
-    loadTab({ data: null, loading: false, error: null }, setWorkflows, () => api.getWorkflows(selectedOrgId));
+    loadTab({ data: null, loading: false, error: null }, setWorkflows, () => api.getWorkflows(organizationId as string));
   }, [selectedOrgId]);
   const refreshBilling = useCallback(() => {
     loadTab({ data: null, loading: false, error: null }, setPlans, api.getPlans);
@@ -327,7 +337,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     await api.setFeatureFlag(key, enabled, description);
     refreshFeatureFlags();
   }, [refreshFeatureFlags]);
-  const handleCreateSaml = useCallback(async (input: { name: string; spEntityId: string; spAcsUrl: string }) => {
+  const handleCreateSaml = useCallback(async (input: { name: string; spEntityId: string; spAcsUrl: string; idpEntityId: string; idpSsoUrl: string; idpCertificate: string }) => {
     if (!selectedOrgId) return;
     await api.createSamlConnection(selectedOrgId, input);
     refreshEnterpriseSso();

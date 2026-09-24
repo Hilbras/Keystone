@@ -78,7 +78,7 @@ export function getRefreshToken(request: FastifyRequest, clientId?: string): str
 
 async function resolveUserFromClaims(claims: TokenClaims) {
   const [user] = await db.select().from(users).where(eq(users.id, claims.sub)).limit(1);
-  return user;
+  return user?.isActive ? user : undefined;
 }
 
 async function resolveApiKeyRecord(key: string) {
@@ -100,7 +100,7 @@ async function resolveUserFromApiKey(key: string): Promise<{ user: User; scopes:
 
   if (keyRecord.userId) {
     const [user] = await db.select().from(users).where(eq(users.id, keyRecord.userId)).limit(1);
-    if (!user) return undefined;
+    if (!user || !user.isActive) return undefined;
     return { user, scopes: keyRecord.scopes ?? [] };
   }
 
@@ -178,6 +178,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
         emailVerified: true,
         plan: "enterprise",
         role: "service_account",
+        isActive: true,
         provider: "api_key",
         zitadelUserId: null,
         defaultOrgId: serviceAccount.orgId,
