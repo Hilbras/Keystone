@@ -1,8 +1,6 @@
 import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { organizations, orgMemberships, users, type Organization, type OrgMembership } from "../db/schema.js";
-import { emit } from "./events/bus.js";
-import { DrizzleOrganizationRepository } from "../repositories/organization.js";
 
 export type OrgRole = "owner" | "admin" | "member";
 
@@ -13,27 +11,6 @@ export function slugify(name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
-}
-
-export async function createOrganization(
-  input: {
-    name: string;
-    slug?: string;
-    plan?: string;
-  },
-  userId: string
-): Promise<Organization> {
-  const repository = new DrizzleOrganizationRepository();
-  const org = await repository.createWithOwner(input, userId);
-  await emit({
-    type: "organization_member_invited",
-    payload: {
-      userId,
-      orgId: org.id,
-      metadata: { targetUserId: userId, previousRole: null, newRole: "owner", action: "organization_created_sdk" },
-    },
-  });
-  return org;
 }
 
 export async function findOrganizationById(id: string): Promise<Organization | undefined> {

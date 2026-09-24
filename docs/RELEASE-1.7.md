@@ -7,8 +7,8 @@ This checklist is for the local release candidate. Tagging, GitHub Release creat
 - [x] `npm ci` (2026-09-24 local run; release CI repeats the install)
 - [x] `npm run typecheck`
 - [x] `npm run build`
-- [x] `npm test` with PostgreSQL and Redis (86 passed, 1 skipped)
-- [x] `npm run test:security` (39 passed)
+- [x] `npm test` with PostgreSQL and Redis (87 passed, 1 skipped)
+- [x] `npm run test:security` (40 passed)
 - [x] `cd frontend && npm run build`
 - [x] `npm pack --dry-run`
 - [x] `git diff --check`
