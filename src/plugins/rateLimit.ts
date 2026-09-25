@@ -13,8 +13,6 @@ interface RateLimitPluginOptions {
    * one noisy identity provider cannot exhaust the budget of every other tenant.
    */
   keyFrom?: (request: FastifyRequest) => string;
-  /** Extra key material, typically a body field such as `email`. */
-  keyField?: string;
 }
 
 export interface GlobalRateLimitOptions {
@@ -87,11 +85,22 @@ function clientIdentifier(request: FastifyRequest): string {
   );
 }
 
+/**
+ * The resolved client address. Exposed so a route that must run before the
+ * normal limiter (because it emits audit events on failure) can still budget
+ * itself rather than being unbounded.
+ */
+export function clientAddress(request: FastifyRequest): string {
+  return clientIdentifier(request);
+}
+
+/** Raw sliding-window check, for the same pre-limiter case. */
+export { isAllowed };
+
 export function rateLimit(options: RateLimitPluginOptions) {
   return async function preHandler(request: FastifyRequest, reply: FastifyReply) {
     const id = options.keyFrom ? options.keyFrom(request) : clientIdentifier(request);
-    const field = options.keyField ? (request.body as Record<string, string> | undefined)?.[options.keyField] : undefined;
-    const key = `${options.keyPrefix}:${id}:${options.keyField ? (field ?? "") : ((request.body as Record<string, string> | undefined)?.email ?? "")}`;
+    const key = `${options.keyPrefix}:${id}:${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
     const allowed = await isAllowed(key, options.maxAttempts, options.windowSeconds);
     if (!allowed) {
       return reply

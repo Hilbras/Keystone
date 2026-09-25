@@ -665,6 +665,246 @@ describe("SCIM repository scoping", () => {
   });
 });
 
+describe("Regressions from the Phase 3 security review", () => {
+  it("refuses to remove the last owner of the organization", async () => {
+    // createWithOwner makes an *organization* owner; users.role stays "user",
+    // so checking the platform role alone would let SCIM delete them and lock
+    // the tenant out of every owner-gated route.
+    const tenant = await createTenant("org-owner");
+    const orgOwner = await userRepository.findById(tenant.owner.id);
+    assert.equal(orgOwner?.role, "user", "an org owner is not a platform owner");
+    const membership = await organizationRepository.findMembership(tenant.organization.id, tenant.owner.id);
+    assert.equal(membership?.role, "owner");
+
+    const res = await scim(tenant, "DELETE", `/scim/v2/Users/${tenant.owner.id}`);
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.json().scimType, "mutability");
+
+    const after = await organizationRepository.findMembership(tenant.organization.id, tenant.owner.id);
+    assert.ok(after, "the organization must keep an owner");
+    assert.equal((await userRepository.findById(tenant.owner.id))?.isActive, true);
+  });
+
+  it("allows removing a non-last organization owner", async () => {
+    const tenant = await createTenant("org-owner-two");
+    const second = await userRepository.create({
+      email: `co-owner-${crypto.randomUUID().slice(0, 8)}@example.com`,
+      username: `co-owner-${crypto.randomUUID().slice(0, 8)}`,
+      name: "Second owner",
+      emailVerified: true,
+    });
+    await organizationRepository.addMembership({
+      orgId: tenant.organization.id,
+      userId: second.id,
+      role: "owner",
+    });
+
+    const res = await scim(tenant, "DELETE", `/scim/v2/Users/${second.id}`);
+    assert.equal(res.statusCode, 204);
+  });
+
+  it("re-provisions a user who was removed from this organization", async () => {
+    const tenant = await createTenant("reprovision");
+    const email = `reprovision-${crypto.randomUUID().slice(0, 8)}@example.com`;
+    const user = await provision(tenant, email);
+
+    assert.equal((await scim(tenant, "DELETE", `/scim/v2/Users/${user.id}`)).statusCode, 204);
+    assert.equal((await userRepository.findById(user.id))?.isActive, false);
+
+    // Offboard / re-hire must not 409 forever.
+    const again = await scim(tenant, "POST", "/scim/v2/Users", { userName: email, active: true });
+    assert.equal(again.statusCode, 201, again.body);
+
+    const after = await userRepository.findById(user.id);
+    assert.equal(after?.isActive, true, "the re-provisioned account is active again");
+    assert.ok(await organizationRepository.findMembership(tenant.organization.id, user.id));
+  });
+
+  it("does not let one organization reactivate another organization's account", async () => {
+    const a = await createTenant("reactivate-a");
+    const b = await createTenant("reactivate-b");
+    const email = `reactivate-${crypto.randomUUID().slice(0, 8)}@example.com`;
+    const user = await provision(b, email);
+    await organizationRepository.addMembership({ orgId: a.organization.id, userId: user.id, role: "member" });
+
+    // A platform admin deactivates the account without removing memberships.
+    await db.execute(sql`update users set is_active = false where id = ${user.id}`);
+
+    const res = await scim(a, "POST", "/scim/v2/Users", { userName: email, active: true });
+    assert.notEqual(res.statusCode, 201, "a shared account must not be reactivated");
+
+    const after = await userRepository.findById(user.id);
+    assert.equal(after?.isActive, false, "organization B's user must stay inactive");
+  });
+
+  it("does not name the organization that holds a conflicting user", async () => {
+    const a = await createTenant("oracle-a");
+    const b = await createTenant("oracle-b");
+    const email = `oracle-${crypto.randomUUID().slice(0, 8)}@example.com`;
+    await provision(b, email);
+
+    const res = await scim(a, "POST", "/scim/v2/Users", { userName: email });
+    assert.equal(res.statusCode, 409);
+    const detail = String(res.json().detail).toLowerCase();
+    assert.ok(!detail.includes("outside"), "the error must not reveal the other organization");
+    assert.ok(!detail.includes(b.organization.id));
+  });
+
+  it("stops exposing a removed member's details to the organization that removed them", async () => {
+    const a = await createTenant("leak-a");
+    const b = await createTenant("leak-b");
+    const email = `leak-${crypto.randomUUID().slice(0, 8)}@example.com`;
+    const user = await provision(a, email);
+
+    const group = (await scim(a, "POST", "/scim/v2/Groups", { displayName: "engineering" })).json();
+    await scim(a, "POST", `/scim/v2/Groups/${group.id}/members`, { value: user.id });
+
+    const before = await scim(a, "GET", `/scim/v2/Groups/${group.id}`);
+    assert.ok(before.body.includes(user.email), "the member is visible while they belong");
+
+    // They leave the organization and join another one.
+    await scim(a, "DELETE", `/scim/v2/Users/${user.id}`);
+    await organizationRepository.addMembership({ orgId: b.organization.id, userId: user.id, role: "member" });
+
+    const after = await scim(a, "GET", `/scim/v2/Groups/${group.id}`);
+    assert.equal(after.statusCode, 200);
+    assert.ok(!after.body.includes(user.email), "a removed member's email must not linger");
+  });
+
+  it("rejects a filter attribute it does not implement", async () => {
+    const tenant = await createTenant("filter-attr");
+    for (const filter of ['externalId eq "emp-1"', 'userName co "a"', "displayName eq"]) {
+      const res = await scim(tenant, "GET", `/scim/v2/Users?filter=${encodeURIComponent(filter)}`);
+      assert.equal(res.statusCode, 400, filter);
+      assert.equal(res.json().scimType, "invalidFilter", filter);
+    }
+  });
+
+  it("filters groups by externalId", async () => {
+    const tenant = await createTenant("group-filter");
+    const group = (await scim(tenant, "POST", "/scim/v2/Groups", {
+      displayName: "engineering",
+      externalId: "emp-group-1",
+    })).json();
+
+    const hit = await scim(
+      tenant,
+      "GET",
+      `/scim/v2/Groups?filter=${encodeURIComponent('externalId eq "emp-group-1"')}`
+    );
+    assert.equal(hit.statusCode, 200);
+    assert.equal(hit.json().totalResults, 1);
+    assert.equal(hit.json().Resources[0].id, group.id);
+
+    const miss = await scim(
+      tenant,
+      "GET",
+      `/scim/v2/Groups?filter=${encodeURIComponent('externalId eq "nope"')}`
+    );
+    assert.equal(miss.json().totalResults, 0);
+  });
+
+  it("answers a malformed id with 404 rather than a driver error", async () => {
+    const tenant = await createTenant("bad-id");
+    for (const url of [
+      "/scim/v2/Users/not-a-uuid",
+      "/scim/v2/Groups/not-a-uuid",
+      "/scim/v2/Groups/not-a-uuid/members",
+    ]) {
+      const res = await scim(tenant, "GET", url);
+      assert.equal(res.statusCode, 404, url);
+      assert.equal(res.json().status, "404", url);
+    }
+  });
+
+  it("returns a SCIM error object for an invalid body", async () => {
+    const tenant = await createTenant("bad-body");
+    const res = await scim(tenant, "POST", "/scim/v2/Users", { userName: "not-an-email" });
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.json().schemas[0], "urn:ietf:params:scim:api:messages:2.0:Error");
+    assert.equal(res.json().scimType, "invalidValue");
+  });
+
+  it("never returns a negative itemsPerPage", async () => {
+    const tenant = await createTenant("paging");
+    await provision(tenant, `paging-${crypto.randomUUID().slice(0, 8)}@example.com`);
+    const res = await scim(tenant, "GET", "/scim/v2/Users?startIndex=999&count=10");
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().itemsPerPage, 0);
+  });
+
+  it("updates an existing member when the IdM reconciles with POST", async () => {
+    const tenant = await createTenant("post-update");
+    const email = `post-update-${crypto.randomUUID().slice(0, 8)}@example.com`;
+    const user = await provision(tenant, email);
+
+    const res = await scim(tenant, "POST", "/scim/v2/Users", {
+      userName: email,
+      name: { givenName: "Grace", familyName: "Hopper" },
+    });
+    assert.equal(res.statusCode, 201, res.body);
+    assert.equal((await userRepository.findById(user.id))?.name, "Grace Hopper");
+  });
+
+  it("does not add a group membership for a user outside the organization", async () => {
+    const a = await createTenant("addmember-a");
+    const b = await createTenant("addmember-b");
+    const group = (await scim(a, "POST", "/scim/v2/Groups", { displayName: "staff" })).json();
+    const outsider = await addMember(b.organization, "addmember-outsider");
+
+    // Repository level: the tenancy check cannot be bypassed by the caller.
+    const added = await app.container.scimGroupRepository.addMember(a.organization.id, group.id, outsider.id);
+    assert.equal(added, false, "a foreign user must not be addable");
+
+    // A group id from another organization is refused too.
+    const groupInB = (await scim(b, "POST", "/scim/v2/Groups", { displayName: "private" })).json();
+    const mineUser = await addMember(a.organization, "addmember-mine");
+    const crossed = await app.container.scimGroupRepository.addMember(
+      a.organization.id,
+      groupInB.id,
+      mineUser.id
+    );
+    assert.equal(crossed, false, "a foreign group must not accept members");
+  });
+
+  it("does not resurrect a revoked migrated credential on restart", async () => {
+    const { migrateLegacyScimEnv } = await import("../../../services/scimLegacyMigration.js");
+    const tenant = await createTenant("migrated");
+
+    // The organization already has a connection, and an operator revokes it.
+    await connections.revoke(tenant.connectionId);
+
+    const before = await connections.listByOrg(tenant.organization.id);
+    assert.equal(before.length, 1);
+
+    process.env.SCIM_BEARER_TOKEN = "legacy-token-value";
+    process.env.SCIM_ORG_ID = tenant.organization.id;
+    try {
+      await migrateLegacyScimEnv(connections);
+    } finally {
+      delete process.env.SCIM_BEARER_TOKEN;
+      delete process.env.SCIM_ORG_ID;
+    }
+
+    const after = await connections.listByOrg(tenant.organization.id);
+    assert.equal(after.length, 1, "adoption must not run again after a revocation");
+    assert.equal(after[0].revokedAt !== null, true, "the connection must stay revoked");
+
+    // And the legacy token must not authenticate.
+    const res = await app.inject({
+      method: "GET",
+      url: "/scim/v2/Users",
+      headers: { authorization: "Bearer legacy-token-value" },
+    });
+    assert.equal(res.statusCode, 401);
+  });
+
+  it("defaults the rotation grace period to zero so rotation revokes", async () => {
+    const { config } = await import("../../../config.js");
+    assert.equal(config.SCIM_ROTATION_GRACE_SECONDS, 0, "rotation must not double as a grace window");
+  });
+});
+
 describe("SCIM audit trail", () => {
   it("attributes the connection and organization on every mutation", async () => {
     const tenant = await createTenant("audit");

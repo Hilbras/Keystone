@@ -1,6 +1,12 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { scimGroupMembers, scimGroups, users, type ScimGroup } from "../db/schema.js";
+import {
+  scimGroupMembers,
+  scimGroups,
+  orgMemberships,
+  users,
+  type ScimGroup,
+} from "../db/schema.js";
 import type { CreateScimGroupInput, ScimGroupRepository } from "./types.js";
 
 /**
@@ -79,21 +85,47 @@ export class DrizzleScimGroupRepository implements ScimGroupRepository {
       .from(scimGroupMembers)
       .innerJoin(scimGroups, eq(scimGroupMembers.groupId, scimGroups.id))
       .innerJoin(users, eq(scimGroupMembers.userId, users.id))
+      // Only users who are *currently* members: a removed member's email and
+      // name must stop being readable by the organization that removed them.
+      .innerJoin(
+        orgMemberships,
+        and(
+          eq(orgMemberships.userId, scimGroupMembers.userId),
+          eq(orgMemberships.orgId, orgId)
+        )
+      )
       .where(and(eq(scimGroups.id, groupId), eq(scimGroups.orgId, orgId)));
   }
 
   /**
-   * Add a member. `userIds` must already be restricted to the organization by
-   * the caller; membership in the group alone is not sufficient authorization.
+   * Add a member, enforcing both halves in one statement: the group must belong
+   * to `orgId`, and the user must be a member of `orgId`. Callers cannot bypass
+   * the tenancy check by passing a foreign group or user id.
    */
   async addMember(orgId: string, groupId: string, userId: string): Promise<boolean> {
-    const rows = await db
-      .insert(scimGroupMembers)
-      .values({ groupId, userId })
-      .onConflictDoNothing({ target: [scimGroupMembers.groupId, scimGroupMembers.userId] })
-      .returning({ id: scimGroupMembers.id });
-    void orgId;
-    return rows.length === 1;
+    return db.transaction(async (tx) => {
+      const [group] = await tx
+        .select({ id: scimGroups.id })
+        .from(scimGroups)
+        .where(and(eq(scimGroups.id, groupId), eq(scimGroups.orgId, orgId)))
+        .limit(1);
+      if (!group) return false;
+
+      const [member] = await tx
+        .select({ id: orgMemberships.id })
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+        .limit(1);
+      if (!member) return false;
+
+      const rows = await tx
+        .insert(scimGroupMembers)
+        .values({ groupId, userId })
+        .onConflictDoNothing({ target: [scimGroupMembers.groupId, scimGroupMembers.userId] })
+        .returning({ id: scimGroupMembers.id });
+
+      return rows.length === 1;
+    });
   }
 
   async removeMember(orgId: string, groupId: string, userId: string): Promise<boolean> {
@@ -102,12 +134,7 @@ export class DrizzleScimGroupRepository implements ScimGroupRepository {
 
     const rows = await db
       .delete(scimGroupMembers)
-      .where(
-        and(
-          eq(scimGroupMembers.groupId, groupId),
-          inArray(scimGroupMembers.userId, [userId])
-        )
-      )
+      .where(and(eq(scimGroupMembers.groupId, groupId), eq(scimGroupMembers.userId, userId)))
       .returning({ id: scimGroupMembers.id });
     return rows.length === 1;
   }

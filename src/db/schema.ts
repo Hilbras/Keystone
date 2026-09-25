@@ -781,8 +781,12 @@ export const scimConnections = pgTable(
   },
   (table) => ({
     orgIdx: index("scim_connections_org_idx").on(table.orgId),
-    tokenHashIdx: index("scim_connections_token_hash_idx").on(table.tokenHash),
-    previousTokenHashIdx: index("scim_connections_previous_token_hash_idx").on(table.previousTokenHash),
+    // Unique: two connections sharing a digest would make the tenant that a
+    // presented token resolves to depend on scan order.
+    tokenHashUnique: uniqueIndex("scim_connections_token_hash_unique").on(table.tokenHash),
+    previousTokenHashIdx: uniqueIndex("scim_connections_previous_token_hash_unique")
+      .on(table.previousTokenHash)
+      .where(sql`previous_token_hash is not null`),
     // At most one live connection per organization; revoked rows are retained
     // as an audit trail and do not block a replacement.
     activeOrgUnique: uniqueIndex("scim_connections_active_org_unique")

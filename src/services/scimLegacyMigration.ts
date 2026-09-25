@@ -19,8 +19,19 @@ export async function migrateLegacyScimEnv(
   if (!token || !orgId) return;
 
   try {
-    const existing = await connections.findActiveByOrg(orgId);
-    if (existing) return;
+    // Adopt at most once, in any state. Checking only for an *active*
+    // connection would re-create the credential after an operator revoked it,
+    // silently undoing the incident response on the next deploy.
+    const existing = await connections.listByOrg(orgId);
+    if (existing.length > 0) {
+      if (existing.every((connection) => connection.revokedAt !== null)) {
+        console.warn(
+          `[scim] SCIM_BEARER_TOKEN/SCIM_ORG_ID are still set for org ${orgId} but its connection was revoked. ` +
+            "The legacy variables are ignored; remove them to clear this warning."
+        );
+      }
+      return;
+    }
 
     await connections.create({
       orgId,

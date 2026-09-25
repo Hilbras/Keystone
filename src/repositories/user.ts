@@ -1,6 +1,16 @@
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, orgMemberships, userIdentities, identityProviders, refreshTokens, apiKeys, userSessions, type User } from "../db/schema.js";
+import {
+  users,
+  orgMemberships,
+  userIdentities,
+  identityProviders,
+  refreshTokens,
+  apiKeys,
+  userSessions,
+  scimGroupMembers,
+  type User,
+} from "../db/schema.js";
 import { LastOwnerInvariantError, type CreateUserInput, type UpdateUserInput, type UserRepository } from "./types.js";
 
 /**
@@ -187,6 +197,20 @@ export class DrizzleUserRepository implements UserRepository {
         return { outcome: "last_owner" as const, user: row.user };
       }
 
+      // The organization-owner invariant, not just the platform one. Removing
+      // the only organization owner would lock the tenant out of every
+      // owner-gated route, including SCIM connection rotation and revocation.
+      if (row.role === "owner") {
+        const owners = await tx
+          .select({ id: orgMemberships.id })
+          .from(orgMemberships)
+          .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.role, "owner")))
+          .for("update");
+        if (owners.length <= 1) {
+          return { outcome: "last_owner" as const, user: row.user };
+        }
+      }
+
       const memberships = await tx
         .select({ id: orgMemberships.id, orgId: orgMemberships.orgId })
         .from(orgMemberships)
@@ -196,6 +220,14 @@ export class DrizzleUserRepository implements UserRepository {
       await tx
         .delete(orgMemberships)
         .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)));
+
+      // Group membership and the default-organization pointer are both scoped
+      // to a membership that no longer exists.
+      await tx.delete(scimGroupMembers).where(eq(scimGroupMembers.userId, userId));
+      await tx
+        .update(users)
+        .set({ defaultOrgId: null })
+        .where(and(eq(users.id, userId), eq(users.defaultOrgId, orgId)));
 
       if (memberships.length > 1) {
         // Still a member elsewhere: leave the shared account intact.

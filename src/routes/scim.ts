@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { User } from "../db/schema.js";
 import { hashScimToken } from "../services/scimCredentials.js";
-import { rateLimit } from "../plugins/rateLimit.js";
+import { rateLimit, isAllowed, clientAddress } from "../plugins/rateLimit.js";
 import { config } from "../config.js";
 import { emit } from "../services/events/bus.js";
 
@@ -74,6 +74,19 @@ const MemberBodySchema = z.object({
   value: z.string().min(1),
 });
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Read a path id, rejecting anything that is not a uuid before it reaches the
+ * database. A malformed id is reported as "not found" rather than "bad
+ * request", so the endpoint does not advertise how it validates identifiers.
+ */
+function pathId(request: FastifyRequest, key = "id"): string {
+  const value = (request.params as Record<string, string>)[key];
+  if (!value || !UUID_PATTERN.test(value)) throw new ScimNotFound("Resource not found");
+  return value;
+}
+
 const ListQuerySchema = z.object({
   filter: z.string().optional(),
   startIndex: z.coerce.number().int().min(1).optional(),
@@ -81,22 +94,34 @@ const ListQuerySchema = z.object({
 });
 
 /**
- * Supports the single-attribute `eq` form that IdMs actually send, e.g.
- * `userName eq "a@b.com"`. Anything else is rejected rather than ignored, so a
- * client never believes a filter was honoured when it was not.
+ * Only attributes each handler genuinely implements. Adding one here without
+ * implementing it downstream would make clients believe a filter was honoured
+ * when it had been silently dropped.
+ */
+const USER_FILTER_ATTRIBUTES: ReadonlySet<string> = new Set(["username"]);
+const GROUP_FILTER_ATTRIBUTES: ReadonlySet<string> = new Set(["displayname", "externalid"]);
+
+export type ScimFilter = { attribute: string; value: string };
+
+/**
+ * Parse the single-attribute `eq` form that IdMs actually send, e.g.
+ * `userName eq "a@b.com"`.
+ *
+ * Anything outside `supported` — including operators this parser does not
+ * understand — is rejected, so a client is never handed an unfiltered listing
+ * while believing its filter was applied.
  */
 export function parseEqFilter(
   filter: string | undefined,
-  allowed: Record<string, (value: string) => boolean>
-): Record<string, string> | "unsupported" {
-  if (!filter) return {};
-  const match = /^\s*([A-Za-z][A-Za-z0-9_.]*)\s+eq\s+"?([^"]*)"?\s*$/i.exec(filter);
+  supported: ReadonlySet<string>
+): ScimFilter | "unsupported" {
+  if (!filter) return { attribute: "", value: "" };
+  const match = /^\s*([A-Za-z][A-Za-z0-9_]*)\s+eq\s+"?([^"]*)"?\s*$/i.exec(filter);
   if (!match) return "unsupported";
 
   const attribute = match[1].toLowerCase();
-  const comparator = allowed[attribute];
-  if (!comparator) return "unsupported";
-  return { [attribute]: match[2] };
+  if (!supported.has(attribute)) return "unsupported";
+  return { attribute, value: match[2] };
 }
 
 function scimUserResponse(user: {
@@ -153,6 +178,28 @@ class ScimForbidden extends Error {
 }
 
 export default async function scimRoutes(app: FastifyInstance) {
+  // SCIM clients expect a SCIM `Error` object for every failure. Without this
+  // scoped handler a ZodError or a driver error would escape as a generic
+  // Fastify payload, and outside production the raw message would be returned.
+  app.setErrorHandler((error: unknown, _request, reply) => {
+    if (error instanceof ScimNotFound) {
+      return reply.status(404).send(scimError(404, error.message));
+    }
+    if (error instanceof ScimForbidden) {
+      return reply.status(409).send(scimError(409, error.message, error.scimType));
+    }
+    if (error && typeof error === "object" && (error as { name?: string }).name === "ZodError") {
+      return reply.status(400).send(scimError(400, "Invalid request", "invalidValue"));
+    }
+    // Postgres uuid cast failures are caused by a malformed path parameter.
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("invalid input syntax for type uuid")) {
+      return reply.status(404).send(scimError(404, "Resource not found"));
+    }
+    console.error("[scim] unhandled error:", error);
+    return reply.status(500).send(scimError(500, "Internal error"));
+  });
+
   /**
    * Authenticate the credential and pin the request to one organization.
    *
@@ -161,6 +208,21 @@ export default async function scimRoutes(app: FastifyInstance) {
    * carries no timing signal about the secret.
    */
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
+    // This hook runs before the per-credential limiter, and it emits audit and
+    // webhook events on failure. Unbounded unauthenticated traffic would
+    // therefore amplify writes, so budget it by client address first.
+    const guard = await isAllowed(
+      `scim-auth:${clientAddress(request)}`,
+      config.SCIM_AUTH_FAILURE_MAX,
+      config.SCIM_AUTH_FAILURE_WINDOW_SECONDS
+    );
+    if (!guard) {
+      return reply
+        .header("Retry-After", String(config.SCIM_AUTH_FAILURE_WINDOW_SECONDS))
+        .status(429)
+        .send(scimError(429, "Too many requests"));
+    }
+
     const auth = request.headers.authorization;
 
     if (!auth || !auth.startsWith("Bearer ")) {
@@ -290,19 +352,16 @@ export default async function scimRoutes(app: FastifyInstance) {
 
   app.get("/scim/v2/Users", { preHandler: [scimRateLimit] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const query = ListQuerySchema.parse(request.query ?? {});
-    const filter = parseEqFilter(query.filter, {
-      username: (v) => v.toLowerCase() === v.toLowerCase(),
-      externalid: () => true,
-    });
+    const filter = parseEqFilter(query.filter, USER_FILTER_ATTRIBUTES);
     if (filter === "unsupported") {
       return reply.status(400).send(scimError(400, "Unsupported filter expression", "invalidFilter"));
     }
 
     const all = (await app.container.userRepository.listByOrg(request.state.scimOrgId!)).filter((u) => u.isActive);
-    const userName = filter.username;
-    const matching = userName
-      ? all.filter((u) => u.email.toLowerCase() === userName.toLowerCase())
-      : all;
+    const matching =
+      filter.attribute === "username"
+        ? all.filter((u) => u.email.toLowerCase() === filter.value.toLowerCase())
+        : all;
 
     const start = (query.startIndex ?? 1) - 1;
     const count = query.count ?? matching.length;
@@ -311,7 +370,7 @@ export default async function scimRoutes(app: FastifyInstance) {
       schemas: [SCIM_LIST_SCHEMA],
       totalResults: matching.length,
       startIndex: start + 1,
-      itemsPerPage: Math.min(count, matching.length - start),
+      itemsPerPage: Math.max(0, Math.min(count, matching.length - start)),
       Resources: matching.slice(start, start + count).map(scimUserResponse),
     };
   });
@@ -320,7 +379,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Users/:userId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { userId } = request.params as { userId: string };
+      const userId = pathId(request, "userId");
       try {
         return scimUserResponse(await requireOrgUser(request, userId));
       } catch (error) {
@@ -337,30 +396,55 @@ export default async function scimRoutes(app: FastifyInstance) {
       const orgId = request.state.scimOrgId!;
       const email = body.userName.toLowerCase().trim();
 
-      // Resolve the target through the organization. A user that exists
-      // globally but not here is refused: SCIM cannot see whether attaching
-      // them is expected, and adopting them would leak them across tenants.
+      // Resolve the target through the organization. `userName` is globally
+      // unique, so a user that exists elsewhere has to be classified before we
+      // can act: one with no memberships left was removed from *this*
+      // organization and can be re-provisioned, while one that still belongs
+      // to another organization must not be adopted.
       const global = await app.container.userRepository.findByEmail(email);
       const existing = global
         ? await app.container.userRepository.findByIdInOrg(orgId, global.id)
         : undefined;
 
-      if (global && !existing) {
-        await emit({
-          type: "scim_access_denied",
-          payload: { orgId, reason: "user_exists_outside_organization", email },
-        });
-        return reply.status(409).send(
-          scimError(
-            409,
-            "A user with that userName already exists outside this organization. Invite them through the organization instead.",
-            "uniqueness"
-          )
-        );
-      }
-
       let user = existing;
       let isNewUser = false;
+      let isReattached = false;
+
+      if (global && !existing) {
+        const otherOrgIds = await app.container.userRepository.listOrgIdsForUser(global.id);
+
+        if (otherOrgIds.length > 0) {
+          await emit({
+            type: "scim_access_denied",
+            payload: { orgId, reason: "user_exists_outside_organization" },
+          });
+          // Deliberately does not say which organization holds the account.
+          return reply
+            .status(409)
+            .send(scimError(409, "A user with that userName already exists", "uniqueness"));
+        }
+
+        // No memberships remain anywhere: this user was removed from this
+        // organization, so re-provisioning must be able to bring them back
+        // rather than 409 forever.
+        if (global.accountReviewRequired) {
+          return reply.status(409).send(
+            scimError(409, "Account review must be completed by a platform owner", "mutability")
+          );
+        }
+        if (global.role === "owner") {
+          return reply.status(409).send(
+            scimError(409, "Platform owners cannot be provisioned through SCIM", "mutability")
+          );
+        }
+        await app.container.organizationRepository.addMembership({ orgId, userId: global.id, role: "member" });
+        if (!global.isActive) {
+          await app.container.userRepository.updateInOrg(orgId, global.id, { isActive: true });
+        }
+        user = (await app.container.userRepository.findByIdInOrg(orgId, global.id))!;
+        isReattached = true;
+      }
+
       if (!user) {
         const base = email.split("@")[0];
         const username = await app.container.userRepository.ensureUniqueUsername(base);
@@ -382,6 +466,18 @@ export default async function scimRoutes(app: FastifyInstance) {
         isNewUser = true;
       }
 
+      if (!isNewUser && !isReattached) {
+        // IdMs reconcile with POST, so an existing member must be updated too.
+        await assertSoleMembership(request, user, "update");
+        user =
+          (await app.container.userRepository.updateInOrg(orgId, user.id, {
+            ...(body.name
+              ? { name: `${body.name.givenName || ""} ${body.name.familyName || ""}`.trim() }
+              : {}),
+            ...(body.active === undefined ? {} : { isActive: body.active }),
+          })) ?? user;
+      }
+
       if (body.active === false && user.isActive) {
         const removed = await app.container.userRepository.removeFromOrg(orgId, user.id);
         if (!removed || removed.outcome === "not_found") {
@@ -397,6 +493,9 @@ export default async function scimRoutes(app: FastifyInstance) {
             scimError(409, "Account review must be completed by a platform owner", "mutability")
           );
         }
+        // Reactivating a shared account would hand someone access to the other
+        // organizations they belong to, without those organizations' consent.
+        await assertSoleMembership(request, user, "reactivate");
         user = (await app.container.userRepository.updateInOrg(orgId, user.id, { isActive: true })) ?? user;
       }
 
@@ -404,6 +503,7 @@ export default async function scimRoutes(app: FastifyInstance) {
         targetUserId: user.id,
         email: user.email,
         actorType: "scim",
+        ...(isReattached ? { reattached: true } : {}),
         scimConnectionId: request.state.scimConnectionId,
         scimOrgId: orgId,
       });
@@ -415,7 +515,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Users/:userId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { userId } = request.params as { userId: string };
+      const userId = pathId(request, "userId");
       const body = UserBodySchema.parse(request.body);
       const orgId = request.state.scimOrgId!;
 
@@ -477,7 +577,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Users/:userId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { userId } = request.params as { userId: string };
+      const userId = pathId(request, "userId");
       const body = UserPatchSchema.parse(request.body);
       const orgId = request.state.scimOrgId!;
 
@@ -547,7 +647,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Users/:userId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { userId } = request.params as { userId: string };
+      const userId = pathId(request, "userId");
       const orgId = request.state.scimOrgId!;
 
       try {
@@ -604,19 +704,19 @@ export default async function scimRoutes(app: FastifyInstance) {
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const query = ListQuerySchema.parse(request.query ?? {});
-      const filter = parseEqFilter(query.filter, {
-        displayname: () => true,
-        externalid: () => true,
-      });
+      const filter = parseEqFilter(query.filter, GROUP_FILTER_ATTRIBUTES);
       if (filter === "unsupported") {
         return reply.status(400).send(scimError(400, "Unsupported filter expression", "invalidFilter"));
       }
 
       const orgId = request.state.scimOrgId!;
       let groups = await app.container.scimGroupRepository.listByOrg(orgId);
-      if (filter.displayname !== undefined) {
-        const wanted = filter.displayname.toLowerCase();
+      if (filter.attribute === "displayname") {
+        const wanted = filter.value.toLowerCase();
         groups = groups.filter((g) => g.displayName.toLowerCase() === wanted);
+      } else if (filter.attribute === "externalid") {
+        const wanted = filter.value;
+        groups = groups.filter((g) => g.externalId === wanted);
       }
 
       const start = (query.startIndex ?? 1) - 1;
@@ -644,7 +744,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Groups/:groupId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { groupId } = request.params as { groupId: string };
+      const groupId = pathId(request, "groupId");
       try {
         return await groupWithMembers(request, groupId);
       } catch (error) {
@@ -691,7 +791,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Groups/:groupId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { groupId } = request.params as { groupId: string };
+      const groupId = pathId(request, "groupId");
       const body = GroupBodySchema.parse(request.body);
       const orgId = request.state.scimOrgId!;
 
@@ -735,7 +835,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Groups/:groupId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { groupId } = request.params as { groupId: string };
+      const groupId = pathId(request, "groupId");
       const body = GroupPatchSchema.parse(request.body);
       const orgId = request.state.scimOrgId!;
 
@@ -792,7 +892,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Groups/:groupId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { groupId } = request.params as { groupId: string };
+      const groupId = pathId(request, "groupId");
       const orgId = request.state.scimOrgId!;
 
       try {
@@ -818,7 +918,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Groups/:groupId/members",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { groupId } = request.params as { groupId: string };
+      const groupId = pathId(request, "groupId");
       try {
         const group = await loadGroup(request, groupId);
         const members = await app.container.scimGroupRepository.listMembers(
@@ -840,7 +940,7 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Groups/:groupId/members",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { groupId } = request.params as { groupId: string };
+      const groupId = pathId(request, "groupId");
       const body = z.union([MemberBodySchema, z.object({ members: z.array(MemberBodySchema) })]).parse(request.body);
       const orgId = request.state.scimOrgId!;
 
@@ -873,7 +973,8 @@ export default async function scimRoutes(app: FastifyInstance) {
     "/scim/v2/Groups/:groupId/members/:userId",
     { preHandler: [scimRateLimit] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { groupId, userId } = request.params as { groupId: string; userId: string };
+      const groupId = pathId(request, "groupId");
+      const userId = pathId(request, "userId");
       const orgId = request.state.scimOrgId!;
 
       try {
@@ -954,15 +1055,16 @@ export default async function scimRoutes(app: FastifyInstance) {
       })
       .parse(request.body ?? {});
 
-    const filter = parseEqFilter(body.filter, { username: () => true, externalid: () => true });
+    const filter = parseEqFilter(body.filter, USER_FILTER_ATTRIBUTES);
     if (filter === "unsupported") {
       return reply.status(400).send(scimError(400, "Unsupported filter expression", "invalidFilter"));
     }
 
     const all = (await app.container.userRepository.listByOrg(request.state.scimOrgId!)).filter((u) => u.isActive);
-    const matching = filter.username
-      ? all.filter((u) => u.email.toLowerCase() === filter.username.toLowerCase())
-      : all;
+    const matching =
+      filter.attribute === "username"
+        ? all.filter((u) => u.email.toLowerCase() === filter.value.toLowerCase())
+        : all;
     const start = (body.startIndex ?? 1) - 1;
     const count = body.count ?? matching.length;
 
@@ -970,7 +1072,7 @@ export default async function scimRoutes(app: FastifyInstance) {
       schemas: [SCIM_LIST_SCHEMA],
       totalResults: matching.length,
       startIndex: start + 1,
-      itemsPerPage: Math.min(count, Math.max(0, matching.length - start)),
+      itemsPerPage: Math.max(0, Math.min(count, matching.length - start)),
       Resources: matching.slice(start, start + count).map(scimUserResponse),
     };
   });

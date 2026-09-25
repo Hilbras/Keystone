@@ -15,6 +15,18 @@ function getEnv(name: string, fallback = ""): string {
  * otherwise silently break authentication (an MFA challenge budget of 0 makes
  * every login impossible), so fall back to the default and warn.
  */
+function nonNegativeInt(name: string, fallback: string): number {
+  const raw = process.env[name] ?? fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.warn(
+      `[config] ${name} must be a non-negative integer (got ${JSON.stringify(raw)}); using ${fallback}`
+    );
+    return Number(fallback);
+  }
+  return parsed;
+}
+
 function positiveInt(name: string, fallback: string): number {
   const raw = process.env[name] ?? fallback;
   const parsed = Number(raw);
@@ -131,10 +143,15 @@ export const config = {
   SCIM_BEARER_TOKEN: getEnv("SCIM_BEARER_TOKEN"),
   SCIM_ORG_ID: getEnv("SCIM_ORG_ID"),
   /** How long a rotated-out SCIM token keeps working. */
-  SCIM_ROTATION_GRACE_SECONDS: positiveInt("SCIM_ROTATION_GRACE_SECONDS", "86400"),
+  // Default 0: rotating in response to a leak must not leave the old token
+  // working for a day. A grace window is an explicit, audited opt-in.
+  SCIM_ROTATION_GRACE_SECONDS: nonNegativeInt("SCIM_ROTATION_GRACE_SECONDS", "0"),
   /** Rate limit applied to every SCIM request, keyed by credential. */
   SCIM_RATE_LIMIT_MAX: positiveInt("SCIM_RATE_LIMIT_MAX", "600"),
   SCIM_RATE_LIMIT_WINDOW_SECONDS: positiveInt("SCIM_RATE_LIMIT_WINDOW_SECONDS", "60"),
+  /** Budget for unauthenticated SCIM requests, which run before the credential limiter. */
+  SCIM_AUTH_FAILURE_MAX: positiveInt("SCIM_AUTH_FAILURE_MAX", "60"),
+  SCIM_AUTH_FAILURE_WINDOW_SECONDS: positiveInt("SCIM_AUTH_FAILURE_WINDOW_SECONDS", "60"),
   MFA_CHALLENGE_TTL_SECONDS: positiveInt("MFA_CHALLENGE_TTL_SECONDS", "300"),
   MFA_MAX_ATTEMPTS: positiveInt("MFA_MAX_ATTEMPTS", "5"),
   TOTP_BACKUP_CODE_TTL_SECONDS: positiveInt("TOTP_BACKUP_CODE_TTL_SECONDS", "7776000"),
