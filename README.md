@@ -595,15 +595,27 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 
 ### SCIM Provisioning
 
+Every request is authorized by a per-organization SCIM connection and scoped to
+that organization. Cross-tenant targets return `404`.
+
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/scim/v2/Users` | List all users (SCIM) |
-| GET | `/scim/v2/Users/:userId` | Get user by ID (SCIM) |
-| POST | `/scim/v2/Users` | Create user (SCIM) |
-| PUT | `/scim/v2/Users/:userId` | Update user (SCIM) |
-| DELETE | `/scim/v2/Users/:userId` | Delete user (SCIM) |
-| GET | `/scim/v2/Groups` | List groups (SCIM) |
-| GET | `/scim/v2/Groups/:groupId` | Get group by ID (SCIM) |
+| GET | `/scim/v2/Users` | List users (filter, pagination) |
+| GET | `/scim/v2/Users/:userId` | Get user by ID |
+| POST | `/scim/v2/Users` | Provision or update a user |
+| PUT | `/scim/v2/Users/:userId` | Replace user |
+| PATCH | `/scim/v2/Users/:userId` | Partial update |
+| DELETE | `/scim/v2/Users/:userId` | Deprovision user |
+| POST | `/scim/v2/Users/.search` | Search users |
+| GET | `/scim/v2/Groups` | List groups (filter) |
+| GET | `/scim/v2/Groups/:groupId` | Get group by ID |
+| POST/PUT/PATCH/DELETE | `/scim/v2/Groups/:groupId` | Manage groups |
+| GET/POST | `/scim/v2/Groups/:groupId/members` | Manage group members |
+| GET | `/scim/v2/ServiceProviderConfig` | Supported features |
+
+Bearer tokens are created, rotated, and revoked per organization under
+`/v1/admin/organizations/:id/scim-connections` (owner-only). The token is shown
+once and stored only as a digest.
 
 ### MFA & Security
 

@@ -3,7 +3,7 @@ import { Command } from "commander";
 
 const program = new Command();
 
-program.name("keystone").description("Hilbras Keystone CLI").version("1.8.0");
+program.name("keystone").description("Hilbras Keystone CLI").version("1.9.0");
 
 program
   .command("init")

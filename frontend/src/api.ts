@@ -78,6 +78,26 @@ export interface HealthStatus {
   redis?: boolean;
 }
 
+export interface ScimConnection {
+  id: string;
+  organizationId: string;
+  name: string;
+  tokenHint: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastRotatedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+export interface ScimConfig {
+  enabled: boolean;
+  baseUrl: string;
+  orgId: string;
+  activeConnection: ScimConnection | null;
+  connectionCount: number;
+}
+
 export interface LoginInput {
   email: string;
   password: string;
@@ -258,7 +278,23 @@ export const api = {
   deleteOidcConnection: (orgId: string, connectionId: string) =>
     fetchJson<{ success: boolean }>(`/v1/admin/organizations/${orgId}/oidc-connections/${connectionId}`, { method: "DELETE" }),
   getScimConfig: (orgId: string) =>
-    fetchJson<{ enabled: boolean; baseUrl: string; orgId: string }>(`/v1/admin/organizations/${orgId}/scim-config`),
+    fetchJson<ScimConfig>(`/v1/admin/organizations/${orgId}/scim-config`),
+  getScimConnections: (orgId: string) =>
+    fetchJson<{ connections: ScimConnection[] }>(`/v1/admin/organizations/${orgId}/scim-connections`),
+  createScimConnection: (orgId: string, input: { name: string; expiresInDays?: number; rotationGraceSeconds?: number }) =>
+    fetchJson<ScimConnection & { token: string }>(`/v1/admin/organizations/${orgId}/scim-connections`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  rotateScimConnection: (orgId: string, connectionId: string, rotationGraceSeconds?: number) =>
+    fetchJson<{ connectionId: string; token: string; tokenHint: string; previousTokenValidUntil: string }>(
+      `/v1/admin/organizations/${orgId}/scim-connections/${connectionId}/rotate`,
+      { method: "POST", body: JSON.stringify({ rotationGraceSeconds }) }
+    ),
+  revokeScimConnection: (orgId: string, connectionId: string) =>
+    fetchJson<{ success: boolean }>(`/v1/admin/organizations/${orgId}/scim-connections/${connectionId}`, {
+      method: "DELETE",
+    }),
 
   // Workflows
   getWorkflows: (orgId: string) => fetchJson<{ workflows: Array<{ id: string; name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> }; isActive: boolean; createdAt: string }> }>(`/v1/admin/workflows?orgId=${encodeURIComponent(orgId)}`),

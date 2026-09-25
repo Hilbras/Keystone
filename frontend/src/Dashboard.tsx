@@ -25,7 +25,7 @@ import {
   Layers,
   BarChart3,
 } from "lucide-react";
-import { api } from "./api.ts";
+import { api, type ScimConfig } from "./api.ts";
 import { Button } from "./components/ui/Button.tsx";
 import { Alert } from "./components/ui/Alert.tsx";
 import { LoadingState } from "./components/ui/LoadingState.tsx";
@@ -256,7 +256,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
   const [configProfiles, setConfigProfiles] = useState<DataTabState<{ profiles: ConfigurationProfile[] }>>({ data: null, loading: false, error: null });
   const [samlConnections, setSamlConnections] = useState<DataTabState<{ connections: SamlConnection[] }>>({ data: null, loading: false, error: null });
   const [oidcConnections, setOidcConnections] = useState<DataTabState<{ connections: OidcConnection[] }>>({ data: null, loading: false, error: null });
-  const [scimConfig, setScimConfig] = useState<DataTabState<{ enabled: boolean; baseUrl: string; orgId: string }>>({ data: null, loading: false, error: null });
+  const [scimConfig, setScimConfig] = useState<DataTabState<ScimConfig>>({ data: null, loading: false, error: null });
   const [workflows, setWorkflows] = useState<DataTabState<{ workflows: WorkflowItem[] }>>({ data: null, loading: false, error: null });
   const [workflowRuns, setWorkflowRuns] = useState<DataTabState<{ runs: WorkflowRun[] }>>({ data: null, loading: false, error: null });
   const [plans, setPlans] = useState<DataTabState<{ plans: Plan[] }>>({ data: null, loading: false, error: null });
@@ -357,6 +357,37 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     await api.deleteOidcConnection(selectedOrgId, id);
     refreshEnterpriseSso();
   }, [selectedOrgId, refreshEnterpriseSso]);
+
+  // The SCIM bearer token is returned exactly once; hand it to the panel so it
+  // can be shown once and never requested again.
+  const handleCreateScimConnection = useCallback(
+    async (input: { name: string; expiresInDays?: number }) => {
+      if (!selectedOrgId) return null;
+      const created = await api.createScimConnection(selectedOrgId, input);
+      refreshEnterpriseSso();
+      return created.token;
+    },
+    [selectedOrgId, refreshEnterpriseSso]
+  );
+
+  const handleRotateScimConnection = useCallback(
+    async (connectionId: string) => {
+      if (!selectedOrgId) return null;
+      const rotated = await api.rotateScimConnection(selectedOrgId, connectionId);
+      refreshEnterpriseSso();
+      return rotated.token;
+    },
+    [selectedOrgId, refreshEnterpriseSso]
+  );
+
+  const handleRevokeScimConnection = useCallback(
+    async (connectionId: string) => {
+      if (!selectedOrgId) return;
+      await api.revokeScimConnection(selectedOrgId, connectionId);
+      refreshEnterpriseSso();
+    },
+    [selectedOrgId, refreshEnterpriseSso]
+  );
   const handleCreateWorkflow = useCallback(async (input: { name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> } }) => {
     if (!selectedOrgId) return;
     await api.createWorkflow(selectedOrgId, input);
@@ -617,6 +648,9 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
                 onDeleteSaml={handleDeleteSaml}
                 onCreateOidc={handleCreateOidc}
                 onDeleteOidc={handleDeleteOidc}
+                onCreateScimConnection={handleCreateScimConnection}
+                onRotateScimConnection={handleRotateScimConnection}
+                onRevokeScimConnection={handleRevokeScimConnection}
               />
             </>
           </Suspense>

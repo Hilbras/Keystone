@@ -26,7 +26,13 @@ This document outlines the security model and operational practices for Hilbras 
 - **API keys** are opaque, prefix-searchable, and hashed at rest.
 - **JWT signing keys** are rotatable. The JWKS endpoint publishes the active key plus recently rotated keys for a 24-hour grace period.
 - **Cookies** use `HttpOnly`, `Secure` (configurable), and `SameSite=lax`.
-- SCIM is a single-organization integration credential: `SCIM_BEARER_TOKEN` must be paired with `SCIM_ORG_ID`; user and group operations outside that organization are rejected. Platform owners and review-required accounts cannot be modified by SCIM. Deactivation is account-aware and cannot bypass last-owner protection; SCIM audit rows identify the credential as the actor and the target only in metadata.
+- SCIM credentials are per-organization. Every connection belongs to exactly one organization, at most one connection is live per organization, and every user and group read and write is filtered by that organization. A cross-tenant target returns `404`, not `403`, so the endpoint is not a tenant oracle.
+- SCIM bearer tokens are stored only as a SHA-256 digest and resolved by that digest, so a database dump yields no usable token and the comparison carries no timing signal. Tokens can expire, be rotated, and be revoked. Rotation invalidates the old token immediately unless an explicit grace window is requested — a grace window is a continuity aid, not a revocation.
+- Issuing, rotating, and revoking a SCIM credential is owner-only; a SCIM token can provision and deactivate tenant users, so a mere admin or member must not be able to mint one.
+- A user row is global, so deprovisioning removes the organization's membership first and deactivates the account only once no membership remains. SCIM refuses to change global attributes of a user who also belongs to another organization, and refuses to reactivate a shared account.
+- SCIM cannot remove the last owner of an organization, and never modifies platform owners or accounts pending platform review.
+- SCIM audit rows record the connection id and organization for every mutation, and credential lifecycle transitions emit `scim_connection_created`, `scim_connection_rotated`, and `scim_connection_revoked`. Rejected requests emit `scim_access_denied` and `scim_authentication_failed`.
+- `SCIM_BEARER_TOKEN` and `SCIM_ORG_ID` are deprecated. They are adopted once into a connection at startup and then ignored, so removing them does not affect an adopted credential; revoke through the connection API instead.
 - Configuration and profile responses redact secret-like values before leaving the API; raw database URLs, credentials, signing keys, provider secrets, SCIM tokens, Vault tokens, and generic `*_CLIENT_SECRET` values are not returned.
 - SAML RelayState is bound to a short-lived, one-time Redis transaction and initiating browser cookie; production requires a high-entropy `KEYSTONE_INTERNAL_API_KEY`.
 - Deactivated users are rejected by password, token, API-key, refresh, magic-link, WebAuthn, OAuth, SAML, and OIDC authentication; deactivation revokes refresh tokens, sessions, and user API keys. Ambiguous legacy unverified accounts are quarantined with `account_review_required` during migration.
@@ -62,6 +68,8 @@ Administrative and organization user responses use a redacted public projection.
 
 A Redis-backed sliding-window rate limiter protects authentication and public endpoints. It returns `429 Too Many Requests` with a `Retry-After` header. It fails open if Redis is unreachable.
 
+SCIM carries two budgets: one keyed on the authenticated credential, so one noisy identity provider cannot exhaust every other tenant's allowance, and an address-keyed budget in front of the authentication hook, because that hook runs before the credential limiter and emits audit and webhook events on failure.
+
 MFA verification does not rely on that limiter alone: every challenge carries its own attempt budget (`MFA_MAX_ATTEMPTS`, default 5) enforced in the database, so attempts are counted even when Redis is unavailable. Factor management endpoints (`/auth/totp/*`) have dedicated budgets separate from login.
 
 ## Audit and monitoring
@@ -70,6 +78,7 @@ Every security-relevant action emits a versioned event:
 
 - `user_registered`, `user_login`, `user_login_failed`
 - `mfa_challenge_created`, `mfa_challenge_failed`, `mfa_challenge_expired`, `mfa_challenge_rejected`, `mfa_verified`, `mfa_bypass_blocked`, `mfa_backup_code_regenerated`
+- `scim_connection_created`, `scim_connection_rotated`, `scim_connection_revoked`, `scim_access_denied`, `scim_authentication_failed`, `scim_group_created`, `scim_group_updated`, `scim_group_deleted`
 - `oauth_callback`, `saml_sso_login`, `oidc_enterprise_login`
 - `api_key_created`, `api_key_revoked`
 - `authz_check`, `password_reset_requested`, `password_reset_completed`

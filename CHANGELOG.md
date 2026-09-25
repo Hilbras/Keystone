@@ -5,6 +5,76 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-09-25
+
+### Security
+
+SCIM was a single global credential. In 1.8.x a deployment could provision
+exactly one organization, the bearer token was stored and compared in plaintext,
+and mutations reached global user records.
+
+- SCIM credentials are per-organization. Every connection belongs to exactly one
+  organization, at most one is live per organization, and every user and group
+  read and write is filtered by it. A cross-tenant target returns `404`, so the
+  endpoint is not a tenant oracle.
+- Bearer tokens are stored only as a SHA-256 digest and resolved by that digest,
+  so a database dump yields no usable token and the comparison carries no timing
+  signal. Connections can expire, be rotated, and be revoked.
+- Issuing, rotating, and revoking a SCIM credential is owner-only. A SCIM token
+  provisions and deactivates tenant users, so a mere admin or member cannot mint
+  one.
+- Deprovisioning removes the organization's membership and deactivates the
+  account only when no membership remains. Previously it deactivated a shared
+  account in every organization that user belonged to, without those
+  organizations' authorization.
+- SCIM refuses to change the global attributes of a shared user, to reactivate a
+  shared account, and to remove the last owner of an organization.
+- SCIM can no longer attach a user who already belongs to another organization,
+  and the conflict message no longer names the organization that holds them.
+- Unauthenticated SCIM traffic is budgeted before the authentication hook emits
+  audit and webhook events, closing an unauthenticated write-amplification path.
+- SCIM request budgets are keyed per credential, so one noisy identity provider
+  cannot exhaust every other tenant's allowance.
+
+### Changed
+
+- `SCIM_BEARER_TOKEN` and `SCIM_ORG_ID` are deprecated. They are adopted once
+  into a connection at startup and then ignored, so an upgrade does not break an
+  existing identity provider. Adoption is one-time in any state, so a restart
+  cannot resurrect a revoked credential.
+- Deprovisioning a single-tenant user now removes the membership as well as
+  deactivating the account. Deprovisioning a shared user removes only the
+  membership, and a follow-up `DELETE` returns `404`.
+- `POST /scim/v2/Users` is create-or-update; profile fields for an existing
+  member are applied rather than dropped.
+- A user removed from an organization can be re-provisioned. Previously the
+  global email lookup found the inactive row and returned `409` forever.
+- Rotating a credential revokes the previous token immediately
+  (`SCIM_ROTATION_GRACE_SECONDS` defaults to `0`). A grace window is now an
+  explicit opt-in and is not a revocation mechanism.
+- Groups are real organization-scoped records. The synthetic role-bucket
+  projection (`<orgId>:<role>` ids) is removed.
+- Malformed path ids return a SCIM `404` instead of surfacing a driver error, and
+  validation and internal failures return SCIM `Error` objects.
+
+### Added
+
+- `scim_connections` with rotation, revocation, expiry, and a token hint.
+- `scim_groups` and `scim_group_members`, organization-scoped throughout.
+- `PATCH /scim/v2/Users/:userId` and `POST /scim/v2/Users/.search`.
+- Group create, replace, patch, delete, and member management endpoints.
+- `filter`, `startIndex`, and `count` on list endpoints; unsupported filters are
+  rejected rather than silently ignored.
+- `GET /scim/v2/ServiceProviderConfig` and `GET /scim/v2/ResourceTypes`.
+- Owner-only admin API for creating, listing, rotating, and revoking SCIM
+  connections, with a dashboard UI for the same.
+- `findByIdInOrg`, `updateInOrg`, `listOrgIdsForUser`, and `removeFromOrg`
+  repository methods for organization-scoped user access.
+- Audit events `scim_connection_created`, `scim_connection_rotated`,
+  `scim_connection_revoked`, `scim_access_denied`, `scim_authentication_failed`,
+  and the `scim_group_*` group events.
+- `docs/MIGRATION-1.9.md`.
+
 ## [1.8.0] - 2026-09-25
 
 ### Security

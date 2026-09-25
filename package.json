@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "type": "module",
   "overrides": {
     "@xmldom/xmldom": "0.8.15",

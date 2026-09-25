@@ -36,6 +36,20 @@ interface ScimConfig {
   enabled: boolean;
   baseUrl: string;
   orgId: string;
+  activeConnection: ScimConnection | null;
+  connectionCount: number;
+}
+
+interface ScimConnection {
+  id: string;
+  organizationId: string;
+  name: string;
+  tokenHint: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastRotatedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
 }
 
 interface EnterpriseSsoPanelProps {
@@ -48,6 +62,9 @@ interface EnterpriseSsoPanelProps {
   onDeleteSaml: (id: string) => Promise<void>;
   onCreateOidc: (input: { name: string; issuer: string; authorizationEndpoint: string; tokenEndpoint: string; clientId: string; clientSecret: string }) => Promise<void>;
   onDeleteOidc: (id: string) => Promise<void>;
+  onCreateScimConnection: (input: { name: string; expiresInDays?: number }) => Promise<string | null>;
+  onRotateScimConnection: (connectionId: string) => Promise<string | null>;
+  onRevokeScimConnection: (connectionId: string) => Promise<void>;
 }
 
 export function EnterpriseSsoPanel({
@@ -60,8 +77,18 @@ export function EnterpriseSsoPanel({
   onDeleteSaml,
   onCreateOidc,
   onDeleteOidc,
+  onCreateScimConnection,
+  onRotateScimConnection,
+  onRevokeScimConnection,
 }: EnterpriseSsoPanelProps) {
   const [activeSubtab, setActiveSubtab] = useState<"saml" | "oidc" | "scim">("saml");
+  const [scimName, setScimName] = useState("");
+  const [scimExpiry, setScimExpiry] = useState("");
+  const [scimBusy, setScimBusy] = useState(false);
+  // The bearer token is returned exactly once; surface it and let the operator
+  // copy it before it is gone for good.
+  const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  const [scimError, setScimError] = useState<string | null>(null);
   const [samlForm, setSamlForm] = useState({ name: "", spEntityId: "", spAcsUrl: "", idpEntityId: "", idpSsoUrl: "", idpCertificate: "" });
   const [oidcForm, setOidcForm] = useState({ name: "", issuer: "", authorizationEndpoint: "", tokenEndpoint: "", clientId: "", clientSecret: "" });
 
@@ -271,21 +298,147 @@ export function EnterpriseSsoPanel({
             <FileText className="w-4 h-4 text-gold" />
             SCIM Provisioning
           </h3>
+
+          {scimError && (
+            <Alert variant="error" className="mb-3">
+              {scimError}
+            </Alert>
+          )}
+
+          {issuedToken && (
+            <Alert variant="success" className="mb-3">
+              <p className="font-medium mb-1">Copy this bearer token now.</p>
+              <p className="text-[12px] mb-2">It is shown once and is stored only as a hash, so it cannot be retrieved again.</p>
+              <code className="block text-[12px] bg-surface p-2 rounded-lg break-all">{issuedToken}</code>
+            </Alert>
+          )}
+
           {scimConfig ? (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <span className="text-[13px] txt-muted">Status:</span>
                 <span className={`text-[13px] font-medium ${scimConfig.enabled ? "text-emerald-500" : "text-red-500"}`}>
                   {scimConfig.enabled ? "Enabled" : "Disabled"}
                 </span>
               </div>
+
               <div>
                 <span className="text-[13px] txt-muted">SCIM Base URL:</span>
                 <code className="block text-[12px] txt-head bg-surface p-2 rounded-lg mt-1 break-all">{scimConfig.baseUrl}</code>
               </div>
-              <p className="text-[12px] txt-muted">
-                Configure your identity provider to provision users to the SCIM endpoint above using the bearer token set in <code className="font-mono text-gold">SCIM_BEARER_TOKEN</code>.
-              </p>
+
+              {scimConfig.activeConnection && (
+                <div className="rounded-lg border border-theme/20 p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[13px] txt-head font-medium">{scimConfig.activeConnection.name}</span>
+                    <span className="text-[12px] txt-muted">
+                      token ending <code className="font-mono text-gold">{scimConfig.activeConnection.tokenHint}</code>
+                    </span>
+                  </div>
+                  {scimConfig.activeConnection.expiresAt && (
+                    <p className="text-[12px] txt-muted">
+                      Expires {new Date(scimConfig.activeConnection.expiresAt).toLocaleDateString()}
+                    </p>
+                  )}
+                  {scimConfig.activeConnection.lastUsedAt && (
+                    <p className="text-[12px] txt-muted">
+                      Last used {new Date(scimConfig.activeConnection.lastUsedAt).toLocaleString()}
+                    </p>
+                  )}
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={scimBusy}
+                      onClick={async () => {
+                        setScimError(null);
+                        setScimBusy(true);
+                        try {
+                          setIssuedToken(await onRotateScimConnection(scimConfig.activeConnection!.id));
+                        } catch (err) {
+                          setScimError(err instanceof Error ? err.message : "Could not rotate the credential");
+                        } finally {
+                          setScimBusy(false);
+                        }
+                      }}
+                    >
+                      Rotate token
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      disabled={scimBusy}
+                      onClick={async () => {
+                        setScimError(null);
+                        setScimBusy(true);
+                        try {
+                          await onRevokeScimConnection(scimConfig.activeConnection!.id);
+                        } catch (err) {
+                          setScimError(err instanceof Error ? err.message : "Could not revoke the credential");
+                        } finally {
+                          setScimBusy(false);
+                        }
+                      }}
+                    >
+                      Revoke
+                    </Button>
+                  </div>
+                  <p className="text-[12px] txt-muted">
+                    Rotating revokes the previous token immediately. If the credential may have leaked, revoke it
+                    rather than rotating.
+                  </p>
+                </div>
+              )}
+
+              {!scimConfig.activeConnection && (
+                <div className="space-y-3">
+                  <p className="text-[13px] txt-muted">
+                    Create a bearer token for this organization. It is scoped to this organization only and is
+                    shown once.
+                  </p>
+                  <Input
+                    aria-label="Connection name"
+                    placeholder="Okta"
+                    value={scimName}
+                    onChange={(e) => setScimName(e.target.value)}
+                  />
+                  <Input
+                    aria-label="Expiry in days"
+                    type="number"
+                    min={1}
+                    placeholder="Expiry in days (optional)"
+                    value={scimExpiry}
+                    onChange={(e) => setScimExpiry(e.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    className="w-full"
+                    disabled={scimBusy || !scimName.trim()}
+                    isLoading={scimBusy}
+                    onClick={async () => {
+                      setScimError(null);
+                      setScimBusy(true);
+                      try {
+                        const days = scimExpiry ? Number(scimExpiry) : undefined;
+                        setIssuedToken(
+                          await onCreateScimConnection({
+                            name: scimName.trim(),
+                            ...(days && Number.isFinite(days) && days > 0 ? { expiresInDays: days } : {}),
+                          })
+                        );
+                        setScimName("");
+                        setScimExpiry("");
+                      } catch (err) {
+                        setScimError(err instanceof Error ? err.message : "Could not create the credential");
+                      } finally {
+                        setScimBusy(false);
+                      }
+                    }}
+                  >
+                    Create credential
+                  </Button>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-[13px] txt-muted">SCIM configuration unavailable.</p>

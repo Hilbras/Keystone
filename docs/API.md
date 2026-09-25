@@ -252,16 +252,89 @@ Hilbras Keystone acts as an authorization server for first-party and third-party
 
 ## SCIM 2.0 provisioning — `/scim/v2`
 
-Authenticated with `SCIM_BEARER_TOKEN` and restricted to the configured `SCIM_ORG_ID`; operations cannot target platform users or other organizations. Deletion is implemented as account deactivation.
+Each request is authorized by a **per-organization SCIM connection**, and every
+read and write is scoped to that connection's organization. There is no global
+SCIM configuration. A target that belongs to another organization is reported as
+`404`, so the endpoint is not a tenant oracle.
+
+Create and manage the bearer token through
+[the SCIM connection API](#scim-connections--v1admin).
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/scim/v2/Users` | List users (filtering, pagination) |
+| GET | `/scim/v2/Users` | List users. `filter=userName eq "…"`, `startIndex`, `count` |
 | GET | `/scim/v2/Users/:userId` | Fetch user |
-| POST | `/scim/v2/Users` | Provision user |
+| POST | `/scim/v2/Users` | Provision or update a user (create-or-update) |
 | PUT | `/scim/v2/Users/:userId` | Replace user |
+| PATCH | `/scim/v2/Users/:userId` | Partial update (`active`, `name.*`, `userName`) |
 | DELETE | `/scim/v2/Users/:userId` | Deprovision user |
-| GET | `/scim/v2/Groups` | List groups |
+| POST | `/scim/v2/Users/.search` | Search users (POST form of the list endpoint) |
+| GET | `/scim/v2/Groups` | List groups. `filter=displayName\|externalId eq "…"` |
+| GET | `/scim/v2/Groups/:groupId` | Fetch group with members |
+| POST | `/scim/v2/Groups` | Create group |
+| PUT | `/scim/v2/Groups/:groupId` | Replace group and its membership |
+| PATCH | `/scim/v2/Groups/:groupId` | Partial update |
+| DELETE | `/scim/v2/Groups/:groupId` | Delete group and its memberships |
+| GET | `/scim/v2/Groups/:groupId/members` | List group members |
+| POST | `/scim/v2/Groups/:groupId/members` | Add member(s) |
+| DELETE | `/scim/v2/Groups/:groupId/members/:userId` | Remove a member |
+| GET | `/scim/v2/ServiceProviderConfig` | Supported features |
+| GET | `/scim/v2/ResourceTypes` | Resource type schema URIs |
+
+### Deprovisioning and shared users
+
+A user row is global, so a blanket deactivation would revoke that person's access
+to *every* organization they belong to — which this credential is not authorized
+to do. Deprovisioning therefore removes the organization's membership, and
+deactivates the account only once no membership remains anywhere.
+
+For the same reason SCIM refuses to change the global attributes of a user who
+also belongs to another organization. It returns `409` with
+`scimType: "mutability"`; remove the membership from this organization instead.
+
+| Response | Meaning |
+| --- | --- |
+| `404` | Not found, or belongs to another organization |
+| `409` `uniqueness` | A user with that `userName` already exists |
+| `409` `mutability` | Platform owner, review-required account, shared user, or last organization owner |
+| `401` | Missing, unknown, revoked, or expired credential |
+
+Platform owners and accounts pending platform review are never modified through
+SCIM.
+
+---
+
+## SCIM connections — `/v1/admin`
+
+Every SCIM connection belongs to exactly one organization. Issuing, rotating, and
+revoking a token is **owner-only**: a SCIM token provisions and deactivates
+tenant users, so it must not be mintable by a mere admin or member.
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| GET | `/organizations/:id/scim-config` | sso read | Status, base URL, and the active connection |
+| GET | `/organizations/:id/scim-connections` | sso read | All connections, including revoked |
+| POST | `/organizations/:id/scim-connections` | **owner** | Create a connection; returns the token once |
+| POST | `/organizations/:id/scim-connections/:connectionId/rotate` | **owner** | Issue a new token |
+| DELETE | `/organizations/:id/scim-connections/:connectionId` | **owner** | Revoke immediately |
+
+```bash
+curl -X POST https://keystone.example.com/v1/admin/organizations/$ORG/scim-connections \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Okta","expiresInDays":365}'
+```
+
+The bearer token is returned **only** in the create and rotate responses. It is
+stored as a SHA-256 digest and is not recoverable afterwards; listings show a
+four-character hint instead.
+
+Rotation invalidates the old token immediately by default. Pass
+`rotationGraceSeconds` to keep the previous token valid for a window, which
+avoids dropping in-flight provisioning — but it is not a revocation mechanism,
+so do not use a grace window when rotating in response to a leak.
+
+Set `expiresInDays` on creation to require rotation on a schedule.
 
 ---
 

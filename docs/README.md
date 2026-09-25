@@ -21,6 +21,7 @@ Complete documentation for the Hilbras Keystone identity platform.
 | [RBAC and authorization](RBAC.md) | Platform/organization role boundaries, policy evaluation, and migration |
 | [v1.7 migration guide](MIGRATION-1.7.md) | Upgrade steps and breaking authorization changes |
 | [v1.8 migration guide](MIGRATION-1.8.md) | MFA enforcement: new endpoints, response changes, and upgrade steps |
+| [v1.9 migration guide](MIGRATION-1.9.md) | SCIM tenancy: per-organization credentials, deprovisioning semantics, and upgrade steps |
 | [v1.7 release checklist](RELEASE-1.7.md) | Local gates, dependency/lint blockers, and publication steps |
 
 ## Contributing
