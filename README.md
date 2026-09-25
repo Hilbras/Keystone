@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `1.7.0`**
+**Current version: `1.9.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,29 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v1.9.0
+
+- **SCIM is organization-scoped** — every SCIM connection belongs to exactly one organization, and every user and group read and write is filtered by it. A cross-tenant target returns `404`, so the endpoint is not a tenant oracle.
+- **SCIM credentials are per organization** — bearer tokens are stored only as a SHA-256 digest, resolved by that digest, and can be expired, rotated, and revoked. Issuing, rotating, and revoking is owner-only.
+- **Deprovisioning no longer reaches outside the tenant** — removing a user removes that organization's membership, and deactivates the account only when no membership remains anywhere. Previously it disabled a shared account in every organization that user belonged to.
+- **Real SCIM groups** — create, read, replace, patch, and delete groups, manage members, and search. Replaces the old synthetic role-bucket projection.
+- **New SCIM surface** — `PATCH /Users/:id`, `Users/.search`, `ServiceProviderConfig`, `ResourceTypes`, and `filter`/`startIndex`/`count`. Unsupported filters are rejected rather than silently ignored.
+
+> **Migration:** `SCIM_BEARER_TOKEN` and `SCIM_ORG_ID` are deprecated. If still set they are adopted once into a connection and then ignored — including after a revocation, so a restart cannot resurrect a credential you revoked. See [MIGRATION-1.9.md](docs/MIGRATION-1.9.md).
+
+## What's new in v1.8.0
+
+- **MFA is mandatory** — a user with TOTP enabled never receives a token before completing the second factor. Password authentication stops at `requires_mfa`; only `POST /auth/mfa/verify` completes the login.
+- **One-time MFA challenges** — opaque, short-lived, stored only as a hash, single-use, with an attempt budget enforced in the database.
+- **A single token-issuance chokepoint** — a token cannot be minted for an MFA-enabled user without a recorded factor, so no login path can bypass MFA by omission.
+- **TOTP verified against the user's own secret**, and each time-step is accepted exactly once, so a captured code is rejected even against a freshly issued challenge.
+- **Hardened backup codes** — 80 bits of entropy, keyed (peppered) hashing, expiry, and single-use consumption via a conditional update.
+- **Step-up on factor changes** — enrolling, confirming, disabling, or regenerating TOTP codes requires the account password, so a leaked session token cannot take over an account's second factor.
+- **Enabling MFA revokes existing sessions and refresh tokens**, and refresh rotation refuses sessions with no recorded factor.
+- **TOTP secrets are encrypted with AES-256-GCM**; values written by earlier versions remain readable.
+
+> **Migration:** `/auth/login` and `/auth/token-login` return `401` with `code: "MFA_REQUIRED"` and a challenge when MFA is required. Clients must render a code step and call `/auth/mfa/verify`. See [MIGRATION-1.8.md](docs/MIGRATION-1.8.md).
 
 ## What's new in v1.7.0
 
@@ -489,6 +512,13 @@ services:
 | `KEYSTONE_QUEUE_PROVIDER` | `in-process`, `bullmq`, or empty to auto-select when Redis is available |
 | `KEYSTONE_PLUGINS` | Comma-separated module paths of plugins to load at startup |
 | `KEYSTONE_FEATURE_FLAGS` | Comma-separated `flag=true|false` runtime feature toggles |
+| `KEYSTONE_TOTP_ENCRYPTION_KEY` | Encrypts TOTP secrets and keys the backup-code hash. Falls back to `KEYSTONE_INTERNAL_API_KEY`. Must be stable — changing it invalidates enrolled authenticators |
+| `MFA_CHALLENGE_TTL_SECONDS` | Lifetime of a login MFA challenge (default `300`) |
+| `MFA_MAX_ATTEMPTS` | Factor attempts per challenge before it is locked (default `5`) |
+| `TOTP_BACKUP_CODE_TTL_SECONDS` | Backup-code lifetime (default `7776000`, 90 days) |
+| `SCIM_ROTATION_GRACE_SECONDS` | Grace window for a rotated SCIM token. Defaults to `0`, so rotation revokes the previous token |
+| `SCIM_RATE_LIMIT_MAX` / `SCIM_RATE_LIMIT_WINDOW_SECONDS` | Per-credential SCIM request budget |
+| `SCIM_AUTH_FAILURE_MAX` / `SCIM_AUTH_FAILURE_WINDOW_SECONDS` | Budget for unauthenticated SCIM requests, applied before authentication |
 
 ---
 
@@ -516,8 +546,9 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/auth/register` | Email/password signup (local password hashing) |
-| POST | `/auth/login` | Email/password login (sets session cookies) |
+| POST | `/auth/login` | Email/password login (sets session cookies; returns `401 MFA_REQUIRED` + a challenge when MFA is required) |
 | POST | `/auth/token-login` | Email/password login for SPA/dashboard (returns bearer token) |
+| POST | `/auth/mfa/verify` | Complete a login MFA challenge and receive tokens |
 | POST | `/auth/logout` | Revoke session |
 | GET | `/auth/me` | Current user |
 | POST | `/auth/refresh` | Rotate refresh token |
@@ -525,7 +556,8 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 | GET | `/auth/callback/:provider` | OAuth callback |
 | POST | `/auth/forgot-password` | Request password reset |
 | POST | `/auth/reset-password` | Complete password reset |
-| POST/GET/DELETE | `/auth/api-keys` | Personal API keys |
+| POST/GET | `/auth/api-keys` | Create / list personal API keys |
+| DELETE | `/auth/api-keys/:id` | Revoke a personal API key |
 | GET | `/auth/validate` | Internal token/API-key validation |
 
 ### Federation
@@ -564,8 +596,10 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 | PATCH | `/v1/admin/platform/users/:userId` | Update non-role platform user fields (**owner only**) |
 | PATCH | `/v1/admin/platform/users/:userId/role` | Change a platform role (`owner`/`user`, **owner only**) |
 | GET | `/v1/admin/permissions` | **Owner only** — list all permissions |
-| GET/POST/DELETE | `/v1/admin/roles/:role/permissions` | **Owner only** — manage role permissions |
-| GET/DELETE | `/v1/admin/organizations/:id/api-keys` | Org-scoped API keys |
+| GET/POST | `/v1/admin/roles/:role/permissions` | **Owner only** — list / assign role permissions |
+| DELETE | `/v1/admin/roles/:role/permissions/:permissionId` | **Owner only** — remove a role permission |
+| GET | `/v1/admin/organizations/:id/api-keys` | List org-scoped API keys |
+| DELETE | `/v1/admin/organizations/:id/api-keys/:keyId` | Revoke an org-scoped API key |
 | GET | `/v1/admin/organizations/:id/audit-logs` | Paginated audit logs |
 | GET | `/v1/admin/platform/users` | **Owner only** — list all users |
 | GET | `/v1/admin/platform/organizations` | **Owner only** — list all organizations |
@@ -577,21 +611,31 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 | GET | `/v1/admin/platform/queue/failed` | **Owner only** — failed jobs |
 | POST | `/v1/admin/platform/queue/failed/:id/retry` | **Owner only** — retry failed job |
 | POST | `/v1/admin/platform/queue/retry-all` | **Owner only** — retry all failed jobs |
-| GET/POST/PATCH/DELETE | `/v1/admin/platform/webhooks` | **Owner only** — webhook management |
+| GET/POST | `/v1/admin/platform/webhooks` | **Owner only** — list / create webhooks |
+| PATCH | `/v1/admin/platform/webhooks/:id` | **Owner only** — update a webhook |
+| DELETE | `/v1/admin/platform/webhooks/:id` | **Owner only** — delete a webhook |
 | POST | `/v1/admin/platform/webhooks/:id/rotate-secret` | **Owner only** — rotate webhook secret |
-| GET/POST/DELETE | `/v1/admin/organizations/:id/saml-connections` | SAML connection management |
+| GET/POST | `/v1/admin/organizations/:id/saml-connections` | SAML connection management |
+| DELETE | `/v1/admin/organizations/:id/saml-connections/:connectionId` | Delete a SAML connection |
 | GET | `/v1/admin/organizations/:id/saml-connections/:connectionId/metadata` | SAML SP metadata |
-| GET/POST/DELETE | `/v1/admin/organizations/:id/oidc-connections` | OIDC connection management |
+| GET/POST | `/v1/admin/organizations/:id/oidc-connections` | OIDC connection management |
+| DELETE | `/v1/admin/organizations/:id/oidc-connections/:connectionId` | Delete an OIDC connection |
 
 ### Enterprise SSO
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/saml/:connectionId` | Start SAML SSO login |
-| POST | `/saml/acs` | SAML assertion consumer service |
-| GET | `/saml/:connectionId/metadata` | SAML SP metadata |
-| GET | `/sso/oidc/:connectionId` | Start enterprise OIDC SSO login |
-| GET | `/sso/oidc/:connectionId/callback` | Enterprise OIDC callback |
+| GET | `/sso/saml/:connectionId` | Start SAML SSO login (requires `?orgId=`) |
+| POST | `/sso/saml/acs` | SAML assertion consumer service |
+| GET | `/sso/saml/:connectionId/metadata` | SAML SP metadata (requires `?orgId=`) |
+| GET | `/sso/sso/oidc/:connectionId` | Start enterprise OIDC SSO login (requires `?orgId=`) |
+| GET | `/sso/sso/oidc/:connectionId/callback` | Enterprise OIDC callback (requires `?orgId=`) |
+
+> **Note:** the doubled `/sso/sso/oidc` segment is real, not a typo. The OIDC
+> enterprise routes declare `/sso/oidc/...` *and* are mounted under the `/sso`
+> prefix. SAML is mounted the same way but declares `/saml/...`, so it resolves
+> cleanly to `/sso/saml/...`. Changing the OIDC path would break existing
+> deployments, so it is scheduled for a future minor release.
 
 ### SCIM Provisioning
 
@@ -609,7 +653,8 @@ that organization. Cross-tenant targets return `404`.
 | POST | `/scim/v2/Users/.search` | Search users |
 | GET | `/scim/v2/Groups` | List groups (filter) |
 | GET | `/scim/v2/Groups/:groupId` | Get group by ID |
-| POST/PUT/PATCH/DELETE | `/scim/v2/Groups/:groupId` | Manage groups |
+| POST | `/scim/v2/Groups` | Create group |
+| PUT/PATCH/DELETE | `/scim/v2/Groups/:groupId` | Manage group |
 | GET/POST | `/scim/v2/Groups/:groupId/members` | Manage group members |
 | GET | `/scim/v2/ServiceProviderConfig` | Supported features |
 
@@ -621,29 +666,31 @@ once and stored only as a digest.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/mfa/verify` | Complete a login MFA challenge and receive tokens |
-| POST | `/totp/enroll` | Begin TOTP enrollment |
-| POST | `/totp/verify` | Confirm enrollment; revokes existing sessions |
-| POST | `/totp/disable` | Disable TOTP MFA |
-| POST | `/totp/backup` | Regenerate backup codes (requires a TOTP code) |
-| POST | `/totp/backup/verify` | Consume a backup code |
-| POST | `/sms-otp/send` | Send SMS OTP |
-| POST | `/sms-otp/verify` | Verify SMS OTP |
-| POST | `/magic-link/send` | Send magic link |
-| GET | `/magic-link/verify` | Verify magic link |
-| POST | `/email-verification/send` | Send verification email |
-| POST | `/email-verification/request` | Request verification email |
-| GET | `/email-verification/verify` | Verify email token |
-| POST | `/webauthn/register` | Register WebAuthn credential |
-| POST | `/webauthn/authenticate` | Authenticate with WebAuthn |
+| POST | `/auth/mfa/verify` | Complete a login MFA challenge and receive tokens |
+| POST | `/auth/totp/enroll` | Begin TOTP enrollment (requires `password`) |
+| POST | `/auth/totp/verify` | Confirm enrollment (requires `password` + `code`); revokes existing sessions |
+| POST | `/auth/totp/disable` | Disable TOTP MFA (requires `password` + `code`) |
+| POST | `/auth/totp/backup` | Regenerate backup codes (requires `password` + `code`) |
+| POST | `/auth/totp/backup/verify` | Consume a backup code; never establishes a session |
+| POST | `/auth/sms-otp/send` | Send SMS OTP |
+| POST | `/auth/sms-otp/verify` | Verify SMS OTP |
+| POST | `/auth/magic-link/send` | Send magic link |
+| GET | `/auth/magic-link/verify` | Verify magic link |
+| POST | `/auth/email-verification/send` | Send verification email |
+| POST | `/auth/email-verification/request` | Request verification email |
+| GET | `/auth/email-verification/verify` | Verify email token |
+| GET | `/auth/webauthn/register/options` | WebAuthn creation options |
+| POST | `/auth/webauthn/register/verify` | Register a WebAuthn credential |
+| POST | `/auth/webauthn/authenticate/options` | WebAuthn assertion options |
+| POST | `/auth/webauthn/authenticate/verify` | Authenticate and establish a session |
 
 ### Sessions
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/sessions` | List active sessions |
-| DELETE | `/sessions/:id` | Revoke session |
-| POST | `/sessions/revoke-all` | Revoke all sessions |
+| GET | `/auth/sessions` | List active sessions |
+| DELETE | `/auth/sessions/:id` | Revoke session |
+| POST | `/auth/sessions/revoke-all` | Revoke all sessions |
 
 ### Workflows
 
@@ -712,6 +759,12 @@ npx keystone org:create --name "Acme" --owner-email admin@example.com
 - Internal implementation details are not exposed in API responses.
 - Input validation uses Zod schemas on all routes.
 - Error messages are sanitized in production mode.
+- **MFA is enforced before token issuance.** An account with TOTP enabled cannot receive a token until a second factor is verified, and the check happens at a single chokepoint rather than per route.
+- TOTP secrets are stored encrypted with AES-256-GCM; backup codes are stored as a keyed, peppered hash, expire, and can only be consumed once.
+- Changing how an account proves its identity — enrolling, confirming, disabling TOTP, or registering a passkey — requires the account password in addition to a valid session.
+- **SCIM credentials are per organization.** Tokens are stored only as a digest, and every SCIM read and write is scoped to the credential's organization. A cross-tenant target is reported as not found.
+- SCIM deprovisioning never reaches outside the caller's organization, and cannot remove the last owner of an organization.
+- SCIM credential creation, rotation, and revocation are restricted to organization owners.
 
 ---
 
@@ -726,6 +779,8 @@ Full documentation lives in [`docs/`](docs/README.md):
 | [Deployment](docs/DEPLOYMENT.md) | Docker Compose, Kubernetes, systemd, hardening |
 | [Integration guide](docs/INTEGRATION.md) | Connect your apps to Keystone |
 | [Security model](docs/SECURITY.md) | Threat model and hardening checklist |
+| [v1.8 migration guide](docs/MIGRATION-1.8.md) | Mandatory MFA: new endpoints, response changes, upgrade steps |
+| [v1.9 migration guide](docs/MIGRATION-1.9.md) | SCIM tenancy: per-organization credentials, deprovisioning semantics, upgrade steps |
 | [Performance](docs/PERFORMANCE.md) | Tuning and load-testing notes |
 | [Contributing](docs/CONTRIBUTING.md) | Dev environment and PR process |
 | [Roadmap](docs/ROADMAP.md) | Planned work |
