@@ -67,6 +67,19 @@ after(async () => {
   }
 });
 
+/**
+ * SCIM requests are authorized by a per-organization connection since 1.9.0,
+ * so tests provision a real credential instead of setting the legacy env vars.
+ */
+async function scimHeaders(orgId: string, name: string): Promise<{ authorization: string }> {
+  const { ScimConnectionService } = await import("../../services/scimCredentials.js");
+  const service = new ScimConnectionService(app.container.scimConnectionRepository);
+  const created = await service.create({ orgId, name });
+  assert.ok(created.success, "SCIM connection should be created");
+  if (!created.success) throw new Error("unreachable");
+  return { authorization: `Bearer ${created.data.token}` };
+}
+
 async function createActor(role: "owner" | "user", label: string): Promise<Actor> {
   const id = crypto.randomUUID();
   let user = await userRepository.create({
@@ -711,13 +724,11 @@ describe("Phase 1 authorization security regressions", () => {
   });
 
   it("propagates deactivation through SCIM and omits inactive users from lists", async () => {
-    process.env.SCIM_BEARER_TOKEN = "security-test-scim-token";
     const target = await createActor("user", "scim-deactivation-target");
     const organization = await createOrganization("scim-deactivation-boundary", [
       { userId: target.user.id, role: "member" },
     ]);
-    process.env.SCIM_ORG_ID = organization.id;
-    const headers = { authorization: "Bearer security-test-scim-token" };
+    const headers = await scimHeaders(organization.id, "security-test-scim");
     const updated = await app.inject({
       method: "PUT",
       url: `/scim/v2/Users/${target.user.id}`,
@@ -733,38 +744,63 @@ describe("Phase 1 authorization security regressions", () => {
     const list = await app.inject({ method: "GET", url: "/scim/v2/Users", headers });
     assert.strictEqual(list.statusCode, 200);
     assert.doesNotMatch(list.body, new RegExp(target.user.id));
+    // Deactivation already removed the membership, so a follow-up DELETE has
+    // nothing left to remove in this organization.
     const deleted = await app.inject({ method: "DELETE", url: `/scim/v2/Users/${target.user.id}`, headers });
-    assert.strictEqual(deleted.statusCode, 204);
+    assert.strictEqual(deleted.statusCode, 404);
     const stillPresent = await userRepository.findById(target.user.id);
     assert.strictEqual(stillPresent?.isActive, false);
   });
 
+  it("removes a single-tenant user from the organization on SCIM delete", async () => {
+    const target = await createActor("user", "scim-delete-target");
+    const organization = await createOrganization("scim-delete-boundary", [
+      { userId: target.user.id, role: "member" },
+    ]);
+    const headers = await scimHeaders(organization.id, "security-test-scim-delete");
+
+    const deleted = await app.inject({ method: "DELETE", url: `/scim/v2/Users/${target.user.id}`, headers });
+    assert.strictEqual(deleted.statusCode, 204);
+    assert.strictEqual(
+      await organizationRepository.findMembership(organization.id, target.user.id),
+      undefined
+    );
+    const after = await userRepository.findById(target.user.id);
+    assert.strictEqual(after?.isActive, false);
+  });
+
   it("does not let a tenant SCIM credential provision a platform owner", async () => {
-    process.env.SCIM_BEARER_TOKEN = "security-test-scim-owner-token";
     const owner = await createActor("owner", "scim-platform-owner-target");
     const organization = await createOrganization("scim-owner-boundary", []);
-    process.env.SCIM_ORG_ID = organization.id;
+    const headers = await scimHeaders(organization.id, "security-test-scim-owner");
+
+    // The owner is not a member yet, so provisioning is refused outright.
     const response = await app.inject({
       method: "POST",
       url: "/scim/v2/Users",
-      headers: { authorization: "Bearer security-test-scim-owner-token" },
+      headers,
       payload: { userName: owner.user.email, active: true },
     });
     assert.strictEqual(response.statusCode, 409);
+
     await organizationRepository.addMembership({ orgId: organization.id, userId: owner.user.id, role: "member" });
     const update = await app.inject({
       method: "PUT",
       url: `/scim/v2/Users/${owner.user.id}`,
-      headers: { authorization: "Bearer security-test-scim-owner-token" },
+      headers,
       payload: { userName: owner.user.email, active: true },
     });
     assert.strictEqual(update.statusCode, 409);
     const removal = await app.inject({
       method: "DELETE",
       url: `/scim/v2/Users/${owner.user.id}`,
-      headers: { authorization: "Bearer security-test-scim-owner-token" },
+      headers,
     });
     assert.strictEqual(removal.statusCode, 409);
+
+    const untouched = await userRepository.findById(owner.user.id);
+    assert.strictEqual(untouched?.isActive, true);
+    assert.strictEqual(untouched?.role, "owner");
   });
 
   it("does not expose another organization's SAML connection metadata", async () => {

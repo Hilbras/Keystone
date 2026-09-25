@@ -1,4 +1,14 @@
-import type { User, Organization, OrgMembership, Application, auditLog, MfaChallenge, Permission } from "../db/schema.js";
+import type {
+  User,
+  Organization,
+  OrgMembership,
+  Application,
+  auditLog,
+  MfaChallenge,
+  Permission,
+  ScimConnection,
+  ScimGroup,
+} from "../db/schema.js";
 
 export class LastOwnerInvariantError extends Error {
   readonly code = "LAST_OWNER" as const;
@@ -49,6 +59,32 @@ export interface UserRepository {
   recordFailedLogin(id: string): Promise<User | undefined>;
   resetFailedLogins(id: string): Promise<void>;
   lockAccount(id: string, until: Date): Promise<void>;
+  /** Resolve a user only through a membership in `orgId`. */
+  findByIdInOrg(orgId: string, userId: string): Promise<User | undefined>;
+  /**
+   * Update a user only when they are a member of `orgId`. Returns undefined
+   * when the user is outside the organization, so callers cannot accidentally
+   * fall back to a global update.
+   */
+  updateInOrg(orgId: string, userId: string, input: UpdateUserInput): Promise<User | undefined>;
+  /** Organizations the user belongs to. */
+  listOrgIdsForUser(userId: string): Promise<string[]>;
+  /**
+   * Remove a user from an organization as seen by SCIM.
+   *
+   * `outcome` distinguishes the two cases that matter for tenant safety:
+   *  - `membership_removed` — the user belongs to other organizations, so only
+   *    this membership is removed and the shared account is left untouched.
+   *  - `deactivated` — the organization was the user's only membership, so the
+   *    account itself is deactivated and its sessions are revoked.
+   */
+  removeFromOrg(
+    orgId: string,
+    userId: string
+  ): Promise<
+    | { outcome: "membership_removed" | "deactivated" | "not_found" | "last_owner"; user?: User }
+    | undefined
+  >;
   setTotpSecret(userId: string, totpSecret: string): Promise<void>;
   enableTotp(userId: string): Promise<void>;
   disableTotp(userId: string): Promise<void>;
@@ -116,6 +152,57 @@ export interface MfaChallengeRepository {
   /** Mark every outstanding challenge for a user as failed (used when a factor is enrolled/reset). */
   invalidateUserChallenges(userId: string, now: Date): Promise<void>;
   deleteExpired(now: Date): Promise<number>;
+}
+
+export interface CreateScimConnectionInput {
+  orgId: string;
+  name: string;
+  tokenHash: string;
+  tokenHint: string;
+  previousTokenHash?: string | null;
+  previousTokenValidUntil?: Date | null;
+  createdByUserId?: string | null;
+  expiresAt?: Date | null;
+}
+
+export interface ScimConnectionRepository {
+  create(input: CreateScimConnectionInput): Promise<ScimConnection>;
+  findById(id: string): Promise<ScimConnection | undefined>;
+  findActiveByOrg(orgId: string): Promise<ScimConnection | undefined>;
+  listByOrg(orgId: string): Promise<ScimConnection[]>;
+  listAll(): Promise<ScimConnection[]>;
+  /** Resolve a presented token; accepts the grace-period token until its deadline. */
+  findByTokenHash(tokenHash: string, now?: Date): Promise<ScimConnection | undefined>;
+  rotate(
+    id: string,
+    input: { tokenHash: string; tokenHint: string; graceSeconds: number; now?: Date }
+  ): Promise<ScimConnection | undefined>;
+  revoke(id: string, now?: Date): Promise<ScimConnection | undefined>;
+  touch(id: string, now?: Date): Promise<void>;
+  deleteRevokedBefore(cutoff: Date): Promise<number>;
+}
+
+export interface CreateScimGroupInput {
+  orgId: string;
+  displayName: string;
+  description?: string | null;
+  externalId?: string | null;
+}
+
+export interface ScimGroupRepository {
+  create(input: CreateScimGroupInput): Promise<ScimGroup>;
+  /** Groups are always looked up through their organization, never by id alone. */
+  findByIdInOrg(orgId: string, groupId: string): Promise<ScimGroup | undefined>;
+  listByOrg(orgId: string): Promise<ScimGroup[]>;
+  updateInOrg(
+    orgId: string,
+    groupId: string,
+    input: { displayName?: string; description?: string | null; externalId?: string | null }
+  ): Promise<ScimGroup | undefined>;
+  deleteInOrg(orgId: string, groupId: string): Promise<boolean>;
+  listMembers(orgId: string, groupId: string): Promise<{ userId: string; email: string; name: string | null }[]>;
+  addMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
+  removeMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
 }
 
 export interface AuditRepository {

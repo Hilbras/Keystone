@@ -125,6 +125,16 @@ export const config = {
   OAUTH_CODE_TTL_SECONDS: Number(getEnv("OAUTH_CODE_TTL_SECONDS", "60")),
   TOTP_ISSUER: getEnv("TOTP_ISSUER", "Hilbras"),
   TOTP_ENCRYPTION_KEY: getEnv("KEYSTONE_TOTP_ENCRYPTION_KEY"),
+  // SCIM. `SCIM_BEARER_TOKEN` / `SCIM_ORG_ID` are legacy: they are read once at
+  // startup to create a per-organization connection, then superseded by the
+  // connection API. New deployments should use the connection API only.
+  SCIM_BEARER_TOKEN: getEnv("SCIM_BEARER_TOKEN"),
+  SCIM_ORG_ID: getEnv("SCIM_ORG_ID"),
+  /** How long a rotated-out SCIM token keeps working. */
+  SCIM_ROTATION_GRACE_SECONDS: positiveInt("SCIM_ROTATION_GRACE_SECONDS", "86400"),
+  /** Rate limit applied to every SCIM request, keyed by credential. */
+  SCIM_RATE_LIMIT_MAX: positiveInt("SCIM_RATE_LIMIT_MAX", "600"),
+  SCIM_RATE_LIMIT_WINDOW_SECONDS: positiveInt("SCIM_RATE_LIMIT_WINDOW_SECONDS", "60"),
   MFA_CHALLENGE_TTL_SECONDS: positiveInt("MFA_CHALLENGE_TTL_SECONDS", "300"),
   MFA_MAX_ATTEMPTS: positiveInt("MFA_MAX_ATTEMPTS", "5"),
   TOTP_BACKUP_CODE_TTL_SECONDS: positiveInt("TOTP_BACKUP_CODE_TTL_SECONDS", "7776000"),

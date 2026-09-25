@@ -9,6 +9,7 @@ import {
   index,
   varchar,
   unique,
+  uniqueIndex,
   smallint,
   integer,
   bigint,
@@ -753,5 +754,84 @@ export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 export type NewPasswordResetToken = typeof passwordResetTokens.$inferInsert;
 export type NewWorkflowRun = typeof workflowRuns.$inferInsert;
+export const scimConnections = pgTable(
+  "scim_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // A SCIM credential is always bound to exactly one organization. There is
+    // deliberately no global/default SCIM configuration.
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** SHA-256 of the bearer token. The token itself is never stored. */
+    tokenHash: text("token_hash").notNull(),
+    /** Last four characters, so an administrator can identify a token in a list. */
+    tokenHint: text("token_hint").notNull(),
+    /** Accepted during a rotation grace period, then cleared. */
+    previousTokenHash: text("previous_token_hash"),
+    previousTokenValidUntil: timestamp("previous_token_valid_until", { withTimezone: true }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastRotatedAt: timestamp("last_rotated_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    orgIdx: index("scim_connections_org_idx").on(table.orgId),
+    tokenHashIdx: index("scim_connections_token_hash_idx").on(table.tokenHash),
+    previousTokenHashIdx: index("scim_connections_previous_token_hash_idx").on(table.previousTokenHash),
+    // At most one live connection per organization; revoked rows are retained
+    // as an audit trail and do not block a replacement.
+    activeOrgUnique: uniqueIndex("scim_connections_active_org_unique")
+      .on(table.orgId)
+      .where(sql`revoked_at is null`),
+  })
+);
+
+export const scimGroups = pgTable(
+  "scim_groups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    displayName: text("display_name").notNull(),
+    description: text("description"),
+    externalId: text("external_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    orgIdx: index("scim_groups_org_idx").on(table.orgId),
+    orgNameUnique: unique("scim_groups_org_name_unique").on(table.orgId, table.displayName),
+  })
+);
+
+export const scimGroupMembers = pgTable(
+  "scim_group_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => scimGroups.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    groupIdx: index("scim_group_members_group_idx").on(table.groupId),
+    userIdx: index("scim_group_members_user_idx").on(table.userId),
+    memberUnique: unique("scim_group_members_group_user_unique").on(table.groupId, table.userId),
+  })
+);
+
 export type MfaChallenge = typeof mfaChallenges.$inferSelect;
 export type NewMfaChallenge = typeof mfaChallenges.$inferInsert;
+export type ScimConnection = typeof scimConnections.$inferSelect;
+export type NewScimConnection = typeof scimConnections.$inferInsert;
+export type ScimGroup = typeof scimGroups.$inferSelect;
+export type ScimGroupMember = typeof scimGroupMembers.$inferSelect;

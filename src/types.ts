@@ -12,7 +12,10 @@ declare module "fastify" {
       org?: Organization;
       membership?: OrgMembership;
       auditUserId?: string;
+      /** Organization pinned to the authenticated SCIM credential. */
       scimOrgId?: string;
+      /** Connection that authenticated the SCIM request, for audit attribution. */
+      scimConnectionId?: string;
     };
   }
 

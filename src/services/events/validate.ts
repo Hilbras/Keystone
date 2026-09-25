@@ -97,6 +97,14 @@ const VALID_EVENT_TYPES = new Set([
   "mfa_verified",
   "mfa_bypass_blocked",
   "mfa_backup_code_regenerated",
+  "scim_connection_created",
+  "scim_connection_rotated",
+  "scim_connection_revoked",
+  "scim_authentication_failed",
+  "scim_access_denied",
+  "scim_group_created",
+  "scim_group_updated",
+  "scim_group_deleted",
 ]);
 
 export function validateEvent(event: EmittableEvent): EventValidationResult {

@@ -35,8 +35,8 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed.ts",
     "db:reencrypt-oidc-secrets": "node dist/db/reencryptOidcSecrets.js",
-    "test": "node --test --test-force-exit --test-timeout=60000 dist/tests/*.test.js dist/tests/**/*.test.js",
-    "test:security": "node --test --test-force-exit --test-timeout=60000 dist/tests/security/*.test.js",
+    "test": "node --test --test-force-exit --test-timeout=60000 dist/tests/*.test.js dist/tests/**/*.test.js dist/tests/**/**/*.test.js",
+    "test:security": "node --test --test-force-exit --test-timeout=60000 dist/tests/security/*.test.js dist/tests/security/**/*.test.js",
     "test:all": "npm test && cd frontend && npm run test:e2e",
     "setup": "./install.sh",
     "start:all": "./start.sh"

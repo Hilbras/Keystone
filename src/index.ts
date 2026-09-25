@@ -10,6 +10,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { initializeContainer } from "./di.js";
+import { getContainer } from "./container.js";
 import { redis } from "./services/redis.js";
 import { loadSigningKeys, getPublicJwks } from "./services/tokens.js";
 
@@ -302,6 +303,15 @@ async function start() {
     app.log.info("JWT signing keys loaded");
   } catch (err) {
     app.log.error({ err }, "JWT signing key loading failed — token signing will not work");
+  }
+
+  // Adopt a pre-1.9 SCIM_BEARER_TOKEN / SCIM_ORG_ID pair into a per-organization
+  // connection so an upgrade does not break an existing identity provider.
+  try {
+    const { migrateLegacyScimEnv } = await import("./services/scimLegacyMigration.js");
+    await migrateLegacyScimEnv(getContainer().scimConnectionRepository);
+  } catch (err) {
+    app.log.warn({ err }, "Could not adopt a legacy SCIM configuration");
   }
 
   try {

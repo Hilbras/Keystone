@@ -7,6 +7,14 @@ interface RateLimitPluginOptions {
   keyPrefix: string;
   maxAttempts: number;
   windowSeconds: number;
+  /**
+   * Override how the caller is identified. Used where the meaningful principal
+   * is not an IP address — for example SCIM, which is limited per credential so
+   * one noisy identity provider cannot exhaust the budget of every other tenant.
+   */
+  keyFrom?: (request: FastifyRequest) => string;
+  /** Extra key material, typically a body field such as `email`. */
+  keyField?: string;
 }
 
 export interface GlobalRateLimitOptions {
@@ -81,8 +89,9 @@ function clientIdentifier(request: FastifyRequest): string {
 
 export function rateLimit(options: RateLimitPluginOptions) {
   return async function preHandler(request: FastifyRequest, reply: FastifyReply) {
-    const id = clientIdentifier(request);
-    const key = `${options.keyPrefix}:${id}:${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
+    const id = options.keyFrom ? options.keyFrom(request) : clientIdentifier(request);
+    const field = options.keyField ? (request.body as Record<string, string> | undefined)?.[options.keyField] : undefined;
+    const key = `${options.keyPrefix}:${id}:${options.keyField ? (field ?? "") : ((request.body as Record<string, string> | undefined)?.email ?? "")}`;
     const allowed = await isAllowed(key, options.maxAttempts, options.windowSeconds);
     if (!allowed) {
       return reply

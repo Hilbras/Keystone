@@ -8,3 +8,5 @@ export { DrizzleApiKeyRepository, type ApiKeyRepository } from "./apiKey.js";
 export { DrizzleSamlConnectionRepository, type SamlConnectionRepository } from "./samlConnection.js";
 export { DrizzleOidcConnectionRepository, type OidcConnectionRepository } from "./oidcConnection.js";
 export { DrizzleMfaChallengeRepository } from "./mfaChallenge.js";
+export { DrizzleScimConnectionRepository } from "./scimConnection.js";
+export { DrizzleScimGroupRepository } from "./scimGroup.js";
