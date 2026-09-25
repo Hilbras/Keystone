@@ -1,6 +1,15 @@
 {
   "name": "@hilbras/keystone",
   "version": "1.9.0",
+  "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hilbras/Keystone.git"
+  },
+  "homepage": "https://github.com/Hilbras/Keystone#readme",
+  "bugs": {
+    "url": "https://github.com/Hilbras/Keystone/issues"
+  },
   "type": "module",
   "overrides": {
     "@xmldom/xmldom": "0.8.15",
