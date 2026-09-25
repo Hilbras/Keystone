@@ -8,7 +8,13 @@ import { fileURLToPath } from "node:url";
 import { db, initDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { AuthenticationDomainService } from "../services/domain/authentication.js";
-import { DrizzleUserRepository, DrizzleApplicationRepository, DrizzleOrganizationRepository } from "../repositories/index.js";
+import {
+  DrizzleUserRepository,
+  DrizzleApplicationRepository,
+  DrizzleOrganizationRepository,
+  DrizzleMfaChallengeRepository,
+} from "../repositories/index.js";
+import { MfaService } from "../services/mfa.js";
 import { validateDatabase, validateRedis, validateEmail, validateSms } from "../services/setup/validation.js";
 import { createConfigWriter } from "../services/setup/configWriter.js";
 import { getSetupToken, validateSetupToken } from "../services/setup/token.js";
@@ -268,7 +274,8 @@ export default async function setupRoutes(app: FastifyInstance) {
       const authService = new AuthenticationDomainService(
         new DrizzleUserRepository(),
         new DrizzleApplicationRepository(),
-        new DrizzleOrganizationRepository()
+        new DrizzleOrganizationRepository(),
+        new MfaService(new DrizzleMfaChallengeRepository())
       );
       const result = await authService.register({
         email: body.email,

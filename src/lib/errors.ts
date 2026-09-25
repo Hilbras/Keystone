@@ -10,6 +10,7 @@ export type OAuthErrorCode =
   | "invalid_client"
   | "invalid_grant"
   | "access_denied"
+  | "mfa_required"
   | "server_error"
   | "identity_broker_failure";
 
@@ -29,6 +30,14 @@ function errorMessage(error: unknown): string | undefined {
   return error instanceof Error ? error.message : undefined;
 }
 
+function isMfaRequiredError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "MFA_REQUIRED"
+  );
+}
+
 /**
  * Map an internal error to a stable public OAuth-style code and HTTP status.
  *
@@ -38,6 +47,12 @@ function errorMessage(error: unknown): string | undefined {
  * by the caller before this helper is invoked.
  */
 export function classifyOAuthError(error: unknown): { code: OAuthErrorCode; statusCode: number } {
+  // MFA enforcement is a first-class, non-retryable outcome for any login
+  // surface, so it is classified before message heuristics.
+  if (isMfaRequiredError(error)) {
+    return { code: "mfa_required", statusCode: 403 };
+  }
+
   const message = errorMessage(error)?.toLowerCase() ?? "";
 
   if (message.includes("state") || message.includes("denied") || message.includes("cancel")) {

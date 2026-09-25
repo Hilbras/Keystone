@@ -90,6 +90,13 @@ const VALID_EVENT_TYPES = new Set([
   "user_token_login",
   "session_revoked",
   "sessions_revoked_all",
+  "mfa_challenge_created",
+  "mfa_challenge_failed",
+  "mfa_challenge_expired",
+  "mfa_challenge_rejected",
+  "mfa_verified",
+  "mfa_bypass_blocked",
+  "mfa_backup_code_regenerated",
 ]);
 
 export function validateEvent(event: EmittableEvent): EventValidationResult {

@@ -149,6 +149,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
         return reply.status(401).send({ error: "User not found" });
       }
       request.user = user;
+      request.authClaims = claims;
     } catch {
       return reply.status(401).send({ error: "Invalid token" });
     }

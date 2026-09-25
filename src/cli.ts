@@ -71,11 +71,13 @@ program
         process.exit(1);
       }
 
+      const { MfaService } = await import("./services/mfa.js");
       const container = initializeContainer();
       const authService = new AuthenticationDomainService(
         container.userRepository,
         container.applicationRepository,
-        container.organizationRepository
+        container.organizationRepository,
+        new MfaService(container.mfaChallengeRepository)
       );
       const result = await authService.register({
         email: options.email,

@@ -5,6 +5,8 @@ import type { Container } from "./container.js";
 declare module "fastify" {
   interface FastifyRequest {
     user?: User;
+    /** Claims of the bearer/cookie access token that authenticated this request. */
+    authClaims?: TokenClaims;
     state: {
       app?: Application;
       org?: Organization;
@@ -37,6 +39,11 @@ export interface TokenClaims {
   app_id?: string;
   client_id?: string;
   device_fingerprint?: string;
+  /** Authentication methods used, including the second factor when one was required. */
+  amr?: string[];
+  /** Second factor that was verified for this session, when MFA is enabled. */
+  mfa_factor?: string;
+  mfa_verified?: boolean;
 }
 
 export type PublicApplication = Omit<Application, "clientSecretHash">;

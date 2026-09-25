@@ -1,4 +1,4 @@
-import type { User, Organization, OrgMembership, Application, auditLog, Permission } from "../db/schema.js";
+import type { User, Organization, OrgMembership, Application, auditLog, MfaChallenge, Permission } from "../db/schema.js";
 
 export class LastOwnerInvariantError extends Error {
   readonly code = "LAST_OWNER" as const;
@@ -90,6 +90,32 @@ export interface IdentityRepository {
   link(input: IdentityLinkInput): Promise<void>;
   findLinkedByExternalSub(providerId: string, externalSub: string): Promise<User | undefined>;
   listByUserId(userId: string): Promise<{ identity: any; provider: { id: string; name: string; providerType: string } }[]>;
+}
+
+export type MfaFlow = "login" | "token_login";
+export type MfaChallengeStatus = "requires_mfa" | "consumed" | "failed" | "expired";
+
+export interface CreateMfaChallengeInput {
+  challengeHash: string;
+  userId: string;
+  flow: MfaFlow;
+  clientId?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  expiresAt: Date;
+  maxAttempts: number;
+}
+
+export interface MfaChallengeRepository {
+  create(input: CreateMfaChallengeInput): Promise<MfaChallenge>;
+  findByHash(challengeHash: string): Promise<MfaChallenge | undefined>;
+  /** Atomically record a failed attempt; returns the updated challenge or undefined when already locked. */
+  recordFailedAttempt(id: string, now: Date): Promise<MfaChallenge | undefined>;
+  /** Atomically consume an active challenge; returns undefined when missing, expired, or already consumed. */
+  consume(id: string, now: Date): Promise<MfaChallenge | undefined>;
+  /** Mark every outstanding challenge for a user as failed (used when a factor is enrolled/reset). */
+  invalidateUserChallenges(userId: string, now: Date): Promise<void>;
+  deleteExpired(now: Date): Promise<number>;
 }
 
 export interface AuditRepository {

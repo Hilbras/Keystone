@@ -11,9 +11,32 @@ export interface AuthResponse {
   expiresAt: Date;
 }
 
+/**
+ * The password step succeeded but MFA is enabled. No tokens are present; call
+ * `completeMfa` with `challenge` to obtain them.
+ */
+export interface MfaRequiredResponse {
+  status: "requires_mfa";
+  user: SelfUser;
+  challenge: string;
+  expiresAt: Date;
+  flow: "login" | "token_login";
+  clientId?: string;
+}
+
+export type LoginResponse =
+  | { status: "authenticated"; data: AuthResponse }
+  | { status: "requires_mfa"; data: MfaRequiredResponse };
+
+export interface MfaCompleteResponse extends AuthResponse {
+  flow: "login" | "token_login";
+  factor: "totp" | "backup_code";
+}
+
 export interface AuthenticationSdk {
   register(input: { username: string; email: string; password: string; name?: string; clientId?: string; metadata?: Record<string, unknown> }): Promise<Result<AuthResponse>>;
-  login(input: { email: string; password: string; clientId?: string }): Promise<Result<AuthResponse>>;
+  login(input: { email: string; password: string; clientId?: string; flow?: "login" | "token_login" }): Promise<Result<LoginResponse>>;
+  completeMfa(input: { challenge: string; code: string; factor?: "totp" | "backup_code"; ipAddress?: string; userAgent?: string }): Promise<Result<MfaCompleteResponse>>;
   refresh(refreshToken: string, clientId?: string): Promise<Result<{ accessToken: string; refreshToken: string; expiresAt: Date; userId?: string }>>;
   logout(refreshToken?: string): Promise<Result<void>>;
   createPasswordResetToken(email: string): Promise<Result<{ token: string; user: SelfUser } | null>>;

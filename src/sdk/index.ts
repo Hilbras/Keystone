@@ -28,8 +28,41 @@ class SdkAuthenticationClient implements AuthenticationSdk {
     };
   }
 
-  async login(input: { email: string; password: string; clientId?: string }) {
+  async login(input: { email: string; password: string; clientId?: string; flow?: "login" | "token_login" }) {
     const result = await this.app.login(input);
+    if (!result.success) return result;
+    if (result.data.status === "requires_mfa") {
+      return {
+        success: true as const,
+        data: {
+          status: "requires_mfa" as const,
+          data: {
+            status: "requires_mfa" as const,
+            user: toSelfUser(result.data.data.user),
+            challenge: result.data.data.challenge,
+            expiresAt: result.data.data.expiresAt,
+            flow: result.data.data.flow,
+            clientId: result.data.data.clientId,
+          },
+        },
+      };
+    }
+    return {
+      success: true as const,
+      data: {
+        status: "authenticated" as const,
+        data: {
+          accessToken: result.data.data.accessToken,
+          refreshToken: result.data.data.refreshToken,
+          expiresAt: result.data.data.expiresAt,
+          user: toSelfUser(result.data.data.user),
+        },
+      },
+    };
+  }
+
+  async completeMfa(input: { challenge: string; code: string; factor?: "totp" | "backup_code"; ipAddress?: string; userAgent?: string }) {
+    const result = await this.app.completeMfa(input);
     if (!result.success) return result;
     return {
       success: true as const,
@@ -38,6 +71,8 @@ class SdkAuthenticationClient implements AuthenticationSdk {
         refreshToken: result.data.refreshToken,
         expiresAt: result.data.expiresAt,
         user: toSelfUser(result.data.user),
+        flow: result.data.flow,
+        factor: result.data.factor,
       },
     };
   }

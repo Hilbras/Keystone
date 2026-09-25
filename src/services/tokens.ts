@@ -76,15 +76,41 @@ function issuer(): string {
   return process.env.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
 }
 
+/**
+ * Authentication methods that can satisfy the MFA requirement for a user who
+ * has TOTP enabled. `session` is only valid when rotating a refresh token that
+ * was itself created after a successful second factor.
+ */
+export type MfaAssertion = "totp" | "backup_code" | "webauthn" | "session";
+
+/**
+ * Raised when a token is requested for a user with MFA enabled but the caller
+ * could not prove a second factor was verified. Thrown from the single
+ * issuance chokepoint so no login path can bypass MFA by omission.
+ */
+export class MfaRequiredError extends Error {
+  readonly code = "MFA_REQUIRED" as const;
+  readonly userId: string;
+
+  constructor(userId: string) {
+    super("Multi-factor authentication is required before a token can be issued");
+    this.name = "MfaRequiredError";
+    this.userId = userId;
+  }
+}
+
 export interface AccessTokenOptions {
   appId?: string;
   orgId?: string;
   clientId?: string;
   deviceFingerprint?: string;
+  /** Proof that the MFA requirement for this user was satisfied. */
+  mfaFactor?: MfaAssertion;
 }
 
 export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Promise<string> {
   if (!user.isActive) throw new Error("Cannot issue a token for a deactivated account");
+  if (user.totpEnabled && !opts.mfaFactor) throw new MfaRequiredError(user.id);
   if (!activeKey) throw new Error("JWT signing keys not loaded");
   const claims: TokenClaims = {
     sub: user.id,
@@ -99,6 +125,11 @@ export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Pr
   if (opts.appId) claims.app_id = opts.appId;
   if (opts.clientId) claims.client_id = opts.clientId;
   if (opts.deviceFingerprint) claims.device_fingerprint = opts.deviceFingerprint;
+  if (opts.mfaFactor) {
+    claims.amr = [user.provider, opts.mfaFactor];
+    claims.mfa_factor = opts.mfaFactor;
+    claims.mfa_verified = true;
+  }
   return new SignJWT(claims as unknown as Record<string, unknown>)
     .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: activeKey.keyId })
     .setIssuedAt()
@@ -190,6 +221,7 @@ export async function createTokenSet(
     ipAddress: ip ?? null,
     userAgent: userAgent ?? null,
     deviceFingerprint: deviceFingerprint ?? null,
+    mfaFactor: opts.mfaFactor ?? null,
   }).returning();
 
   try {
@@ -253,6 +285,11 @@ export async function rotateRefreshToken(
   const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
   if (!user?.isActive || user.accountReviewRequired) return null;
 
+  // A session may only keep rotating while it still represents an MFA-verified
+  // login. Sessions created before MFA was enabled, or without a recorded
+  // factor, are refused rather than silently upgraded.
+  if (user.totpEnabled && !existing.mfaFactor) return null;
+
   let appId: string | undefined;
   let orgId: string | undefined;
   if (existing.appId) {
@@ -301,6 +338,9 @@ export async function rotateRefreshToken(
       orgId,
       clientId,
       deviceFingerprint: claimed.deviceFingerprint ?? undefined,
+      ...(claimed.mfaFactor
+        ? { mfaFactor: claimed.mfaFactor as MfaAssertion }
+        : {}),
     },
     claimed.deviceFingerprint ?? undefined
   );

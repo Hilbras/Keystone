@@ -13,7 +13,13 @@ import {
   verifyClientSecret,
 } from "../services/oauth2.js";
 import { findUserById } from "../services/users.js";
-import { revokeRefreshToken, createApplicationAccessToken, rotateRefreshToken } from "../services/tokens.js";
+import {
+  revokeRefreshToken,
+  createApplicationAccessToken,
+  rotateRefreshToken,
+  MfaRequiredError,
+  type MfaAssertion,
+} from "../services/tokens.js";
 import { fingerprintFromRequest } from "../services/devices.js";
 import { rateLimit } from "../plugins/rateLimit.js";
 
@@ -115,6 +121,10 @@ export default async function oauth2Routes(app: FastifyInstance) {
         });
       }
 
+      // The authorization code inherits the second factor of the session that
+      // approved it, so the token exchange cannot launder an unverified login.
+      const sessionMfaFactor = request.authClaims?.mfa_factor;
+
       const stored = await storeAuthorizationCode({
         appId: application.id,
         userId: request.user!.id,
@@ -123,6 +133,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
         redirectUri: query.redirect_uri,
         scopes,
         nonce: query.nonce,
+        ...(sessionMfaFactor ? { mfaFactor: sessionMfaFactor as MfaAssertion } : {}),
       });
 
       const url = new URL(query.redirect_uri);
@@ -205,12 +216,24 @@ export default async function oauth2Routes(app: FastifyInstance) {
         });
 
         const fingerprint = fingerprintFromRequest(request);
-        return createTokenResponse(user, application, record.scopes, {
-          ip: request.ip,
-          userAgent: request.headers["user-agent"],
-          deviceFingerprint: fingerprint,
-          nonce: record.nonce ?? undefined,
-        });
+        try {
+          return await createTokenResponse(user, application, record.scopes, {
+            ip: request.ip,
+            userAgent: request.headers["user-agent"],
+            deviceFingerprint: fingerprint,
+            nonce: record.nonce ?? undefined,
+            ...(record.mfaFactor ? { mfaFactor: record.mfaFactor as MfaAssertion } : {}),
+          });
+        } catch (err) {
+          if (err instanceof MfaRequiredError) {
+            return reply.status(400).send({
+              error: "mfa_required",
+              error_description:
+                "The approving session did not complete multi-factor authentication. Sign in again with your verification code.",
+            });
+          }
+          throw err;
+        }
       }
 
       if (body.grant_type === "refresh_token") {

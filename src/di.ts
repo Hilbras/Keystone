@@ -11,6 +11,7 @@ import {
   DrizzleApiKeyRepository,
   DrizzleSamlConnectionRepository,
   DrizzleOidcConnectionRepository,
+  DrizzleMfaChallengeRepository,
 } from "./repositories/index.js";
 import { secretsProvider } from "./services/secrets/index.js";
 import { queue } from "./services/queue/index.js";
@@ -25,6 +26,7 @@ import {
   IdentityApplicationService,
   OrganizationApplicationService,
 } from "./services/application/index.js";
+import { MfaService } from "./services/mfa.js";
 
 export function buildContainer(overrides: Partial<Container> = {}): Container {
   const config = new ConfigurationService();
@@ -39,6 +41,7 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
   const apiKeyRepository = new DrizzleApiKeyRepository();
   const samlConnectionRepository = new DrizzleSamlConnectionRepository();
   const oidcConnectionRepository = new DrizzleOidcConnectionRepository();
+  const mfaChallengeRepository = new DrizzleMfaChallengeRepository();
 
   const container: Container = {
     config,
@@ -49,6 +52,7 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
     applicationRepository,
     auditRepository,
     permissionRepository,
+    mfaChallengeRepository,
     apiKeyRepository,
     samlConnectionRepository,
     oidcConnectionRepository,
@@ -67,11 +71,13 @@ export function initializeContainer(overrides?: Partial<Container>): Container {
 }
 
 export function buildApplicationServices(container: Container) {
+  const mfaService = new MfaService(container.mfaChallengeRepository);
   const authorizationDomain = new AuthorizationDomainService(container.organizationRepository, container.permissionRepository);
   const authenticationDomain = new AuthenticationDomainService(
     container.userRepository,
     container.applicationRepository,
-    container.organizationRepository
+    container.organizationRepository,
+    mfaService
   );
   const identityDomain = new IdentityDomainService(container.userRepository, container.identityRepository);
   const organizationDomain = new OrganizationDomainService(container.organizationRepository, container.applicationRepository);

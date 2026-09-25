@@ -11,7 +11,6 @@ import { checkImpossibleTravel } from "../services/anomalyDetection.js";
 import { sendSuspiciousLoginAlert } from "../services/email.js";
 import { checkIpAllowed } from "../services/ipControls.js";
 import { toSelfUser } from "../types.js";
-import { verifyTOTP } from "../services/totp.js";
 import { sendResultError } from "./helpers.js";
 import { findApplicationByClientId } from "../services/applications.js";
 
@@ -49,7 +48,12 @@ const LoginSchema = z.object({
   email: z.string().email().max(255),
   password: z.string().min(1).max(128),
   client_id: z.string().optional(),
-  totp_code: z.string().min(6).max(8).optional(),
+});
+
+const MfaVerifySchema = z.object({
+  challenge: z.string().min(20).max(256),
+  code: z.string().min(6).max(64),
+  factor: z.enum(["totp", "backup_code"]).optional(),
 });
 
 const RefreshSchema = z.object({
@@ -119,22 +123,32 @@ export default async function authRoutes(app: FastifyInstance) {
         email: body.email,
         password: body.password,
         clientId: body.client_id,
+        flow: "login",
       });
 
       if (!result.success) return sendResultError(reply, result);
 
-      if (body.totp_code) {
-        const validTotp = await verifyTOTP(result.data.user.id, body.totp_code);
-        if (!validTotp) {
-          return reply.status(401).send({ error: "Invalid two-factor code." });
-        }
+      if (result.data.status === "requires_mfa") {
+        const pending = result.data.data;
+        request.state.auditUserId = pending.user.id;
+        await request.audit("mfa_challenge_created", { userId: pending.user.id, flow: "login" });
+        reply.header("Cache-Control", "no-store");
+        return reply.status(401).send({
+          error: "Multi-factor authentication required",
+          code: "MFA_REQUIRED",
+          mfaRequired: true,
+          challenge: pending.challenge,
+          expiresAt: pending.expiresAt,
+          methods: ["totp", "backup_code"],
+        });
       }
 
-      request.state.auditUserId = result.data.user.id;
-      await request.audit("user_login", { userId: result.data.user.id });
-      detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
-      setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, body.client_id);
-      return { user: toSelfUser(result.data.user) };
+      const auth = result.data.data;
+      request.state.auditUserId = auth.user.id;
+      await request.audit("user_login", { userId: auth.user.id });
+      detectImpossibleTravel(auth.user, request.ip, request.headers["user-agent"]);
+      setSessionCookies(reply, auth.accessToken, auth.refreshToken, body.client_id);
+      return { user: toSelfUser(auth.user) };
     }
   );
 
@@ -161,22 +175,89 @@ export default async function authRoutes(app: FastifyInstance) {
         email: body.email,
         password: body.password,
         clientId: body.client_id,
+        flow: "token_login",
       });
 
       if (!result.success) return sendResultError(reply, result);
 
-      if (body.totp_code) {
-        const validTotp = await verifyTOTP(result.data.user.id, body.totp_code);
-        if (!validTotp) {
-          return reply.status(401).send({ error: "Invalid two-factor code." });
+      if (result.data.status === "requires_mfa") {
+        const pending = result.data.data;
+        request.state.auditUserId = pending.user.id;
+        await request.audit("mfa_challenge_created", { userId: pending.user.id, flow: "token_login" });
+        reply.header("Cache-Control", "no-store");
+        return reply.status(401).send({
+          error: "Multi-factor authentication required",
+          code: "MFA_REQUIRED",
+          mfaRequired: true,
+          challenge: pending.challenge,
+          expiresAt: pending.expiresAt,
+          methods: ["totp", "backup_code"],
+        });
+      }
+
+      const auth = result.data.data;
+      request.state.auditUserId = auth.user.id;
+      await request.audit("user_token_login", { userId: auth.user.id });
+      detectImpossibleTravel(auth.user, request.ip, request.headers["user-agent"]);
+      return {
+        accessToken: auth.accessToken,
+        refreshToken: auth.refreshToken,
+        expiresAt: auth.expiresAt,
+        user: toSelfUser(auth.user),
+      };
+    }
+  );
+
+  /**
+   * Completes the `requires_mfa` state started by /login or /token-login.
+   * Authenticated by the opaque challenge alone: `app.authenticate` is not used
+   * and no token exists yet at this point.
+   */
+  app.post(
+    "/mfa/verify",
+    {
+      preHandler: [
+        rateLimit({
+          keyPrefix: "mfa-verify",
+          maxAttempts: 20,
+          windowSeconds: 300,
+        }),
+      ],
+    },
+    async (request, reply) => {
+      const body = MfaVerifySchema.parse(request.body);
+
+      const result = await sdk.authentication.completeMfa({
+        challenge: body.challenge,
+        code: body.code,
+        factor: body.factor,
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+
+      if (!result.success) {
+        if (result.error.code === "MFA_INVALID_CODE") {
+          await request.audit("mfa_challenge_failed", { factor: body.factor ?? "auto" });
         }
+        return sendResultError(reply, result);
       }
 
       request.state.auditUserId = result.data.user.id;
-      await request.audit("user_token_login", { userId: result.data.user.id });
+      await request.audit("mfa_verified", { userId: result.data.user.id, factor: result.data.factor });
       detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
+
+      if (result.data.flow === "login") {
+        await request.audit("user_login", { userId: result.data.user.id, mfa: result.data.factor });
+        setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, result.data.flow);
+      } else {
+        await request.audit("user_token_login", { userId: result.data.user.id, mfa: result.data.factor });
+      }
+
       return {
         accessToken: result.data.accessToken,
+        refreshToken: result.data.refreshToken,
+        expiresAt: result.data.expiresAt,
+        factor: result.data.factor,
         user: toSelfUser(result.data.user),
       };
     }

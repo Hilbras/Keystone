@@ -84,6 +84,16 @@ export default async function magicLinkRoutes(app: FastifyInstance) {
     const fingerprint = fingerprintFromRequest(request);
     await recordDevice(user.id, fingerprint, request.ip, request.headers["user-agent"]);
 
+    if (user.totpEnabled) {
+      // A magic link proves mailbox control, which is weaker than the second
+      // factor the user explicitly enrolled. Refuse rather than downgrade.
+      await request.audit("mfa_bypass_blocked", { userId: user.id, flow: "magic_link" });
+      return reply.status(403).send({
+        error: "Multi-factor authentication is required for this account. Sign in with your password and verification code.",
+        code: "MFA_REQUIRED",
+      });
+    }
+
     const tokens = await createTokenSet(
       user,
       request.ip,

@@ -10,7 +10,7 @@ import {
   type Application,
 } from "../db/schema.js";
 import { config } from "../config.js";
-import { createTokenSet, createIdToken, type AccessTokenOptions } from "./tokens.js";
+import { createTokenSet, createIdToken, type AccessTokenOptions, type MfaAssertion } from "./tokens.js";
 
 export interface AuthorizationCodeInput {
   appId: string;
@@ -20,6 +20,7 @@ export interface AuthorizationCodeInput {
   redirectUri?: string;
   scopes?: string[];
   nonce?: string;
+  mfaFactor?: MfaAssertion;
 }
 
 export function generateAuthorizationCode(): { code: string; codeHash: string } {
@@ -43,6 +44,7 @@ export async function storeAuthorizationCode(input: AuthorizationCodeInput) {
       redirectUri: input.redirectUri ?? null,
       scopes: input.scopes ?? [],
       nonce: input.nonce ?? null,
+      mfaFactor: input.mfaFactor ?? null,
       expiresAt,
     })
     .returning();
@@ -153,7 +155,13 @@ export async function createTokenResponse(
   user: User,
   app: Application,
   scopes: string[],
-  opts: { ip?: string; userAgent?: string; deviceFingerprint?: string; nonce?: string } = {}
+  opts: {
+    ip?: string;
+    userAgent?: string;
+    deviceFingerprint?: string;
+    nonce?: string;
+    mfaFactor?: MfaAssertion;
+  } = {}
 ) {
   const [membership] = await db
     .select({ id: orgMemberships.id })
@@ -166,6 +174,7 @@ export async function createTokenResponse(
     appId: app.id,
     orgId: app.orgId,
     clientId: app.clientId,
+    ...(opts.mfaFactor ? { mfaFactor: opts.mfaFactor } : {}),
   };
 
   const tokenSet = await createTokenSet(

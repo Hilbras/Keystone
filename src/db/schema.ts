@@ -11,6 +11,7 @@ import {
   unique,
   smallint,
   integer,
+  bigint,
   check,
 } from "drizzle-orm/pg-core";
 
@@ -54,6 +55,7 @@ export const users = pgTable(
     totpSecret: text("totp_secret"),
     totpEnabled: boolean("totp_enabled").default(false).notNull(),
     totpVerifiedAt: timestamp("totp_verified_at", { withTimezone: true }),
+    totpLastStep: bigint("totp_last_step", { mode: "number" }),
     failedLoginAttempts: integer("failed_login_attempts").default(0).notNull(),
     lockedUntil: timestamp("locked_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -80,6 +82,7 @@ export const userSessions = pgTable(
     userAgent: text("user_agent"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
@@ -150,11 +153,16 @@ export const refreshTokens = pgTable(
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
     deviceFingerprint: text("device_fingerprint"),
+    mfaFactor: text("mfa_factor"),
   },
   (table) => ({
     userIdx: index("refresh_tokens_user_idx").on(table.userId),
     appIdx: index("refresh_tokens_app_idx").on(table.appId),
     hashIdx: index("refresh_tokens_hash_idx").on(table.tokenHash),
+    mfaFactorCheck: check(
+      "refresh_tokens_mfa_factor_check",
+      sql`mfa_factor is null or mfa_factor in ('totp', 'backup_code', 'webauthn', 'session')`
+    ),
   })
 );
 
@@ -239,11 +247,17 @@ export const oauth2AuthorizationCodes = pgTable(
     redirectUri: text("redirect_uri"),
     scopes: text("scopes").array().default(sql`'{}'::text[]`).notNull(),
     nonce: text("nonce"),
+    /** Second factor satisfied by the session that approved this code. */
+    mfaFactor: text("mfa_factor"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
+    mfaFactorCheck: check(
+      "oauth2_authorization_codes_mfa_factor_check",
+      sql`mfa_factor is null or mfa_factor in ('totp', 'backup_code', 'webauthn', 'session')`
+    ),
     appIdx: index("oauth2_authorization_codes_app_idx").on(table.appId),
     userIdx: index("oauth2_authorization_codes_user_idx").on(table.userId),
     hashIdx: index("oauth2_authorization_codes_hash_idx").on(table.codeHash),
@@ -355,11 +369,39 @@ export const totpBackupCodes = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     codeHash: text("code_hash").notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     userIdx: index("totp_backup_codes_user_idx").on(table.userId),
-    hashIdx: index("totp_backup_codes_hash_idx").on(table.codeHash),
+    uniqueCode: unique("totp_backup_codes_user_code_unique").on(table.userId, table.codeHash),
+  })
+);
+
+export const mfaChallenges = pgTable(
+  "mfa_challenges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    challengeHash: text("challenge_hash").notNull().unique(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    flow: text("flow").notNull(),
+    clientId: text("client_id"),
+    status: text("status").default("requires_mfa").notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(5).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdx: index("mfa_challenges_user_idx").on(table.userId),
+    statusIdx: index("mfa_challenges_status_idx").on(table.status),
+    flowCheck: check("mfa_challenges_flow_check", sql`flow in ('login', 'token_login')`),
+    statusCheck: check("mfa_challenges_status_check", sql`status in ('requires_mfa', 'consumed', 'failed', 'expired')`),
   })
 );
 
@@ -711,3 +753,5 @@ export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 export type NewPasswordResetToken = typeof passwordResetTokens.$inferInsert;
 export type NewWorkflowRun = typeof workflowRuns.$inferInsert;
+export type MfaChallenge = typeof mfaChallenges.$inferSelect;
+export type NewMfaChallenge = typeof mfaChallenges.$inferInsert;

@@ -4,11 +4,12 @@ import { config, isZitadelConfigured } from "../../config.js";
 import { db } from "../../db/index.js";
 import { users, passwordResetTokens, type User } from "../../db/schema.js";
 import { createHumanUser, verifyPassword as verifyZitadelPassword } from "../zitadel.js";
-import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type TokenSet } from "../tokens.js";
+import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
 import { isPasswordBreached } from "../hibp.js";
 import { recordFailedLogin, isFailedLoginAnomaly } from "../anomalyDetection.js";
 import { emit } from "../events/bus.js";
-import type { UserRepository, ApplicationRepository, OrganizationRepository } from "../../repositories/types.js";
+import type { UserRepository, ApplicationRepository, OrganizationRepository, MfaFlow } from "../../repositories/types.js";
+import type { IssuedMfaChallenge, MfaFactor, MfaService } from "../mfa.js";
 import { ok, err, type Result } from "../../lib/result.js";
 import { hashPassword, verifyPassword } from "../secrets/index.js";
 
@@ -30,6 +31,10 @@ export interface LoginInput {
   email: string;
   password: string;
   clientId?: string;
+  /** Which login surface started the flow; recorded on the challenge. */
+  flow?: MfaFlow;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface TokenResponse {
@@ -38,11 +43,29 @@ export interface TokenResponse {
   context: AuthContext;
 }
 
+/**
+ * Result of the password step. Tokens are only ever present once the user is
+ * fully authenticated; an MFA-enabled user is returned in `requires_mfa` with
+ * an opaque challenge and no tokens.
+ */
+export type LoginResult =
+  | { status: "authenticated"; user: User; tokens: TokenSet; context: AuthContext }
+  | { status: "requires_mfa"; user: User; challenge: IssuedMfaChallenge; context: AuthContext };
+
+export interface MfaCompletion {
+  user: User;
+  tokens: TokenSet;
+  context: AuthContext;
+  flow: MfaFlow;
+  factor: MfaFactor;
+}
+
 export class AuthenticationDomainService {
   constructor(
     private readonly users: UserRepository,
     private readonly applications: ApplicationRepository,
-    private readonly organizations: OrganizationRepository
+    private readonly organizations: OrganizationRepository,
+    private readonly mfa: MfaService
   ) {}
 
   private async loadAppContext(userId: string, clientId?: string): Promise<AuthContext> {
@@ -135,7 +158,7 @@ export class AuthenticationDomainService {
     return ok({ user, tokens, context });
   }
 
-  async login(input: LoginInput): Promise<Result<TokenResponse>> {
+  async login(input: LoginInput): Promise<Result<LoginResult>> {
     const user = await this.users.findByEmail(input.email);
 
     if (!user) {
@@ -153,6 +176,11 @@ export class AuthenticationDomainService {
     if (!user.isActive) {
       await emit({ type: "user_login_failed", payload: { reason: "account_deactivated", userId: user.id } });
       return err({ code: "ACCOUNT_DEACTIVATED", message: "This account is deactivated", statusCode: 403 });
+    }
+
+    if (user.accountReviewRequired) {
+      await emit({ type: "user_login_failed", payload: { reason: "account_review_required", userId: user.id } });
+      return err({ code: "ACCOUNT_REVIEW_REQUIRED", message: "This account is pending review.", statusCode: 403 });
     }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
@@ -185,20 +213,92 @@ export class AuthenticationDomainService {
     }
 
     await this.users.resetFailedLogins(user.id);
-    await this.users.updateLastSeen(user.id);
     const context = await this.loadAppContext(user.id, input.clientId);
-    const tokens = await createTokenSet(user, undefined, undefined, {
-      appId: context.org ? context.app?.id : undefined,
-      orgId: context.org?.id,
-      clientId: context.org ? context.app?.clientId : undefined,
-    });
+
+    if (user.totpEnabled) {
+      // requires_mfa: no access token, no refresh token, no session row, and no
+      // `user_login` event. The only thing handed back is an opaque challenge.
+      const challenge = await this.mfa.createChallenge(user, input.flow ?? "login", input.clientId, {
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+      });
+      return ok({ status: "requires_mfa", user, challenge, context });
+    }
+
+    await this.users.updateLastSeen(user.id);
+    const tokens = await this.issueTokens(user, context, input.ipAddress, input.userAgent);
 
     await emit({
       type: "user_login",
       payload: { provider: user.provider, userId: user.id, appId: context.org ? context.app?.id : undefined, orgId: context.org?.id },
     });
 
-    return ok({ user, tokens, context });
+    return ok({ status: "authenticated", user, tokens, context });
+  }
+
+  private async issueTokens(
+    user: User,
+    context: AuthContext,
+    ipAddress?: string,
+    userAgent?: string,
+    mfaFactor?: MfaAssertion
+  ): Promise<TokenSet> {
+    return createTokenSet(
+      user,
+      ipAddress,
+      userAgent,
+      {
+        appId: context.org ? context.app?.id : undefined,
+        orgId: context.org?.id,
+        clientId: context.org ? context.app?.clientId : undefined,
+        ...(mfaFactor ? { mfaFactor } : {}),
+      }
+    );
+  }
+
+  /**
+   * Second step of the login state machine: verify a factor against an
+   * outstanding challenge and only then issue tokens. Replaying the same
+   * challenge returns `MFA_CHALLENGE_REPLAYED` and issues nothing.
+   */
+  async completeMfa(
+    challengeToken: string,
+    code: string,
+    factor: MfaFactor,
+    ipAddress?: string,
+    userAgent?: string
+  ): Promise<Result<MfaCompletion>> {
+    const result = await this.mfa.verifyChallenge(challengeToken, code, factor, (id) => this.users.findById(id));
+    if (!result.success) return result;
+
+    const { user, flow, clientId } = result.data;
+    const context = await this.loadAppContext(user.id, clientId);
+
+    let tokens: TokenSet;
+    try {
+      tokens = await this.issueTokens(user, context, ipAddress, userAgent, factor);
+    } catch {
+      await emit({ type: "mfa_bypass_blocked", payload: { userId: user.id, flow } });
+      return err({
+        code: "MFA_REQUIRED",
+        message: "Multi-factor authentication could not be completed.",
+        statusCode: 401,
+      });
+    }
+
+    await this.users.updateLastSeen(user.id);
+    await emit({
+      type: "user_login",
+      payload: {
+        provider: user.provider,
+        userId: user.id,
+        mfa: factor,
+        appId: context.org ? context.app?.id : undefined,
+        orgId: context.org?.id,
+      },
+    });
+
+    return ok({ user, tokens, context, flow, factor });
   }
 
   async refresh(refreshToken: string, clientId?: string): Promise<Result<{ tokens: TokenSet; userId?: string }>> {
