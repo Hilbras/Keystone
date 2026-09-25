@@ -5,7 +5,12 @@ import { describe, it } from "node:test";
 import { X509CertificateGenerator } from "@peculiar/x509";
 import type { SamlConnection } from "../../db/schema.js";
 import { IdentityProvider, ServiceProvider } from "samlify";
-import { validateSamlSemantics } from "../../routes/saml.js";
+
+// The validator is pure, but its module graph loads application config, which
+// requires a database URL. Set it before the dynamic import because static
+// imports are hoisted above any assignment.
+process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbras";
+const { validateSamlSemantics } = await import("../../routes/saml.js");
 
 function pemPrivateKey(pkcs8: ArrayBuffer): string {
   const body = Buffer.from(pkcs8).toString("base64").match(/.{1,64}/g)?.join("\n") ?? "";

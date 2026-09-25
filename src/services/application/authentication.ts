@@ -59,6 +59,7 @@ export interface MfaCompleteRequest {
 export interface MfaCompleteResponse extends AuthResponse {
   flow: MfaFlow;
   factor: MfaFactor;
+  clientId?: string;
 }
 
 export class AuthenticationApplicationService {
@@ -119,6 +120,7 @@ export class AuthenticationApplicationService {
         ...this.toAuthResponse(result.data.user, result.data.tokens),
         flow: result.data.flow,
         factor: result.data.factor,
+        clientId: result.data.clientId,
       },
     };
   }

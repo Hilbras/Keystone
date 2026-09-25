@@ -36,7 +36,7 @@ const {
   totpBackupCodes,
 } = await import("../../db/schema.js");
 const { buildApp } = await import("../../index.js");
-const { loadSigningKeys, revokeAllUserRefreshTokens } = await import("../../services/tokens.js");
+const { loadSigningKeys } = await import("../../services/tokens.js");
 const { config } = await import("../../config.js");
 const { getSdk } = await import("../../sdk/index.js");
 const {
@@ -284,7 +284,7 @@ describe("Password login with MFA enabled", () => {
     assert.ok(!("accessToken" in body));
     assert.ok(!("refreshToken" in body));
     assert.ok(!("user" in body));
-    assert.equal(res.headers["set-cookie"]?.includes("session"), undefined);
+    assert.deepEqual(sessionCookieNames(res), [], "no session cookie may be set before MFA");
 
     // Nothing was persisted as a session.
     assert.equal((await countRows(refreshTokens, user.id)).length, 0);
@@ -447,26 +447,41 @@ describe("MFA challenge completion", () => {
     assert.equal((await countRows(refreshTokens, user.id)).length, 0);
   });
 
-  it("locks a challenge after the attempt budget is exhausted", async () => {
-    const { user } = await createMfaUser({ totp: true });
+  it("locks the challenge and the account after repeated factor failures", async () => {
+    const { user, secret } = await createMfaUser({ totp: true });
     const challenge = await startChallenge(user);
 
-    for (let attempt = 0; attempt < 5; attempt++) {
+    // The account lockout threshold is 5, so the fifth factor failure is
+    // rejected as a lockout rather than another invalid code.
+    for (let attempt = 0; attempt < 4; attempt++) {
       const res = await app.inject({
         method: "POST",
         url: "/auth/mfa/verify",
         payload: { challenge, code: "000000" },
       });
-      assert.equal(res.statusCode, 401);
+      assert.equal(res.statusCode, 401, `attempt ${attempt + 1}`);
+      assert.equal(res.json().code, "MFA_INVALID_CODE");
     }
 
-    const locked = await app.inject({
+    const tripping = await app.inject({
       method: "POST",
       url: "/auth/mfa/verify",
       payload: { challenge, code: "000000" },
     });
-    assert.equal(locked.statusCode, 401);
-    assert.notEqual(locked.json().code, "MFA_INVALID_CODE");
+    assert.equal(tripping.statusCode, 403);
+    assert.equal(tripping.json().code, "ACCOUNT_LOCKED");
+
+    // The challenge is dead: even the correct code can no longer complete it.
+    const locked = await app.inject({
+      method: "POST",
+      url: "/auth/mfa/verify",
+      payload: { challenge, code: totpFor(secret!, Date.now() + 30_000) },
+    });
+    assert.notEqual(locked.statusCode, 200, "the challenge must not recover");
+    assert.equal((await countRows(refreshTokens, user.id)).length, 0);
+
+    const row = (await db.select().from(mfaChallenges).where(eq(mfaChallenges.userId, user.id)))[0];
+    assert.equal(row.status, "failed", "the challenge is marked failed, not merely counted");
   });
 
   it("refuses to reuse a TOTP code across two separate challenges", async () => {
@@ -504,6 +519,39 @@ describe("MFA challenge completion", () => {
     assert.equal((await countRows(refreshTokens, user.id)).length, 1);
   });
 
+  it("single-use challenge: two different valid factors still yield one session", async () => {
+    // Both factors are independently valid, so neither the TOTP counter nor the
+    // backup-code uniqueness constraint can be what limits this to one winner —
+    // only the challenge's conditional consume can.
+    const { user, secret, backupCodes } = await createMfaUser({ totp: true });
+    const challenge = await startChallenge(user);
+
+    const results = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/auth/mfa/verify",
+        payload: { challenge, code: totpFor(secret!), factor: "totp" },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/auth/mfa/verify",
+        payload: { challenge, code: backupCodes[3], factor: "backup_code" },
+      }),
+    ]);
+
+    const successes = results.filter((r) => r.statusCode === 200);
+    assert.equal(successes.length, 1, "the challenge must admit exactly one completion");
+    assert.equal((await countRows(refreshTokens, user.id)).length, 1);
+
+    const losers = results.filter((r) => r.statusCode !== 200);
+    for (const loser of losers) {
+      assert.ok(
+        ["MFA_CHALLENGE_REPLAYED", "MFA_INVALID_CODE"].includes(loser.json().code),
+        `unexpected loser code: ${loser.json().code}`
+      );
+    }
+  });
+
   it("supersedes a previous challenge when a new password step starts", async () => {
     const { user, secret } = await createMfaUser({ totp: true });
     const stale = await startChallenge(user);
@@ -536,24 +584,34 @@ describe("MFA challenge completion", () => {
 describe("MFA and refresh sessions", () => {
   it("refuses to rotate a session that was created before MFA was enabled", async () => {
     const { user } = await createMfaUser();
-    const res = await login(user.email, PASSWORD);
-    assert.equal(res.statusCode, 200);
-
     const { createTokenSet, rotateRefreshToken } = await import("../../services/tokens.js");
+
     const legacy = await createTokenSet(user, "127.0.0.1", "mfa-test");
     assert.ok(legacy.refreshToken);
     const [row] = await countRows(refreshTokens, user.id);
     assert.equal(row!.mfaFactor ?? null, null, "a non-MFA session records no factor");
 
-    // The user enrolls MFA; enrollment revokes their existing sessions, and a
-    // token without a recorded factor can never be rotated afterwards.
+    // Sanity check: the token really does rotate while MFA is off. Without this
+    // the negative assertion below could pass for the wrong reason.
+    const beforeEnable = await rotateRefreshToken(legacy.refreshToken, "127.0.0.1", "mfa-test");
+    assert.ok(beforeEnable, "a non-MFA session must be able to rotate");
+
+    // Now the user enables MFA. The rotated session stays unrevoked, so the
+    // only thing that can refuse it is the missing recorded factor.
     await userRepository.enableTotp(user.id);
-    await revokeAllUserRefreshTokens(user.id);
+    const rotatedHash = crypto.createHash("sha256").update(beforeEnable.refreshToken).digest("hex");
+    const stillLive = await db
+      .select({ revokedAt: refreshTokens.revokedAt, mfaFactor: refreshTokens.mfaFactor })
+      .from(refreshTokens)
+      .where(eq(refreshTokens.tokenHash, rotatedHash));
+    assert.equal(stillLive.length, 1);
+    assert.equal(stillLive[0].revokedAt, null, "the session must still be unrevoked");
+    assert.equal(stillLive[0].mfaFactor, null, "and must still carry no factor");
 
     assert.equal(
-      await rotateRefreshToken(legacy.refreshToken, "127.0.0.1", "mfa-test"),
+      await rotateRefreshToken(beforeEnable!.refreshToken, "127.0.0.1", "mfa-test"),
       null,
-      "a pre-MFA session must not be able to keep rotating"
+      "a session with no recorded factor must not be able to keep rotating"
     );
   });
 
@@ -631,12 +689,15 @@ describe("Enrolling MFA", () => {
 
     assert.equal((await countSessions(user.id)).length, 1);
 
-    // Enroll, then complete enrollment with a real code.
+    // Enroll, then complete enrollment with a real code. Both steps require
+    // the password in addition to the session.
     const cookie = sessionCookie(loginRes);
+    const bearer = { authorization: `Bearer ${extractBearer(loginRes)}` };
     const enroll = await app.inject({
       method: "POST",
       url: "/auth/totp/enroll",
-      headers: { cookie },
+      headers: { ...bearer, cookie },
+      payload: { password: PASSWORD },
     });
     assert.equal(enroll.statusCode, 200);
     const { secret } = enroll.json();
@@ -644,8 +705,8 @@ describe("Enrolling MFA", () => {
     const verify = await app.inject({
       method: "POST",
       url: "/auth/totp/verify",
-      headers: { cookie },
-      payload: { code: totpFor(secret) },
+      headers: { ...bearer, cookie },
+      payload: { code: totpFor(secret), password: PASSWORD },
     });
     assert.equal(verify.statusCode, 200);
     assert.equal(verify.json().sessionsRevoked, true);
@@ -684,7 +745,7 @@ describe("Enrolling MFA", () => {
       method: "POST",
       url: "/auth/totp/backup",
       headers: { ...bearer, cookie },
-      payload: { code: totpFor(secret!, Date.now() + 30_000) },
+      payload: { code: totpFor(secret!, Date.now() + 30_000), password: PASSWORD },
     });
     assert.equal(accepted.statusCode, 200);
     assert.equal(accepted.json().backupCodes.length, 10);
@@ -716,6 +777,187 @@ describe("Enrolling MFA", () => {
   });
 });
 
+describe("Step-up on factor management", () => {
+  /** Complete a login for `user` and return the resulting bearer token. */
+  async function authedSession(user: User, secret: string) {
+    const challenge = (await login(user.email, PASSWORD)).json().challenge;
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/mfa/verify",
+      payload: { challenge, code: totpFor(secret) },
+    });
+    assert.equal(res.statusCode, 200);
+    return { token: res.json().accessToken as string, cookie: sessionCookie(res) };
+  }
+
+  it("refuses to enroll TOTP with only a session token", async () => {
+    const { user } = await createMfaUser();
+    const res = await login(user.email, PASSWORD);
+    const token = extractBearer(res);
+
+    const noPassword = await app.inject({
+      method: "POST",
+      url: "/auth/totp/enroll",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {},
+    });
+    assert.notEqual(noPassword.statusCode, 200, "a session token alone must not enroll a factor");
+    const stillEmpty = (await userRepository.findById(user.id))!;
+    assert.equal(stillEmpty.totpSecret, null, "no secret may be stored without step-up");
+
+    const wrongPassword = await app.inject({
+      method: "POST",
+      url: "/auth/totp/enroll",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { password: "not-the-password" },
+    });
+    assert.equal(wrongPassword.statusCode, 401);
+    assert.equal(wrongPassword.json().code, "INVALID_CREDENTIALS");
+
+    const ok = await app.inject({
+      method: "POST",
+      url: "/auth/totp/enroll",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { password: PASSWORD },
+    });
+    assert.equal(ok.statusCode, 200);
+    void user;
+  });
+
+  it("refuses to enable TOTP without the password, even with a valid code", async () => {
+    const { user } = await createMfaUser();
+    const token = extractBearer(await login(user.email, PASSWORD));
+    const { secret } = (
+      await app.inject({
+        method: "POST",
+        url: "/auth/totp/enroll",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { password: PASSWORD },
+      })
+    ).json();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/totp/verify",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { code: totpFor(secret) },
+    });
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.json().code, "STEP_UP_REQUIRED");
+    assert.equal((await userRepository.findById(user.id))!.totpEnabled, false);
+  });
+
+  it("refuses to disable TOTP without the password", async () => {
+    const { user, secret } = await createMfaUser({ totp: true });
+    const { token } = await authedSession(user, secret!);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/totp/disable",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { code: totpFor(secret!, Date.now() + 30_000) },
+    });
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.json().code, "STEP_UP_REQUIRED");
+    assert.equal((await userRepository.findById(user.id))!.totpEnabled, true);
+  });
+
+  it("disables TOTP with the password and destroys the backup codes", async () => {
+    const { user, secret } = await createMfaUser({ totp: true });
+    const { token } = await authedSession(user, secret!);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/totp/disable",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { code: totpFor(secret!, Date.now() + 30_000), password: PASSWORD },
+    });
+    assert.equal(res.statusCode, 200);
+
+    const stored = (await userRepository.findById(user.id))!;
+    assert.equal(stored.totpEnabled, false);
+    const codes = await db
+      .select()
+      .from(totpBackupCodes)
+      .where(eq(totpBackupCodes.userId, user.id));
+    assert.equal(codes.length, 0, "recovery material must not outlive the factor");
+  });
+
+  it("refuses to register a passkey for a TOTP account without the password", async () => {
+    const { user, secret } = await createMfaUser({ totp: true });
+    const { token } = await authedSession(user, secret!);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/webauthn/register/verify",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { response: { id: "fake" } },
+    });
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.json().code, "STEP_UP_REQUIRED");
+    void user;
+  });
+});
+
+describe("MFA completion sets correctly scoped session cookies", () => {
+  it("uses the default cookie name for a challenge with no client", async () => {
+    const { user, secret } = await createMfaUser({ totp: true });
+    const challenge = (await login(user.email, PASSWORD)).json().challenge;
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/mfa/verify",
+      payload: { challenge, code: totpFor(secret!) },
+    });
+    assert.equal(res.statusCode, 200);
+
+    const names = sessionCookieNames(res);
+    assert.ok(names.includes("keystone-session"), `expected keystone-session, got ${names.join(", ")}`);
+    assert.ok(names.includes("keystone-session-refresh"));
+    // The flow name must never leak into a cookie name.
+    assert.ok(!names.some((n) => n.includes("login")));
+  });
+
+  it("scopes cookies to the client the challenge was created for", async () => {
+    const label = `mfa-cookie-${crypto.randomUUID().slice(0, 8)}`;
+    const { DrizzleOrganizationRepository } = await import("../../repositories/organization.js");
+    const { createApplication } = await import("../../services/applications.js");
+
+    const { user, secret } = await createMfaUser({ totp: true });
+    const { user: owner } = await createMfaUser();
+    const organizations = new DrizzleOrganizationRepository();
+    const org = await organizations.createWithOwner({ name: label, slug: label }, owner.id);
+    await organizations.addMembership({ orgId: org.id, userId: user.id, role: "member" });
+    const application = await createApplication({
+      orgId: org.id,
+      name: label,
+      redirectUris: ["https://example.com/cb"],
+    });
+
+    const challenge = (await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { email: user.email, password: PASSWORD, client_id: application.clientId },
+    })).json().challenge;
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/mfa/verify",
+      payload: { challenge, code: totpFor(secret!) },
+    });
+    assert.equal(res.statusCode, 200);
+
+    // The client id, not the login flow, selects the cookie name — otherwise
+    // every app on the cookie domain would share one fixed name.
+    const names = sessionCookieNames(res);
+    assert.ok(
+      names.includes(`app-${application.clientId}-session`),
+      `expected an app-scoped cookie, got ${names.join(", ")}`
+    );
+    assert.ok(!names.includes("keystone-session"), "must not fall back to the default cookie");
+  });
+});
+
 describe("MFA challenge invariants", () => {
   it("stores only a hash of the challenge", async () => {
     const { user } = await createMfaUser({ totp: true });
@@ -729,19 +971,16 @@ describe("MFA challenge invariants", () => {
     assert.equal(rows[0].maxAttempts, 5);
   });
 
-  it("marks an expired challenge as expired instead of usable", async () => {
+  it("marks a consumed, exhausted, or expired challenge as unusable", async () => {
     const { user } = await createMfaUser({ totp: true });
-    const challenge = (await login(user.email, PASSWORD)).json().challenge;
+    await login(user.email, PASSWORD);
     const row = (await db.select().from(mfaChallenges).where(eq(mfaChallenges.userId, user.id)))[0];
 
     assert.equal(isMfaChallengeUsable(row), true);
     assert.equal(isMfaChallengeUsable({ ...row, status: "consumed" }), false);
+    assert.equal(isMfaChallengeUsable({ ...row, status: "failed" }), false);
     assert.equal(isMfaChallengeUsable({ ...row, attempts: row.maxAttempts }), false);
-    assert.equal(
-      isMfaChallengeUsable({ ...row, expiresAt: new Date(Date.now() - 1) }),
-      false
-    );
-    void challenge;
+    assert.equal(isMfaChallengeUsable({ ...row, expiresAt: new Date(Date.now() - 1) }), false);
   });
 
   it("rejects a challenge whose user was deactivated mid-flow", async () => {
@@ -853,6 +1092,23 @@ describe("OAuth2 authorization codes carry the MFA assertion", () => {
 });
 
 // --- helpers -------------------------------------------------------------
+
+/** The login response only exposes the token through Set-Cookie. */
+function extractBearer(res: { headers: Record<string, unknown> }): string {
+  const cookies = res.headers["set-cookie"];
+  const list = Array.isArray(cookies) ? cookies.map(String) : cookies ? [String(cookies)] : [];
+  const match = list.find((c) => c.startsWith("keystone-session="));
+  assert.ok(match, "expected a keystone-session cookie");
+  return decodeURIComponent(match.split(";")[0].split("=")[1]);
+}
+
+function sessionCookieNames(res: { headers: Record<string, unknown> }): string[] {
+  const cookies = res.headers["set-cookie"];
+  const list = Array.isArray(cookies) ? cookies.map(String) : cookies ? [String(cookies)] : [];
+  return list
+    .map((c) => c.split(";")[0].split("=")[0])
+    .filter((name) => name.endsWith("session") || name.endsWith("session-refresh"));
+}
 
 function sessionCookie(res: { headers: Record<string, unknown> }): string {
   const cookies = res.headers["set-cookie"];

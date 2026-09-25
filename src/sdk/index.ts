@@ -73,6 +73,7 @@ class SdkAuthenticationClient implements AuthenticationSdk {
         user: toSelfUser(result.data.user),
         flow: result.data.flow,
         factor: result.data.factor,
+        clientId: result.data.clientId,
       },
     };
   }

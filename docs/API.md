@@ -92,14 +92,80 @@ Endpoints marked **owner** additionally require the platform-owner role.
 | POST | `/auth/magic-link/send` | public | Email a sign-in link |
 | GET | `/auth/magic-link/verify` | public | Consume link token, establish session |
 
-### TOTP (authenticator apps)
+### Multi-factor authentication
+
+When a user has TOTP enabled, the password step never returns a token. Instead
+`/auth/login` and `/auth/token-login` respond with `401` and:
+
+```json
+{
+  "error": "Multi-factor authentication required",
+  "code": "MFA_REQUIRED",
+  "mfaRequired": true,
+  "challenge": "<opaque single-use challenge>",
+  "expiresAt": "2026-01-01T00:05:00.000Z",
+  "methods": ["totp", "backup_code"]
+}
+```
+
+The challenge is short-lived, single-use, and stored only as a hash. Exchange it
+once for tokens:
+
+```http
+POST /auth/mfa/verify
+{ "challenge": "<challenge>", "code": "123456" }
+```
+
+`factor` may be sent as `"totp"` or `"backup_code"`; when omitted it is inferred
+from the code shape (six digits = TOTP).
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/auth/totp/enroll` | auth | Begin enrollment, returns otpauth URI + QR secret |
-| POST | `/auth/totp/backup` | auth | Generate backup codes |
-| POST | `/auth/totp/verify` | varies | Verify TOTP/backup code during login challenge |
-| POST | `/auth/totp/disable` | auth+code | Disable TOTP after code confirmation |
+| POST | `/auth/mfa/verify` | challenge | Complete the second factor and receive tokens |
+
+Error codes returned by `/auth/mfa/verify`:
+
+| Code | Meaning |
+| --- | --- |
+| `MFA_CHALLENGE_INVALID` | Unknown challenge |
+| `MFA_CHALLENGE_EXPIRED` | Challenge passed its expiry |
+| `MFA_CHALLENGE_REPLAYED` | Challenge was already consumed |
+| `MFA_CHALLENGE_LOCKED` | Attempt budget exhausted |
+| `MFA_INVALID_CODE` | Factor did not match |
+| `MFA_NOT_REQUIRED` | The factor was disabled while the challenge was open |
+
+A TOTP time-step is accepted once. Replaying the same code — even against a
+freshly created challenge — is rejected. Backup codes are likewise single-use
+and expire after `TOTP_BACKUP_CODE_TTL_SECONDS` (default 90 days).
+
+Enabling MFA revokes every existing refresh token and session for the account,
+so credentials issued before enrollment cannot be used to obtain a new session.
+
+### TOTP (authenticator apps)
+
+All factor-management endpoints require **step-up**: the account password must be
+supplied in the request body in addition to the session. A stolen access token
+alone must never be enough to change how an account proves its identity.
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| POST | `/auth/totp/enroll` | `{ password }` | Begin enrollment; returns otpauth URI, QR secret, and backup codes |
+| POST | `/auth/totp/verify` | `{ password, code }` | Confirm enrollment; enables MFA and revokes existing sessions |
+| POST | `/auth/totp/backup` | `{ password, code }` | Regenerate backup codes |
+| POST | `/auth/totp/backup/verify` | `{ code }` | Consume a backup code; never establishes a session |
+| POST | `/auth/totp/disable` | `{ password, code }` | Disable TOTP and destroy its backup codes |
+
+Step-up failures return `401 STEP_UP_REQUIRED` (no password supplied) or
+`401 INVALID_CREDENTIALS` (wrong password). Failed step-up attempts count toward
+the account lockout.
+
+### Passkeys and MFA
+
+`POST /auth/webauthn/register/verify` also requires `{ password }` when the
+account has TOTP enabled. A passkey satisfies the MFA requirement on its own,
+**except** when it was registered after TOTP was enabled: such a credential is
+treated as a single factor and sign-in is refused with `403 MFA_REQUIRED`. This
+prevents a leaked session token from being traded for a permanent bypass.
 
 ### WebAuthn / passkeys
 

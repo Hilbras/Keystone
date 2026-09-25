@@ -71,7 +71,7 @@ export function initializeContainer(overrides?: Partial<Container>): Container {
 }
 
 export function buildApplicationServices(container: Container) {
-  const mfaService = new MfaService(container.mfaChallengeRepository);
+  const mfaService = new MfaService(container.mfaChallengeRepository, container.userRepository);
   const authorizationDomain = new AuthorizationDomainService(container.organizationRepository, container.permissionRepository);
   const authenticationDomain = new AuthenticationDomainService(
     container.userRepository,

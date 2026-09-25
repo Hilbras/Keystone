@@ -58,6 +58,8 @@ export interface MfaCompletion {
   context: AuthContext;
   flow: MfaFlow;
   factor: MfaFactor;
+  /** Client the challenge was created for; the session cookie is scoped to it. */
+  clientId?: string;
 }
 
 export class AuthenticationDomainService {
@@ -298,7 +300,7 @@ export class AuthenticationDomainService {
       },
     });
 
-    return ok({ user, tokens, context, flow, factor });
+    return ok({ user, tokens, context, flow, factor, clientId });
   }
 
   async refresh(refreshToken: string, clientId?: string): Promise<Result<{ tokens: TokenSet; userId?: string }>> {

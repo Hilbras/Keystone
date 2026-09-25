@@ -11,7 +11,7 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 ## What Keystone becomes
 
 - **Identity Provider (IdP)** — OIDC/OAuth2 provider with JWKS discovery.
-- **Authentication Service** — email/password, social login, magic links, WebAuthn/Passkeys, TOTP, SMS OTP.
+- **Authentication Service** — email/password with mandatory MFA enforcement, social login, magic links, WebAuthn/Passkeys, TOTP, SMS OTP.
 - **Authorization Engine** — RBAC/ABAC permissions with `/v1/authz/check`.
 - **Token Authority** — short-lived JWT access tokens, rotating refresh tokens, opaque API keys.
 - **Machine Identity Manager** — scoped, rotatable, auditable service credentials.
@@ -609,10 +609,12 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/totp/enroll` | Enroll TOTP MFA |
-| POST | `/totp/verify` | Verify TOTP code |
+| POST | `/mfa/verify` | Complete a login MFA challenge and receive tokens |
+| POST | `/totp/enroll` | Begin TOTP enrollment |
+| POST | `/totp/verify` | Confirm enrollment; revokes existing sessions |
 | POST | `/totp/disable` | Disable TOTP MFA |
-| POST | `/totp/backup` | Verify backup code |
+| POST | `/totp/backup` | Regenerate backup codes (requires a TOTP code) |
+| POST | `/totp/backup/verify` | Consume a backup code |
 | POST | `/sms-otp/send` | Send SMS OTP |
 | POST | `/sms-otp/verify` | Verify SMS OTP |
 | POST | `/magic-link/send` | Send magic link |

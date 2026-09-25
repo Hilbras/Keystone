@@ -3,7 +3,7 @@ import { Command } from "commander";
 
 const program = new Command();
 
-program.name("keystone").description("Hilbras Keystone CLI").version("1.7.0");
+program.name("keystone").description("Hilbras Keystone CLI").version("1.8.0");
 
 program
   .command("init")
@@ -77,7 +77,7 @@ program
         container.userRepository,
         container.applicationRepository,
         container.organizationRepository,
-        new MfaService(container.mfaChallengeRepository)
+        new MfaService(container.mfaChallengeRepository, container.userRepository)
       );
       const result = await authService.register({
         email: options.email,

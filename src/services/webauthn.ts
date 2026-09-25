@@ -189,5 +189,5 @@ export async function verifyAuthentication(response: AuthenticationResponseJSON,
     throw new Error("User account is deactivated");
   }
 
-  return { verified: true, user };
+  return { verified: true, user, credentialRegisteredAt: credential.createdAt };
 }

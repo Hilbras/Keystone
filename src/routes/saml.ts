@@ -11,6 +11,7 @@ import { setSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
 import { toSelfUser } from "../types.js";
 import { config } from "../config.js";
+import { isMfaRequiredError } from "../lib/errors.js";
 import { escapeXml } from "./helpers.js";
 import { redis } from "../services/redis.js";
 
@@ -228,7 +229,18 @@ export function validateSamlSemantics(
   }
 }
 
-function sanitizeSamlError(error: unknown): { statusCode: number; body: { error: string } } {
+function sanitizeSamlError(error: unknown): { statusCode: number; body: { error: string; code?: string } } {
+  // An MFA-protected account cannot complete SSO with only the IdP assertion.
+  // Report that precisely instead of collapsing it into "SAML validation failed".
+  if (isMfaRequiredError(error)) {
+    return {
+      statusCode: 403,
+      body: {
+        error: "mfa_required",
+        code: "MFA_REQUIRED",
+      },
+    };
+  }
   const message = config.NODE_ENV === "development" && error instanceof Error ? error.message : "SAML validation failed";
   return { statusCode: 400, body: { error: message } };
 }

@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { config } from "../config.js";
 import { rateLimit } from "../plugins/rateLimit.js";
 import { revokeAllUserRefreshTokens } from "../services/tokens.js";
+import { requireStepUp } from "../services/stepUp.js";
 import { SessionRepository } from "../repositories/session.js";
 import {
   generateSecret,
@@ -12,10 +13,18 @@ import {
   storeBackupCodes,
   verifyBackupCode,
   verifyUserTotpCode,
+  deleteBackupCodes,
 } from "../services/totp.js";
 
 const CodeSchema = z.object({
   code: z.string().regex(/^[0-9]{6}$/, "A TOTP code must be exactly six digits"),
+  // Required to change how the account proves its identity. A stolen session
+  // token must not be enough to take over the account's second factor.
+  password: z.string().max(128).optional(),
+});
+
+const EnrollSchema = z.object({
+  password: z.string().min(1).max(128),
 });
 
 const BackupCodeSchema = z.object({
@@ -34,6 +43,18 @@ export default async function totpRoutes(app: FastifyInstance) {
       const user = request.user!;
       if (user.totpEnabled) {
         return reply.status(409).send({ error: "TOTP already enrolled" });
+      }
+
+      // Enrollment hands out the raw secret and the backup codes, so a valid
+      // session is not sufficient on its own.
+      const body = EnrollSchema.parse(request.body);
+      const stepUp = await requireStepUp(request.server.container.userRepository, user, body.password);
+      if (!stepUp.ok) {
+        await request.audit("mfa_bypass_blocked", { userId: user.id, action: "totp_enroll" });
+        return reply.status(stepUp.error!.statusCode ?? 401).send({
+          error: stepUp.error!.message,
+          code: stepUp.error!.code,
+        });
       }
 
       const secret = generateSecret();
@@ -80,9 +101,16 @@ export default async function totpRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "TOTP not enabled" });
       }
 
-      const body = z
-        .object({ code: z.string().regex(/^[0-9]{6}$/, "A TOTP code must be exactly six digits") })
-        .parse(request.body);
+      const body = CodeSchema.parse(request.body);
+
+      const stepUp = await requireStepUp(request.server.container.userRepository, user, body.password);
+      if (!stepUp.ok) {
+        await request.audit("mfa_bypass_blocked", { userId: user.id, action: "totp_backup_regen" });
+        return reply.status(stepUp.error!.statusCode ?? 401).send({
+          error: stepUp.error!.message,
+          code: stepUp.error!.code,
+        });
+      }
 
       const verified = await verifyUserTotpCode(user, body.code);
       if (!verified.valid) {
@@ -108,10 +136,19 @@ export default async function totpRoutes(app: FastifyInstance) {
       }
 
       const body = CodeSchema.parse(request.body);
+
+      const stepUp = await requireStepUp(request.server.container.userRepository, user, body.password);
+      if (!stepUp.ok) {
+        await request.audit("mfa_bypass_blocked", { userId: user.id, action: "totp_verify" });
+        return reply.status(stepUp.error!.statusCode ?? 401).send({
+          error: stepUp.error!.message,
+          code: stepUp.error!.code,
+        });
+      }
+
       // Enrollment verification still goes through the user's own secret, and
       // the time-step is consumed so the same code cannot enable MFA twice.
       const verified = await verifyUserTotpCode(user, body.code, {
-        consume: false,
         requireEnabled: false,
       });
       if (!verified.valid) {
@@ -143,6 +180,16 @@ export default async function totpRoutes(app: FastifyInstance) {
       }
 
       const body = CodeSchema.parse(request.body);
+
+      const stepUp = await requireStepUp(request.server.container.userRepository, user, body.password);
+      if (!stepUp.ok) {
+        await request.audit("mfa_bypass_blocked", { userId: user.id, action: "totp_disable" });
+        return reply.status(stepUp.error!.statusCode ?? 401).send({
+          error: stepUp.error!.message,
+          code: stepUp.error!.code,
+        });
+      }
+
       const verified = await verifyUserTotpCode(user, body.code);
       if (!verified.valid) {
         await request.audit("totp_disable_failed", { userId: user.id });
@@ -150,6 +197,8 @@ export default async function totpRoutes(app: FastifyInstance) {
       }
 
       await app.container.userRepository.disableTotp(user.id);
+      // Recovery material must not outlive the factor it recovers.
+      await deleteBackupCodes(user.id);
       await request.audit("totp_disabled", { userId: user.id });
 
       return { success: true };

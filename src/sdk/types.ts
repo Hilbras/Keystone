@@ -31,6 +31,7 @@ export type LoginResponse =
 export interface MfaCompleteResponse extends AuthResponse {
   flow: "login" | "token_login";
   factor: "totp" | "backup_code";
+  clientId?: string;
 }
 
 export interface AuthenticationSdk {

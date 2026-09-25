@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "type": "module",
   "overrides": {
     "@xmldom/xmldom": "0.8.15",
@@ -36,7 +36,7 @@
     "db:seed": "tsx src/db/seed.ts",
     "db:reencrypt-oidc-secrets": "node dist/db/reencryptOidcSecrets.js",
     "test": "node --test --test-force-exit --test-timeout=60000 dist/tests/*.test.js dist/tests/**/*.test.js",
-    "test:security": "node --test --test-force-exit --test-timeout=60000 dist/tests/security/authorization.test.js",
+    "test:security": "node --test --test-force-exit --test-timeout=60000 dist/tests/security/*.test.js",
     "test:all": "npm test && cd frontend && npm run test:e2e",
     "setup": "./install.sh",
     "start:all": "./start.sh"

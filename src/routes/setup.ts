@@ -275,7 +275,7 @@ export default async function setupRoutes(app: FastifyInstance) {
         new DrizzleUserRepository(),
         new DrizzleApplicationRepository(),
         new DrizzleOrganizationRepository(),
-        new MfaService(new DrizzleMfaChallengeRepository())
+        new MfaService(new DrizzleMfaChallengeRepository(), new DrizzleUserRepository())
       );
       const result = await authService.register({
         email: body.email,

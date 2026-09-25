@@ -12,7 +12,8 @@ import {
   verifyAuthentication,
   consumeChallenge,
 } from "../services/webauthn.js";
-import { createTokenSet } from "../services/tokens.js";
+import { createTokenSet, MfaRequiredError } from "../services/tokens.js";
+import { requireStepUp } from "../services/stepUp.js";
 import { setSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
 import { toSelfUser } from "../types.js";
@@ -40,6 +41,9 @@ function clearChallengeCookie(reply: FastifyReply): void {
 const RegisterVerifySchema = z.object({
   response: z.record(z.string(), z.unknown()),
   deviceName: z.string().max(100).optional(),
+  // Required to register a passkey on an account that already has TOTP: a
+  // stolen session token must not be enough to mint a new second factor.
+  password: z.string().max(128).optional(),
 });
 
 const AuthenticateOptionsSchema = z.object({
@@ -68,6 +72,22 @@ export default async function webauthnRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       const body = RegisterVerifySchema.parse(request.body);
+
+      if (user.totpEnabled) {
+        const stepUp = await requireStepUp(
+          request.server.container.userRepository,
+          user,
+          body.password
+        );
+        if (!stepUp.ok) {
+          await request.audit("mfa_bypass_blocked", { userId: user.id, action: "webauthn_register" });
+          return reply.status(stepUp.error!.statusCode ?? 401).send({
+            error: stepUp.error!.message,
+            code: stepUp.error!.code,
+          });
+        }
+      }
+
       const challenge = getChallengeCookie(request);
       if (!challenge) {
         return reply.status(400).send({ error: "Challenge expired or missing" });
@@ -117,11 +137,28 @@ export default async function webauthnRoutes(app: FastifyInstance) {
     }
 
     try {
-      const { user } = await verifyAuthentication(
+      const { user, credentialRegisteredAt } = await verifyAuthentication(
         body.response as unknown as AuthenticationResponseJSON,
         challenge
       );
       clearChallengeCookie(reply);
+
+      // A passkey registered *after* TOTP was enabled must not be able to
+      // satisfy the TOTP requirement on its own, otherwise a leaked session
+      // token could be traded for a permanent second-factor bypass.
+      const enrolledAfterTotp =
+        user.totpEnabled &&
+        !!user.totpVerifiedAt &&
+        credentialRegisteredAt.getTime() > user.totpVerifiedAt.getTime();
+
+      if (enrolledAfterTotp) {
+        await request.audit("mfa_bypass_blocked", { userId: user.id, action: "webauthn_after_totp" });
+        return reply.status(403).send({
+          error:
+            "This passkey was registered after multi-factor authentication was enabled and cannot be used to sign in on its own.",
+          code: "MFA_REQUIRED",
+        });
+      }
 
       const fingerprint = fingerprintFromRequest(request);
       await recordDevice(user.id, fingerprint, request.ip, request.headers["user-agent"]);
@@ -142,6 +179,12 @@ export default async function webauthnRoutes(app: FastifyInstance) {
         refreshToken: tokens.refreshToken,
       };
     } catch (err) {
+      if (err instanceof MfaRequiredError) {
+        return reply.status(403).send({
+          error: "Multi-factor authentication is required for this account.",
+          code: "MFA_REQUIRED",
+        });
+      }
       const message = err instanceof Error ? err.message : "Authentication failed";
       return reply.status(400).send({ error: message });
     }

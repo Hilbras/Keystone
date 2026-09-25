@@ -248,7 +248,9 @@ export default async function authRoutes(app: FastifyInstance) {
 
       if (result.data.flow === "login") {
         await request.audit("user_login", { userId: result.data.user.id, mfa: result.data.factor });
-        setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, result.data.flow);
+        // Scope the session cookie to the client the challenge was created for,
+        // exactly as the password step of /login does.
+        setSessionCookies(reply, result.data.accessToken, result.data.refreshToken, result.data.clientId);
       } else {
         await request.audit("user_token_login", { userId: result.data.user.id, mfa: result.data.factor });
       }

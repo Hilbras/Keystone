@@ -56,6 +56,17 @@ interface ClientCredentials {
   clientSecret?: string;
 }
 
+const MFA_ASSERTIONS = new Set<string>(["totp", "backup_code", "webauthn", "session"]);
+
+/**
+ * The MFA factor is copied out of a verified token into a column guarded by a
+ * CHECK constraint, so it must be validated at runtime rather than cast.
+ * An unrecognised value is treated as "no factor recorded", which fails closed.
+ */
+function asMfaAssertion(value: string | null | undefined): MfaAssertion | undefined {
+  return value && MFA_ASSERTIONS.has(value) ? (value as MfaAssertion) : undefined;
+}
+
 function extractClientCredentials(request: FastifyRequest, body: ClientCredentials): ClientCredentials {
   const authHeader = request.headers.authorization;
   if (authHeader?.toLowerCase().startsWith("basic ")) {
@@ -123,7 +134,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
 
       // The authorization code inherits the second factor of the session that
       // approved it, so the token exchange cannot launder an unverified login.
-      const sessionMfaFactor = request.authClaims?.mfa_factor;
+      const sessionMfaFactor = asMfaAssertion(request.authClaims?.mfa_factor);
 
       const stored = await storeAuthorizationCode({
         appId: application.id,
@@ -133,7 +144,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
         redirectUri: query.redirect_uri,
         scopes,
         nonce: query.nonce,
-        ...(sessionMfaFactor ? { mfaFactor: sessionMfaFactor as MfaAssertion } : {}),
+        ...(sessionMfaFactor ? { mfaFactor: sessionMfaFactor } : {}),
       });
 
       const url = new URL(query.redirect_uri);
@@ -215,6 +226,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
           grantType: "authorization_code",
         });
 
+        const storedMfaFactor = asMfaAssertion(record.mfaFactor);
         const fingerprint = fingerprintFromRequest(request);
         try {
           return await createTokenResponse(user, application, record.scopes, {
@@ -222,7 +234,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
             userAgent: request.headers["user-agent"],
             deviceFingerprint: fingerprint,
             nonce: record.nonce ?? undefined,
-            ...(record.mfaFactor ? { mfaFactor: record.mfaFactor as MfaAssertion } : {}),
+            ...(storedMfaFactor ? { mfaFactor: storedMfaFactor } : {}),
           });
         } catch (err) {
           if (err instanceof MfaRequiredError) {

@@ -15,6 +15,12 @@ User
 Your React login page
   │
   ├── email/password ──► POST /auth/login
+  │                          │
+  │                          ├── MFA enabled ──► 401 MFA_REQUIRED + challenge
+  │                          │                        │
+  │                          │                        └── POST /auth/mfa/verify ──► tokens
+  │                          │
+  │                          └── no MFA ─────────► session cookie
   │
   └── Google button ───► GET /auth/oauth/google
                               │
@@ -144,12 +150,37 @@ async function handleLogin(e) {
 After:
 
 ```tsx
-import { loginWithPassword, registerAccount, loginWithGoogle } from "./keystone-auth";
+import {
+  loginWithPassword,
+  completeMfaLogin,
+  MfaRequiredError,
+  registerAccount,
+  loginWithGoogle,
+} from "./keystone-auth";
+
+const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
 
 async function handleLogin(e) {
   e.preventDefault();
-  const { user } = await loginWithPassword(email, password);
+  setMfaChallenge(null);
+  try {
+    const { user } = await loginWithPassword(email, password);
+    setUser(user);
+  } catch (err) {
+    // The password was correct; this account just needs a second factor.
+    if (err instanceof MfaRequiredError) {
+      setMfaChallenge(err.challenge);
+      return;
+    }
+    setError(err.message);
+  }
+}
+
+async function handleMfaSubmit(e) {
+  e.preventDefault();
+  const { user } = await completeMfaLogin(mfaChallenge, code);
   setUser(user);
+  setMfaChallenge(null);
 }
 
 async function handleSignup(e) {
@@ -161,6 +192,26 @@ async function handleSignup(e) {
 // Google button just redirects:
 <button onClick={loginWithGoogle}>Login with Google</button>
 ```
+
+When `mfaChallenge` is set, render a code field instead of the password form:
+
+```tsx
+{mfaChallenge && (
+  <form onSubmit={handleMfaSubmit}>
+    <input
+      autoFocus
+      autoComplete="one-time-code"
+      inputMode="numeric"
+      value={code}
+      onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+    />
+    <button type="submit">Verify</button>
+  </form>
+)}
+```
+
+The challenge is single-use and expires, so render it only while the user is on
+the code step and send the user back to the password form on failure.
 
 See `examples/login-form-react/LoginPage.example.tsx` for a complete working page.
 

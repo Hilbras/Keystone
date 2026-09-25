@@ -5,6 +5,92 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-09-25
+
+### Security
+
+MFA was advisory in 1.7.x. A user with TOTP enabled could sign in with only a
+password, and when a code was supplied it was verified *after* the access token,
+refresh token, and session had already been created. 1.8.0 makes the second
+factor mandatory.
+
+- Password authentication now stops at `requires_mfa` for MFA-enabled accounts.
+  No access token, refresh token, or session row is created at that stage.
+- New `POST /auth/mfa/verify` completes the transition. The challenge is opaque,
+  stored only as a hash, short-lived, single-use, and bounded by an attempt
+  budget enforced in the database.
+- Token issuance is guarded at a single chokepoint. A token cannot be minted for
+  an MFA-enabled user without a recorded factor, so no login path bypasses MFA by
+  omission.
+- TOTP verification uses the user's own decrypted secret. Each time-step is
+  accepted exactly once, so a captured code is rejected even against a freshly
+  issued challenge.
+- Enabling MFA revokes every existing refresh token and session for the account.
+  Sessions record how MFA was satisfied, and refresh rotation refuses sessions
+  with no recorded factor.
+- Backup codes carry 80 bits of entropy, are stored as a keyed (peppered) hash,
+  expire after 90 days, and are consumed by a conditional update so concurrent
+  use has exactly one winner.
+- TOTP secrets are written with AES-256-GCM. Values written by earlier versions
+  used AES-256-CBC and remain readable.
+
+### Changed
+
+- `POST /auth/login` and `POST /auth/token-login` return `401` with
+  `code: "MFA_REQUIRED"` and a challenge when MFA is required. See
+  [MIGRATION-1.8.md](docs/MIGRATION-1.8.md).
+- The undocumented `totp_code` field on the login endpoints is removed and
+  ignored.
+- `POST /auth/totp/backup` now regenerates backup codes and requires a current
+  TOTP code. `POST /auth/totp/backup/verify` consumes a backup code.
+- `POST /auth/totp/verify` additionally reports `sessionsRevoked`.
+- WebAuthn assertions satisfy MFA on their own. Magic links refuse to downgrade a
+  TOTP-protected account, and SAML, enterprise OIDC, federation, and OAuth2
+  report a typed `mfa_required` error.
+- OAuth2 authorization codes carry the MFA factor of the session that approved
+  them, so the token exchange cannot launder an unverified login.
+- Access tokens for MFA sessions carry `mfa_verified`, `mfa_factor`, and `amr`.
+- Factor management requires step-up: `/auth/totp/enroll`, `/auth/totp/verify`,
+  `/auth/totp/backup`, `/auth/totp/disable`, and passkey registration for a
+  TOTP-protected account all require the account password in addition to the
+  session.
+- A passkey registered after TOTP was enabled is treated as a single factor and
+  cannot be used to sign in on its own.
+- Disabling TOTP deletes its backup codes.
+- Failed MFA factor attempts count toward the account lockout.
+- `SDK.authentication.login()` returns a discriminated union; `completeMfa()` is
+  new.
+
+### Fixed
+
+- `/auth/mfa/verify` wrote session cookies under a name derived from the login
+  flow instead of the client id, so MFA-completed sessions were not readable by
+  the auth plugin and every application on the cookie domain shared one name.
+- The MFA step no longer accepted accounts that are deactivated, under review,
+  or locked out, which the password step already refused.
+- Repeated password steps no longer cancel an MFA challenge created moments
+  earlier.
+- `MFA_CHALLENGE_TTL_SECONDS`, `MFA_MAX_ATTEMPTS`, and
+  `TOTP_BACKUP_CODE_TTL_SECONDS` are validated at startup and fall back to their
+  defaults instead of silently breaking every login.
+- The MFA factor copied out of a verified token into the authorization-code
+  table is validated against the column's check constraint.
+- SAML now reports `mfa_required` for MFA-protected accounts instead of
+  collapsing the failure into a generic validation error.
+
+### Added
+
+- `mfa_challenges` table, `MfaChallengeRepository`, and `MfaService`.
+- `MFA_CHALLENGE_TTL_SECONDS`, `MFA_MAX_ATTEMPTS`, and
+  `TOTP_BACKUP_CODE_TTL_SECONDS` configuration.
+- Audit events `mfa_challenge_created`, `mfa_challenge_failed`,
+  `mfa_challenge_expired`, `mfa_challenge_rejected`, `mfa_verified`,
+  `mfa_bypass_blocked`, and `mfa_backup_code_regenerated`.
+- Dedicated rate limits for MFA verification and every TOTP management endpoint.
+- MFA challenge step in the admin dashboard login form.
+- `docs/MIGRATION-1.8.md`.
+- MFA security regression suite (`src/tests/security/mfa.test.ts`).
+
 ## [1.7.0] - 2026-09-24
 
 ### Added

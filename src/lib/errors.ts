@@ -30,7 +30,7 @@ function errorMessage(error: unknown): string | undefined {
   return error instanceof Error ? error.message : undefined;
 }
 
-function isMfaRequiredError(error: unknown): boolean {
+export function isMfaRequiredError(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&

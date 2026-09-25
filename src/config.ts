@@ -10,6 +10,23 @@ function getEnv(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/**
+ * Read a positive integer setting. A malformed or non-positive value would
+ * otherwise silently break authentication (an MFA challenge budget of 0 makes
+ * every login impossible), so fall back to the default and warn.
+ */
+function positiveInt(name: string, fallback: string): number {
+  const raw = process.env[name] ?? fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    console.warn(
+      `[config] ${name} must be a positive integer (got ${JSON.stringify(raw)}); using ${fallback}`
+    );
+    return Number(fallback);
+  }
+  return parsed;
+}
+
 function requireEnvUnlessSetup(name: string): string {
   const value = process.env[name];
   if (!value && process.env.KEYSTONE_SETUP_MODE !== "true") {
@@ -108,9 +125,9 @@ export const config = {
   OAUTH_CODE_TTL_SECONDS: Number(getEnv("OAUTH_CODE_TTL_SECONDS", "60")),
   TOTP_ISSUER: getEnv("TOTP_ISSUER", "Hilbras"),
   TOTP_ENCRYPTION_KEY: getEnv("KEYSTONE_TOTP_ENCRYPTION_KEY"),
-  MFA_CHALLENGE_TTL_SECONDS: Number(getEnv("MFA_CHALLENGE_TTL_SECONDS", "300")),
-  MFA_MAX_ATTEMPTS: Number(getEnv("MFA_MAX_ATTEMPTS", "5")),
-  TOTP_BACKUP_CODE_TTL_SECONDS: Number(getEnv("TOTP_BACKUP_CODE_TTL_SECONDS", "7776000")),
+  MFA_CHALLENGE_TTL_SECONDS: positiveInt("MFA_CHALLENGE_TTL_SECONDS", "300"),
+  MFA_MAX_ATTEMPTS: positiveInt("MFA_MAX_ATTEMPTS", "5"),
+  TOTP_BACKUP_CODE_TTL_SECONDS: positiveInt("TOTP_BACKUP_CODE_TTL_SECONDS", "7776000"),
   EMAIL_PROVIDER: getEnv("EMAIL_PROVIDER", "none"),
   EMAIL_FROM: getEnv("EMAIL_FROM", "keystone@local.hilbras.ai"),
   SMTP_HOST: getEnv("SMTP_HOST"),

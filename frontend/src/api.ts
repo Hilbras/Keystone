@@ -83,6 +83,19 @@ export interface LoginInput {
   password: string;
 }
 
+/** Thrown when the password was accepted but a second factor is still required. */
+export class MfaRequiredError extends Error {
+  readonly challenge: string;
+  readonly expiresAt: string;
+
+  constructor(challenge: string, expiresAt: string) {
+    super("Multi-factor authentication required");
+    this.name = "MfaRequiredError";
+    this.challenge = challenge;
+    this.expiresAt = expiresAt;
+  }
+}
+
 export interface LoginTokenResponse {
   accessToken: string;
   user: {
@@ -143,6 +156,12 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
       return new Promise(() => {});
     }
     const body = await response.json().catch(() => ({}));
+    // A 401 carrying an MFA challenge is a normal continuation of the login
+    // flow, not an expired session: surface it so the caller can render the
+    // second-factor step instead of bouncing to the login screen.
+    if (response.status === 401 && body.code === "MFA_REQUIRED" && body.challenge) {
+      throw new MfaRequiredError(body.challenge, body.expiresAt);
+    }
     throw new Error(body.error || `Request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;
@@ -178,6 +197,11 @@ export const api = {
   // Token-based authentication and platform admin endpoints.
   loginToken: (input: LoginInput) =>
     fetchJson<LoginTokenResponse>("/auth/token-login", { method: "POST", body: JSON.stringify(input) }),
+  completeMfa: (input: { challenge: string; code: string; factor?: "totp" | "backup_code" }) =>
+    fetchJson<LoginTokenResponse & { factor: string }>("/auth/mfa/verify", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   getMe: () => fetchJson<{ user: unknown }>("/auth/me"),
   getUsers: () => fetchJson<{ users: unknown[] }>("/v1/admin/platform/users"),
   getOrganizations: () => fetchJson<{ organizations: unknown[] }>("/v1/admin/organizations"),

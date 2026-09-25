@@ -1,7 +1,7 @@
 import type { User } from "../../db/schema.js";
 import { LastOwnerInvariantError, type UserRepository, type IdentityRepository } from "../../repositories/types.js";
 import type { TokenSet } from "../tokens.js";
-import { createTokenSet } from "../tokens.js";
+import { createTokenSet, type MfaAssertion } from "../tokens.js";
 import { emit } from "../events/bus.js";
 import { getFederationAuthorizeUrl as getFederationAuthorizeUrlService, completeFederationLogin as completeFederationLoginService, type FederationApplicationContext } from "../federation.js";
 import { ok, err, type Result } from "../../lib/result.js";
@@ -272,8 +272,16 @@ export class IdentityDomainService {
     return ok(result);
   }
 
+  /**
+   * Issue a local token set on behalf of an already-verified factor.
+   *
+   * `mfaFactor` is required rather than optional: without it the token
+   * chokepoint rejects MFA-enabled users, and an omitted argument silently
+   * reintroduces the bypass this parameter exists to prevent.
+   */
   async issueLocalTokenSet(
     user: User,
+    mfaFactor: MfaAssertion,
     opts?: {
       appId?: string;
       orgId?: string;
@@ -281,6 +289,12 @@ export class IdentityDomainService {
       deviceFingerprint?: string;
     }
   ): Promise<TokenSet> {
-    return createTokenSet(user, undefined, undefined, opts, opts?.deviceFingerprint);
+    return createTokenSet(
+      user,
+      undefined,
+      undefined,
+      { ...opts, mfaFactor },
+      opts?.deviceFingerprint
+    );
   }
 }
