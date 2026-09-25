@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fastify, { type FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import swagger from "@fastify/swagger";
@@ -9,6 +10,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { initializeContainer } from "./di.js";
+import { getContainer } from "./container.js";
 import { redis } from "./services/redis.js";
 import { loadSigningKeys, getPublicJwks } from "./services/tokens.js";
 
@@ -99,7 +101,7 @@ export async function buildApp() {
       info: {
         title: "Hilbras Keystone API",
         description: "Identity platform API for Hilbras products and third-party apps.",
-        version: "1.0.0",
+        version: "1.9.0",
       },
       servers: [{ url: config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}` }],
       tags: [
@@ -157,7 +159,7 @@ export async function buildApp() {
     };
     await fetch(url, {
       method: method || "POST",
-      headers: { "Content-Type": "application/json", ...(headers || {}) },
+      headers: { "Content-Type": "application/json", ...headers },
       body: body ? JSON.stringify(body) : undefined,
     });
   });
@@ -244,6 +246,22 @@ export async function buildApp() {
   await app.register(setupRoutes, { prefix: "/setup" });
 
   app.setErrorHandler((error: unknown, request, reply) => {
+    const isZodLike = error instanceof ZodError || (
+      error &&
+      typeof error === "object" &&
+      ((error as { name?: unknown }).name === "ZodError" ||
+        ("issues" in error && Array.isArray((error as { issues?: unknown }).issues)))
+    );
+    if (isZodLike) {
+      const issues = error instanceof ZodError
+        ? error.issues
+        : (error as { issues: Array<{ path?: Array<string | number>; message?: string }> }).issues;
+      return reply.status(400).send({
+        error: "Invalid input",
+        details: issues.map((issue) => ({ path: issue.path ?? [], message: issue.message ?? "Invalid value" })),
+      });
+    }
+
     if (error && typeof error === "object" && "validation" in error) {
       const message = error instanceof Error ? error.message : String(error);
       return reply.status(400).send({ error: "Invalid input", details: message });
@@ -285,6 +303,15 @@ async function start() {
     app.log.info("JWT signing keys loaded");
   } catch (err) {
     app.log.error({ err }, "JWT signing key loading failed — token signing will not work");
+  }
+
+  // Adopt a pre-1.9 SCIM_BEARER_TOKEN / SCIM_ORG_ID pair into a per-organization
+  // connection so an upgrade does not break an existing identity provider.
+  try {
+    const { migrateLegacyScimEnv } = await import("./services/scimLegacyMigration.js");
+    await migrateLegacyScimEnv(getContainer().scimConnectionRepository);
+  } catch (err) {
+    app.log.warn({ err }, "Could not adopt a legacy SCIM configuration");
   }
 
   try {

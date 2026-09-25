@@ -7,6 +7,9 @@ import type {
   AuditRepository,
   IdentityRepository,
   PermissionRepository,
+  MfaChallengeRepository,
+  ScimConnectionRepository,
+  ScimGroupRepository,
 } from "./repositories/types.js";
 import type { ApiKeyRepository } from "./repositories/apiKey.js";
 import type { SamlConnectionRepository } from "./repositories/samlConnection.js";
@@ -23,6 +26,9 @@ export interface Container {
   applicationRepository: ApplicationRepository;
   auditRepository: AuditRepository;
   permissionRepository: PermissionRepository;
+  mfaChallengeRepository: MfaChallengeRepository;
+  scimConnectionRepository: ScimConnectionRepository;
+  scimGroupRepository: ScimGroupRepository;
   apiKeyRepository: ApiKeyRepository;
   samlConnectionRepository: SamlConnectionRepository;
   oidcConnectionRepository: OidcConnectionRepository;

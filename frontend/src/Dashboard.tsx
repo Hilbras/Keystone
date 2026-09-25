@@ -25,7 +25,7 @@ import {
   Layers,
   BarChart3,
 } from "lucide-react";
-import { api } from "./api.ts";
+import { api, type ScimConfig } from "./api.ts";
 import { Button } from "./components/ui/Button.tsx";
 import { Alert } from "./components/ui/Alert.tsx";
 import { LoadingState } from "./components/ui/LoadingState.tsx";
@@ -195,17 +195,20 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     navigate(`/dashboard/${encodeURIComponent(tab)}`);
   }, [navigate]);
 
-  const visibleTabs = useMemo(
-    () =>
-      TABS.filter((tab) => mode === "advanced" || tab.mode === "simple").map((tab) => ({
+  const visibleTabs = useMemo(() => {
+    const platformOnly = new Set(["users", "applications", "connect-project", "identity-providers", "roles", "keys", "security", "webhooks", "queue", "audit-logs", "plugins", "feature-flags", "billing", "metrics", "settings"]);
+    const isPlatformOwner = user?.role === "owner";
+    return TABS
+      .filter((tab) => mode === "advanced" || tab.mode === "simple")
+      .filter((tab) => isPlatformOwner || !platformOnly.has(tab.id))
+      .map((tab) => ({
         ...tab,
         label: t(`nav.${tab.id}`) !== `nav.${tab.id}` ? t(`nav.${tab.id}`) : tab.label,
         group: t(`group.${tab.group.toLowerCase().replace(/ /g, "-")}`) !== `group.${tab.group.toLowerCase().replace(/ /g, "-")}`
           ? t(`group.${tab.group.toLowerCase().replace(/ /g, "-")}`)
           : tab.group,
-      })),
-    [mode, t]
-  );
+      }));
+  }, [mode, t, user?.role]);
 
   // Keep tab in sync with URL hash (e.g. browser back/forward).
   useEffect(() => {
@@ -234,10 +237,10 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     const [health, config, queueStatus] = await Promise.all([
       api.getHealth(),
       api.getOpenIdConfig(),
-      api.getQueueStatus(),
+      user?.role === "owner" ? api.getQueueStatus() : Promise.resolve(null),
     ]);
     return { health, config, queueStatus };
-  }, [token]);
+  }, [token, user?.role]);
 
   // Tab data states
   const [users, setUsers] = useState<DataTabState<{ users: unknown[] }>>({ data: null, loading: false, error: null });
@@ -253,7 +256,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
   const [configProfiles, setConfigProfiles] = useState<DataTabState<{ profiles: ConfigurationProfile[] }>>({ data: null, loading: false, error: null });
   const [samlConnections, setSamlConnections] = useState<DataTabState<{ connections: SamlConnection[] }>>({ data: null, loading: false, error: null });
   const [oidcConnections, setOidcConnections] = useState<DataTabState<{ connections: OidcConnection[] }>>({ data: null, loading: false, error: null });
-  const [scimConfig, setScimConfig] = useState<DataTabState<{ enabled: boolean; baseUrl: string; orgId: string }>>({ data: null, loading: false, error: null });
+  const [scimConfig, setScimConfig] = useState<DataTabState<ScimConfig>>({ data: null, loading: false, error: null });
   const [workflows, setWorkflows] = useState<DataTabState<{ workflows: WorkflowItem[] }>>({ data: null, loading: false, error: null });
   const [workflowRuns, setWorkflowRuns] = useState<DataTabState<{ runs: WorkflowRun[] }>>({ data: null, loading: false, error: null });
   const [plans, setPlans] = useState<DataTabState<{ plans: Plan[] }>>({ data: null, loading: false, error: null });
@@ -296,7 +299,20 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     loadTab({ data: null, loading: false, error: null }, setOidcConnections, () => api.getOidcConnections(selectedOrgId));
     loadTab({ data: null, loading: false, error: null }, setScimConfig, () => api.getScimConfig(selectedOrgId));
   }, [selectedOrgId]);
-  const refreshWorkflows = useCallback(() => loadTab({ data: null, loading: false, error: null }, setWorkflows, api.getWorkflows), []);
+  const refreshWorkflows = useCallback(async () => {
+    let organizationId = selectedOrgId;
+    if (!organizationId) {
+      const data = await api.getOrganizations();
+      setOrganizations({ data, loading: false, error: null });
+      organizationId = (data.organizations as Array<{ id: string }>)[0]?.id;
+      if (organizationId) setSelectedOrgId(organizationId);
+    }
+    if (!organizationId) {
+      setWorkflows({ data: null, loading: false, error: null });
+      return;
+    }
+    loadTab({ data: null, loading: false, error: null }, setWorkflows, () => api.getWorkflows(organizationId as string));
+  }, [selectedOrgId]);
   const refreshBilling = useCallback(() => {
     loadTab({ data: null, loading: false, error: null }, setPlans, api.getPlans);
     if (selectedOrgId) {
@@ -321,7 +337,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     await api.setFeatureFlag(key, enabled, description);
     refreshFeatureFlags();
   }, [refreshFeatureFlags]);
-  const handleCreateSaml = useCallback(async (input: { name: string; spEntityId: string; spAcsUrl: string }) => {
+  const handleCreateSaml = useCallback(async (input: { name: string; spEntityId: string; spAcsUrl: string; idpEntityId: string; idpSsoUrl: string; idpCertificate: string }) => {
     if (!selectedOrgId) return;
     await api.createSamlConnection(selectedOrgId, input);
     refreshEnterpriseSso();
@@ -341,10 +357,42 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     await api.deleteOidcConnection(selectedOrgId, id);
     refreshEnterpriseSso();
   }, [selectedOrgId, refreshEnterpriseSso]);
+
+  // The SCIM bearer token is returned exactly once; hand it to the panel so it
+  // can be shown once and never requested again.
+  const handleCreateScimConnection = useCallback(
+    async (input: { name: string; expiresInDays?: number }) => {
+      if (!selectedOrgId) return null;
+      const created = await api.createScimConnection(selectedOrgId, input);
+      refreshEnterpriseSso();
+      return created.token;
+    },
+    [selectedOrgId, refreshEnterpriseSso]
+  );
+
+  const handleRotateScimConnection = useCallback(
+    async (connectionId: string) => {
+      if (!selectedOrgId) return null;
+      const rotated = await api.rotateScimConnection(selectedOrgId, connectionId);
+      refreshEnterpriseSso();
+      return rotated.token;
+    },
+    [selectedOrgId, refreshEnterpriseSso]
+  );
+
+  const handleRevokeScimConnection = useCallback(
+    async (connectionId: string) => {
+      if (!selectedOrgId) return;
+      await api.revokeScimConnection(selectedOrgId, connectionId);
+      refreshEnterpriseSso();
+    },
+    [selectedOrgId, refreshEnterpriseSso]
+  );
   const handleCreateWorkflow = useCallback(async (input: { name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> } }) => {
-    await api.createWorkflow(input);
+    if (!selectedOrgId) return;
+    await api.createWorkflow(selectedOrgId, input);
     refreshWorkflows();
-  }, [refreshWorkflows]);
+  }, [selectedOrgId, refreshWorkflows]);
   const handleDeleteWorkflow = useCallback(async (id: string) => {
     await api.deleteWorkflow(id);
     if (selectedWorkflowId === id) setSelectedWorkflowId(null);
@@ -410,14 +458,14 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
         refreshEnterpriseSso();
         break;
       case "workflows":
-        loadTab(workflows, setWorkflows, api.getWorkflows);
+        refreshWorkflows();
         break;
       case "billing":
         refreshBilling();
         break;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, token]);
+  }, [activeTab, token, refreshWorkflows, selectedOrgId]);
 
   if (!token) {
     return <LoginForm onLogin={() => window.location.reload()} />;
@@ -600,6 +648,9 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
                 onDeleteSaml={handleDeleteSaml}
                 onCreateOidc={handleCreateOidc}
                 onDeleteOidc={handleDeleteOidc}
+                onCreateScimConnection={handleCreateScimConnection}
+                onRotateScimConnection={handleRotateScimConnection}
+                onRevokeScimConnection={handleRevokeScimConnection}
               />
             </>
           </Suspense>

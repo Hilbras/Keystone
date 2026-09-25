@@ -80,6 +80,10 @@ export default async function federationRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Unsupported federation provider" });
     }
     const query = request.query as { client_id?: string; redirect_uri?: string };
+    if (query.client_id) {
+      const application = await findApplicationByClientId(query.client_id);
+      if (!application) return reply.status(400).send({ error: "Unknown application" });
+    }
     const state = randomState();
     setFederationState(reply, state, query.client_id);
 
@@ -112,9 +116,23 @@ export default async function federationRoutes(app: FastifyInstance) {
     clearFederationCookies(reply);
 
     try {
-      const result = await sdk.identity.completeFederationLogin(provider, code, callbackRedirectUri(provider));
-      if (!result.success) return sendResultError(reply, result);
       const app = clientId ? await findApplicationByClientId(clientId) : undefined;
+      if (clientId && !app) {
+        return reply.redirect(`${redirectTargetUrl(clientId)}?error=${encodeURIComponent("Unknown application")}`);
+      }
+      const result = await sdk.identity.completeFederationLogin(
+        provider,
+        code,
+        callbackRedirectUri(provider),
+        app ? { id: app.id, orgId: app.orgId, clientId: app.clientId } : undefined
+      );
+      if (!result.success) return sendResultError(reply, result);
+      request.state.auditUserId = result.data.user.id;
+      if (app) {
+        request.state.app = app;
+        request.state.org = await request.server.container.organizationRepository.findById(app.orgId);
+      }
+      await request.audit("federation_login", { userId: result.data.user.id, appId: app?.id, orgId: app?.orgId });
       setSessionCookies(reply, result.data.tokens.accessToken, result.data.tokens.refreshToken, app?.clientId);
       return reply.redirect(redirectTargetUrl(clientId, app));
     } catch (err) {
@@ -137,6 +155,7 @@ export default async function federationRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply) => {
       const body = LinkIdentitySchema.parse(request.body);
       const result = await sdk.identity.linkUserIdentity(
+        request.user!.id,
         request.user!.id,
         body.providerId,
         body.providerType,

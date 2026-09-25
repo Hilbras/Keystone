@@ -18,7 +18,7 @@ interface UsersPanelProps {
 export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
   const isSimple = mode === "simple";
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editRole, setEditRole] = useState("");
+  const [editRole, setEditRole] = useState<"owner" | "user">("user");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -30,7 +30,7 @@ export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
 
   const startEdit = (user: Record<string, unknown>) => {
     setEditingId(String(user.id));
-    setEditRole(String(user.role || "member"));
+    setEditRole(user.role === "owner" ? "owner" : "user");
     reset();
   };
 
@@ -40,7 +40,7 @@ export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
     reset();
     setBusy(true);
     try {
-      await api.updateUser(editingId, { role: editRole });
+      await api.updatePlatformRole(editingId, editRole);
       setSuccess("User role updated");
       setEditingId(null);
       onRefresh();
@@ -80,7 +80,7 @@ export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
 
       <DataTable
         state={state}
-        columns={isSimple ? ["email", "name", "role"] : ["id", "email", "username", "name", "role", "emailVerified", "createdAt"]}
+        columns={isSimple ? ["email", "name", "role", "isActive"] : ["id", "email", "username", "name", "role", "isActive", "emailVerified", "createdAt"]}
         rows={state.data?.users ?? []}
         emptyMessage="No users found."
         renderRowActions={
@@ -89,10 +89,13 @@ export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
             : (row) =>
                 editingId === String(row.id) ? (
                   <form onSubmit={handleUpdate} className="flex items-center gap-2">
-                    <Select value={editRole} onChange={(e) => setEditRole(e.target.value)} className="text-[12px] py-1">
-                      <option value="owner">owner</option>
-                      <option value="admin">admin</option>
-                      <option value="member">member</option>
+                    <Select
+                      value={editRole}
+                      onChange={(e) => setEditRole(e.target.value === "owner" ? "owner" : "user")}
+                      className="text-[12px] py-1"
+                    >
+                      <option value="owner">platform owner</option>
+                      <option value="user">platform user</option>
                     </Select>
                     <Button type="submit" size="sm" isLoading={busy}>
                       <Save className="w-3 h-3" />
@@ -107,9 +110,9 @@ export function UsersPanel({ state, onRefresh, mode }: UsersPanelProps) {
                       <Pencil className="w-3 h-3 mr-1" />
                       Role
                     </Button>
-                    <Button size="sm" variant="danger" onClick={() => handleDeactivate(String(row.id))} disabled={busy}>
+                    <Button size="sm" variant="danger" onClick={() => handleDeactivate(String(row.id))} disabled={busy || row.isActive === false}>
                       <Trash2 className="w-3 h-3 mr-1" />
-                      Deactivate
+                      {row.isActive === false ? "Deactivated" : "Deactivate"}
                     </Button>
                   </div>
                 )

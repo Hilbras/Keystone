@@ -2,6 +2,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { config, zitadelBaseUrl } from "../../config.js";
 import type { IdentityConnector, ExternalIdentity, AuthorizeUrlOptions, ConnectorConfig } from "./types.js";
 import { normalizePayload } from "./oidc.js";
+import { customFetch, fetchSsoEndpoint, safeJwksFetch } from "../ssoEndpointPolicy.js";
 
 export class ZitadelConnector implements IdentityConnector {
   id = "zitadel";
@@ -38,7 +39,7 @@ export class ZitadelConnector implements IdentityConnector {
       redirect_uri: redirectUri,
     });
 
-    const res = await fetch(`${zitadelBaseUrl()}/oauth/v2/token`, {
+    const res = await fetchSsoEndpoint(`${zitadelBaseUrl()}/oauth/v2/token`, "tokenEndpoint", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString(),
@@ -55,7 +56,7 @@ export class ZitadelConnector implements IdentityConnector {
 
   async verifyToken(token: string): Promise<ExternalIdentity> {
     const jwksUrl = await this.getJwksUrl();
-    const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+    const JWKS = createRemoteJWKSet(new URL(jwksUrl), { [customFetch]: safeJwksFetch });
     const issuer = config.ZITADEL_DOMAIN!.startsWith("http")
       ? config.ZITADEL_DOMAIN!
       : `https://${config.ZITADEL_DOMAIN!}`;
@@ -68,7 +69,7 @@ export class ZitadelConnector implements IdentityConnector {
 
   private async getJwksUrl(): Promise<string> {
     if (this.cachedJwksUrl) return this.cachedJwksUrl;
-    const res = await fetch(`${zitadelBaseUrl()}/.well-known/openid-configuration`);
+    const res = await fetchSsoEndpoint(`${zitadelBaseUrl()}/.well-known/openid-configuration`, "issuer");
     if (!res.ok) throw new Error(`Zitadel discovery failed: ${res.status}`);
     const discovery = (await res.json()) as Record<string, unknown>;
     this.cachedJwksUrl = (discovery.jwks_uri as string) || `${zitadelBaseUrl()}/oauth/v2/keys`;

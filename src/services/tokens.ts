@@ -6,16 +6,15 @@ import {
   jwtVerify,
   decodeProtectedHeader,
   exportJWK,
-  type JWTPayload,
-  type KeyLike,
 } from "jose";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   refreshTokens,
   users,
+  applications,
+  orgMemberships,
   type User,
-  type RefreshToken,
   type Application,
 } from "../db/schema.js";
 import { config } from "../config.js";
@@ -77,14 +76,41 @@ function issuer(): string {
   return process.env.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
 }
 
+/**
+ * Authentication methods that can satisfy the MFA requirement for a user who
+ * has TOTP enabled. `session` is only valid when rotating a refresh token that
+ * was itself created after a successful second factor.
+ */
+export type MfaAssertion = "totp" | "backup_code" | "webauthn" | "session";
+
+/**
+ * Raised when a token is requested for a user with MFA enabled but the caller
+ * could not prove a second factor was verified. Thrown from the single
+ * issuance chokepoint so no login path can bypass MFA by omission.
+ */
+export class MfaRequiredError extends Error {
+  readonly code = "MFA_REQUIRED" as const;
+  readonly userId: string;
+
+  constructor(userId: string) {
+    super("Multi-factor authentication is required before a token can be issued");
+    this.name = "MfaRequiredError";
+    this.userId = userId;
+  }
+}
+
 export interface AccessTokenOptions {
   appId?: string;
   orgId?: string;
   clientId?: string;
   deviceFingerprint?: string;
+  /** Proof that the MFA requirement for this user was satisfied. */
+  mfaFactor?: MfaAssertion;
 }
 
 export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Promise<string> {
+  if (!user.isActive) throw new Error("Cannot issue a token for a deactivated account");
+  if (user.totpEnabled && !opts.mfaFactor) throw new MfaRequiredError(user.id);
   if (!activeKey) throw new Error("JWT signing keys not loaded");
   const claims: TokenClaims = {
     sub: user.id,
@@ -92,13 +118,18 @@ export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Pr
     username: user.username,
     name: user.name ?? undefined,
     plan: user.plan,
-    role: user.role,
+    role: user.role === "owner" ? "owner" : "user",
     provider: user.provider,
   };
   if (opts.orgId) claims.org_id = opts.orgId;
   if (opts.appId) claims.app_id = opts.appId;
   if (opts.clientId) claims.client_id = opts.clientId;
   if (opts.deviceFingerprint) claims.device_fingerprint = opts.deviceFingerprint;
+  if (opts.mfaFactor) {
+    claims.amr = [user.provider, opts.mfaFactor];
+    claims.mfa_factor = opts.mfaFactor;
+    claims.mfa_verified = true;
+  }
   return new SignJWT(claims as unknown as Record<string, unknown>)
     .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: activeKey.keyId })
     .setIssuedAt()
@@ -167,6 +198,7 @@ export interface TokenSet {
   refreshToken: string;
   refreshTokenHash: string;
   expiresAt: Date;
+  userId: string;
 }
 
 export async function createTokenSet(
@@ -189,6 +221,7 @@ export async function createTokenSet(
     ipAddress: ip ?? null,
     userAgent: userAgent ?? null,
     deviceFingerprint: deviceFingerprint ?? null,
+    mfaFactor: opts.mfaFactor ?? null,
   }).returning();
 
   try {
@@ -205,7 +238,7 @@ export async function createTokenSet(
     // Session tracking is best-effort; token creation must not fail because of it.
   }
 
-  return { accessToken, refreshToken, refreshTokenHash, expiresAt };
+  return { accessToken, refreshToken, refreshTokenHash, expiresAt, userId: user.id };
 }
 
 export async function verifyAccessToken(token: string): Promise<TokenClaims> {
@@ -229,7 +262,9 @@ export async function verifyAccessToken(token: string): Promise<TokenClaims> {
 export async function rotateRefreshToken(
   token: string,
   ip?: string,
-  userAgent?: string
+  userAgent?: string,
+  clientId?: string,
+  expectedAppId?: string
 ): Promise<TokenSet | null> {
   const hash = hashToken(token);
   const now = new Date();
@@ -245,29 +280,69 @@ export async function rotateRefreshToken(
       )
     )
     .limit(1);
-
   if (!existing) return null;
 
-  // Revoke old token immediately.
-  await db
+  const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
+  if (!user?.isActive || user.accountReviewRequired) return null;
+
+  // A session may only keep rotating while it still represents an MFA-verified
+  // login. Sessions created before MFA was enabled, or without a recorded
+  // factor, are refused rather than silently upgraded.
+  if (user.totpEnabled && !existing.mfaFactor) return null;
+
+  let appId: string | undefined;
+  let orgId: string | undefined;
+  if (existing.appId) {
+    if (expectedAppId && expectedAppId !== existing.appId) return null;
+    const [application] = await db
+      .select({ id: applications.id, orgId: applications.orgId, clientId: applications.clientId })
+      .from(applications)
+      .where(and(eq(applications.id, existing.appId), eq(applications.isActive, true)))
+      .limit(1);
+    if (!application || !clientId || application.clientId !== clientId) return null;
+
+    const [membership] = await db
+      .select({ id: orgMemberships.id })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, user.id)))
+      .limit(1);
+    if (!membership) return null;
+    appId = application.id;
+    orgId = application.orgId;
+  } else if (clientId || expectedAppId) {
+    return null;
+  }
+
+  // Claim only after all client, application, membership, and account checks
+  // pass. The conditional update makes concurrent rotations single-use.
+  const [claimed] = await db
     .update(refreshTokens)
     .set({ revokedAt: now })
-    .where(eq(refreshTokens.id, existing.id));
-
-  const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
-  if (!user) return null;
+    .where(
+      and(
+        eq(refreshTokens.id, existing.id),
+        eq(refreshTokens.tokenHash, hash),
+        gt(refreshTokens.expiresAt, now),
+        isNull(refreshTokens.revokedAt)
+      )
+    )
+    .returning();
+  if (!claimed) return null;
 
   return createTokenSet(
     user,
     ip,
     userAgent,
     {
-      appId: existing.appId ?? undefined,
-      orgId: undefined,
-      clientId: undefined,
-      deviceFingerprint: existing.deviceFingerprint ?? undefined,
+      appId,
+      orgId,
+      clientId,
+      deviceFingerprint: claimed.deviceFingerprint ?? undefined,
+      ...(claimed.mfaFactor
+        ? { mfaFactor: claimed.mfaFactor as MfaAssertion }
+        : {}),
     },
-    existing.deviceFingerprint ?? undefined
+    claimed.deviceFingerprint ?? undefined
   );
 }
 

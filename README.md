@@ -1,5 +1,7 @@
 # Hilbras Keystone
 
+**Current version: `1.7.0`**
+
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
 Keystone is a **standalone identity platform**, not a wrapper around another identity system. It authenticates users, issues signed tokens, enforces authorization, audits every security decision, and federates identities from any OIDC provider.
@@ -9,16 +11,46 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 ## What Keystone becomes
 
 - **Identity Provider (IdP)** — OIDC/OAuth2 provider with JWKS discovery.
-- **Authentication Service** — email/password, social login, magic links, WebAuthn/Passkeys, TOTP, SMS OTP.
+- **Authentication Service** — email/password with mandatory MFA enforcement, social login, magic links, WebAuthn/Passkeys, TOTP, SMS OTP.
 - **Authorization Engine** — RBAC/ABAC permissions with `/v1/authz/check`.
 - **Token Authority** — short-lived JWT access tokens, rotating refresh tokens, opaque API keys.
 - **Machine Identity Manager** — scoped, rotatable, auditable service credentials.
 - **Federation Broker** — delegate login to Google, GitHub, Azure, Okta, Keycloak, Zitadel, or any OIDC provider and issue Keystone tokens.
 - **Enterprise SSO** — SAML 2.0 and OIDC enterprise connectors with SCIM user provisioning.
 - **Audit & Compliance** — immutable audit log, event bus, webhooks, and anomaly detection.
-- **Workflow Platform** — configurable post-auth workflows (assign roles, create orgs, send email, fire webhooks).
+- **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v1.7.0
+
+- **Authorization boundary hardening** — platform roles (`owner`/`user`) and organization roles (`owner`/`admin`/`member`) are now separate namespaces.
+- **Dedicated platform-role API** — platform role changes use `PATCH /v1/admin/platform/users/:userId/role` and require a platform owner.
+- **Tenant-safe workflows** — organization workflows can no longer assign global roles or add cross-organization memberships.
+- **Secret-safe user responses** — administrative and organization user responses use a redacted public projection.
+- **Authorization auditing** — role, membership, permission, and denied-authorization events include actor, target, organization, and transition metadata.
+
+> **Migration:** organization user PATCH/DELETE endpoints no longer mutate global accounts. Use the platform user administration endpoint for account-wide changes and organization member endpoints for membership roles.
+
+## What's new in v1.6.0
+
+- **Frontend overhaul** — React 19, Vite 8, Tailwind 4 (config migrated from JS to CSS `@theme` directive), TypeScript 7. Removed autoprefixer, postcss, tailwindcss-animate in favor of Tailwind 4 built-in features.
+
+## What's new in v1.5.0
+
+- **Auth & infrastructure upgrades** — jose 6, ioredis 6, bullmq 6, @simplewebauthn/server 14, nodemailer 10. Updated KeyLike→CryptoKey for jose 6 and AuthenticatorTransportFuture→AuthenticatorTransport for simplewebauthn 14.
+
+## What's new in v1.4.0
+
+- **Fastify ecosystem upgrades** — fastify-plugin 6, @fastify/cookie 11, @fastify/cors 11, @fastify/static 10, @fastify/swagger-ui 6. All plugins updated to latest major versions with no code changes required.
+
+## What's new in v1.3.0
+
+- **Core tooling upgrades** — TypeScript 7, Zod 4, Drizzle ORM 0.45, Commander 15, Dotenv 18. Updated all `z.record()` calls for Zod 4 compatibility.
+
+## What's new in v1.2.0
+
+- **Dependency updates** — All root and frontend packages updated to latest safe patch/minor versions (fastify, argon2, otpauth, OpenTelemetry, autoprefixer, postcss, lucide-react, Playwright).
 
 ## What's new in v1.0.0
 
@@ -524,11 +556,13 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 | GET | `/v1/admin/organizations/:id` | Organization details |
 | POST/GET | `/v1/admin/organizations/:id/applications` | Create / list apps |
 | PATCH | `/v1/admin/organizations/:id/applications/:appId` | Update app |
-| POST/GET | `/v1/admin/organizations/:id/invites` | Invite / list invites |
-| GET | `/v1/admin/organizations/:id/members` | List members |
-| PATCH/DELETE | `/v1/admin/organizations/:id/members/:userId` | Update / remove member |
-| GET | `/v1/admin/organizations/:id/users` | List users in org |
-| GET/PATCH/DELETE | `/v1/admin/organizations/:id/users/:userId` | Manage user |
+| POST | `/v1/admin/organizations/:id/invites` | Invite a member with an organization role |
+| GET | `/v1/admin/organizations/:id/members` | List redacted organization members |
+| PATCH/DELETE | `/v1/admin/organizations/:id/members/:userId` | Update/remove an organization membership role |
+| GET | `/v1/admin/organizations/:id/users` | List redacted users in the organization |
+| GET | `/v1/admin/organizations/:id/users/:userId` | Read a redacted organization user |
+| PATCH | `/v1/admin/platform/users/:userId` | Update non-role platform user fields (**owner only**) |
+| PATCH | `/v1/admin/platform/users/:userId/role` | Change a platform role (`owner`/`user`, **owner only**) |
 | GET | `/v1/admin/permissions` | **Owner only** — list all permissions |
 | GET/POST/DELETE | `/v1/admin/roles/:role/permissions` | **Owner only** — manage role permissions |
 | GET/DELETE | `/v1/admin/organizations/:id/api-keys` | Org-scoped API keys |
@@ -561,24 +595,38 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 
 ### SCIM Provisioning
 
+Every request is authorized by a per-organization SCIM connection and scoped to
+that organization. Cross-tenant targets return `404`.
+
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/scim/v2/Users` | List all users (SCIM) |
-| GET | `/scim/v2/Users/:userId` | Get user by ID (SCIM) |
-| POST | `/scim/v2/Users` | Create user (SCIM) |
-| PUT | `/scim/v2/Users/:userId` | Update user (SCIM) |
-| DELETE | `/scim/v2/Users/:userId` | Delete user (SCIM) |
-| GET | `/scim/v2/Groups` | List groups (SCIM) |
-| GET | `/scim/v2/Groups/:groupId` | Get group by ID (SCIM) |
+| GET | `/scim/v2/Users` | List users (filter, pagination) |
+| GET | `/scim/v2/Users/:userId` | Get user by ID |
+| POST | `/scim/v2/Users` | Provision or update a user |
+| PUT | `/scim/v2/Users/:userId` | Replace user |
+| PATCH | `/scim/v2/Users/:userId` | Partial update |
+| DELETE | `/scim/v2/Users/:userId` | Deprovision user |
+| POST | `/scim/v2/Users/.search` | Search users |
+| GET | `/scim/v2/Groups` | List groups (filter) |
+| GET | `/scim/v2/Groups/:groupId` | Get group by ID |
+| POST/PUT/PATCH/DELETE | `/scim/v2/Groups/:groupId` | Manage groups |
+| GET/POST | `/scim/v2/Groups/:groupId/members` | Manage group members |
+| GET | `/scim/v2/ServiceProviderConfig` | Supported features |
+
+Bearer tokens are created, rotated, and revoked per organization under
+`/v1/admin/organizations/:id/scim-connections` (owner-only). The token is shown
+once and stored only as a digest.
 
 ### MFA & Security
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/totp/enroll` | Enroll TOTP MFA |
-| POST | `/totp/verify` | Verify TOTP code |
+| POST | `/mfa/verify` | Complete a login MFA challenge and receive tokens |
+| POST | `/totp/enroll` | Begin TOTP enrollment |
+| POST | `/totp/verify` | Confirm enrollment; revokes existing sessions |
 | POST | `/totp/disable` | Disable TOTP MFA |
-| POST | `/totp/backup` | Verify backup code |
+| POST | `/totp/backup` | Regenerate backup codes (requires a TOTP code) |
+| POST | `/totp/backup/verify` | Consume a backup code |
 | POST | `/sms-otp/send` | Send SMS OTP |
 | POST | `/sms-otp/verify` | Verify SMS OTP |
 | POST | `/magic-link/send` | Send magic link |
@@ -601,11 +649,11 @@ If Keystone feels slow or uses a lot of memory during development, see [`docs/PE
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/workflows` | List workflows (requires orgId) |
-| POST | `/workflows` | Create workflow |
-| GET | `/workflows/:id` | Get workflow |
-| DELETE | `/workflows/:id` | Delete workflow |
-| GET | `/workflows/:id/runs` | List workflow runs |
+| GET | `/v1/admin/workflows?orgId=...` | List organization-scoped workflows |
+| POST | `/v1/admin/workflows` | Create a workflow with safe steps and an `orgId` |
+| GET | `/v1/admin/workflows/:id` | Get a workflow |
+| DELETE | `/v1/admin/workflows/:id` | Delete a workflow |
+| GET | `/v1/admin/workflows/:id/runs` | List workflow runs |
 
 ### Discovery
 
@@ -637,7 +685,7 @@ npx keystone migrate
 # Validate required configuration
 npx keystone config:validate
 
-# Create the first platform owner
+# Create a local platform user (use --role owner for a platform owner)
 npx keystone user:create --email admin@example.com --password 'Str0ngP@ss!' --role owner
 
 # Create an organization from the command line
@@ -655,8 +703,10 @@ npx keystone org:create --name "Acme" --owner-email admin@example.com
 - Every authentication decision is audited.
 - Cookies use `HttpOnly`, `Secure`, and `SameSite`.
 - OAuth2 public clients must use PKCE.
-- All admin endpoints require owner or role-based authorization.
-- All workflow operations require organization membership.
+- Platform roles (`owner`, `user`) are never interchangeable with organization roles (`owner`, `admin`, `member`).
+- Only platform owners can change platform roles; organization member APIs cannot mutate global users.
+- User responses use a redacted public projection and never include password hashes, TOTP secrets, or sensitive metadata.
+- All workflow operations require organization membership and reject authorization-mutating tenant steps.
 - XML output (SAML metadata) is escaped to prevent injection.
 - Rate limit nonces use cryptographically secure random bytes.
 - Internal implementation details are not exposed in API responses.

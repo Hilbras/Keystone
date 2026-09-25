@@ -40,7 +40,7 @@ interface WorkflowPanelProps {
 }
 
 const TRIGGERS = ["user_registered", "user_login", "organization_created"];
-const STEP_TYPES = ["assign_role", "create_organization", "send_email", "webhook"];
+const STEP_TYPES = ["send_welcome_email", "send_email"];
 
 export function WorkflowPanel({
   workflowsState,
@@ -54,7 +54,7 @@ export function WorkflowPanel({
 }: WorkflowPanelProps) {
   const [newName, setNewName] = useState("");
   const [newTrigger, setNewTrigger] = useState(TRIGGERS[0]);
-  const [newSteps, setNewSteps] = useState<Array<{ type: string; name?: string }>>([{ type: "assign_role", name: "assign_default_role" }]);
+  const [newSteps, setNewSteps] = useState<Array<{ type: string; name?: string }>>([{ type: "send_welcome_email", name: "send_welcome" }]);
   const [expandedRuns, setExpandedRuns] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const { addToast } = useToastContext();

@@ -10,6 +10,20 @@ export interface AuditInput extends EventPayload {
   event: AuditEvent;
 }
 
+export async function persistAudit(input: AuditInput): Promise<void> {
+  const { userId, orgId, appId, requestId, ip, userAgent, metadata } = input;
+  await db.insert(auditLog).values({
+    userId: userId ?? null,
+    orgId: orgId ?? null,
+    appId: appId ?? null,
+    requestId: requestId ?? null,
+    event: `${input.event}:v1`,
+    ipAddress: ip ?? null,
+    userAgent: userAgent ?? null,
+    metadata: { ...metadata, eventVersion: 1 },
+  });
+}
+
 export async function audit(input: AuditInput): Promise<void> {
   await emit({ type: input.event, version: 1, payload: input });
 }

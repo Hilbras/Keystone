@@ -6,11 +6,6 @@ const ARGON2_MEMORY_COST = 65536;
 const ARGON2_TIME_COST = 3;
 const ARGON2_PARALLELISM = 4;
 
-// Legacy scrypt parameters used by early Keystone deployments.
-const SCRYPT_N = 16384;
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-
 function scryptPromise(
   password: string,
   salt: Buffer,

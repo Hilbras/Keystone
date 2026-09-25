@@ -7,6 +7,12 @@ interface RateLimitPluginOptions {
   keyPrefix: string;
   maxAttempts: number;
   windowSeconds: number;
+  /**
+   * Override how the caller is identified. Used where the meaningful principal
+   * is not an IP address — for example SCIM, which is limited per credential so
+   * one noisy identity provider cannot exhaust the budget of every other tenant.
+   */
+  keyFrom?: (request: FastifyRequest) => string;
 }
 
 export interface GlobalRateLimitOptions {
@@ -79,9 +85,21 @@ function clientIdentifier(request: FastifyRequest): string {
   );
 }
 
+/**
+ * The resolved client address. Exposed so a route that must run before the
+ * normal limiter (because it emits audit events on failure) can still budget
+ * itself rather than being unbounded.
+ */
+export function clientAddress(request: FastifyRequest): string {
+  return clientIdentifier(request);
+}
+
+/** Raw sliding-window check, for the same pre-limiter case. */
+export { isAllowed };
+
 export function rateLimit(options: RateLimitPluginOptions) {
   return async function preHandler(request: FastifyRequest, reply: FastifyReply) {
-    const id = clientIdentifier(request);
+    const id = options.keyFrom ? options.keyFrom(request) : clientIdentifier(request);
     const key = `${options.keyPrefix}:${id}:${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
     const allowed = await isAllowed(key, options.maxAttempts, options.windowSeconds);
     if (!allowed) {

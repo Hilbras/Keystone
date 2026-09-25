@@ -1,12 +1,12 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { toPublicUser } from "../types.js";
+import { toSelfUser } from "../types.js";
 
 const UpdateProfileSchema = z.object({
   name: z.string().max(255).optional(),
   avatarUrl: z.string().url().max(2048).nullable().optional(),
   phoneNumber: z.string().max(32).nullable().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export default async function profileRoutes(app: FastifyInstance) {
@@ -17,7 +17,7 @@ export default async function profileRoutes(app: FastifyInstance) {
     const user = await app.container.userRepository.findById(userId);
     if (!user) return reply.status(404).send({ error: "User not found" });
 
-    return { user: toPublicUser(user) };
+    return { user: toSelfUser(user) };
   });
 
   app.patch("/profile", { preHandler: [app.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -39,6 +39,6 @@ export default async function profileRoutes(app: FastifyInstance) {
     if (!updated) return reply.status(404).send({ error: "User not found" });
 
     await request.audit("profile_updated", { userId });
-    return { user: toPublicUser(updated) };
+    return { user: toSelfUser(updated) };
   });
 }

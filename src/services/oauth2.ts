@@ -1,16 +1,16 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull, inArray } from "drizzle-orm";
+import { eq, and, gt, isNull, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   oauth2AuthorizationCodes,
   oauth2Consents,
   applications,
-  users,
+  orgMemberships,
   type User,
   type Application,
 } from "../db/schema.js";
 import { config } from "../config.js";
-import { createTokenSet, createIdToken, type AccessTokenOptions } from "./tokens.js";
+import { createTokenSet, createIdToken, type AccessTokenOptions, type MfaAssertion } from "./tokens.js";
 
 export interface AuthorizationCodeInput {
   appId: string;
@@ -20,6 +20,7 @@ export interface AuthorizationCodeInput {
   redirectUri?: string;
   scopes?: string[];
   nonce?: string;
+  mfaFactor?: MfaAssertion;
 }
 
 export function generateAuthorizationCode(): { code: string; codeHash: string } {
@@ -43,6 +44,7 @@ export async function storeAuthorizationCode(input: AuthorizationCodeInput) {
       redirectUri: input.redirectUri ?? null,
       scopes: input.scopes ?? [],
       nonce: input.nonce ?? null,
+      mfaFactor: input.mfaFactor ?? null,
       expiresAt,
     })
     .returning();
@@ -58,29 +60,23 @@ export async function consumeAuthorizationCode(
   const codeHash = crypto.createHash("sha256").update(code).digest("hex");
   const now = new Date();
 
-  const [record] = await db
-    .select()
-    .from(oauth2AuthorizationCodes)
-    .where(
-      and(
-        eq(oauth2AuthorizationCodes.codeHash, codeHash),
-        eq(oauth2AuthorizationCodes.appId, appId),
-        gt(oauth2AuthorizationCodes.expiresAt, now),
-        isNull(oauth2AuthorizationCodes.usedAt)
-      )
-    )
-    .limit(1);
-
-  if (!record) return undefined;
-  if (redirectUri && record.redirectUri && record.redirectUri !== redirectUri) {
-    return undefined;
+  const conditions = [
+    eq(oauth2AuthorizationCodes.codeHash, codeHash),
+    eq(oauth2AuthorizationCodes.appId, appId),
+    gt(oauth2AuthorizationCodes.expiresAt, now),
+    isNull(oauth2AuthorizationCodes.usedAt),
+  ];
+  if (redirectUri) {
+    conditions.push(
+      or(isNull(oauth2AuthorizationCodes.redirectUri), eq(oauth2AuthorizationCodes.redirectUri, redirectUri))!
+    );
   }
 
-  await db
+  const [record] = await db
     .update(oauth2AuthorizationCodes)
     .set({ usedAt: now })
-    .where(eq(oauth2AuthorizationCodes.id, record.id));
-
+    .where(and(...conditions))
+    .returning();
   return record;
 }
 
@@ -159,12 +155,26 @@ export async function createTokenResponse(
   user: User,
   app: Application,
   scopes: string[],
-  opts: { ip?: string; userAgent?: string; deviceFingerprint?: string; nonce?: string } = {}
+  opts: {
+    ip?: string;
+    userAgent?: string;
+    deviceFingerprint?: string;
+    nonce?: string;
+    mfaFactor?: MfaAssertion;
+  } = {}
 ) {
+  const [membership] = await db
+    .select({ id: orgMemberships.id })
+    .from(orgMemberships)
+    .where(and(eq(orgMemberships.orgId, app.orgId), eq(orgMemberships.userId, user.id)))
+    .limit(1);
+  if (!membership) throw new Error("OAuth user is not a member of the application organization");
+
   const tokenOpts: AccessTokenOptions = {
     appId: app.id,
     orgId: app.orgId,
     clientId: app.clientId,
+    ...(opts.mfaFactor ? { mfaFactor: opts.mfaFactor } : {}),
   };
 
   const tokenSet = await createTokenSet(

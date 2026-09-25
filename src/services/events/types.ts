@@ -1,3 +1,10 @@
+export interface EventContext {
+  requestId?: string;
+  ip?: string;
+  userAgent?: string;
+  appId?: string;
+}
+
 export interface EventPayload {
   userId?: string;
   orgId?: string;
@@ -37,6 +44,8 @@ export type AuditEventType =
   | "oauth_callback"
   | "oauth2_authorize"
   | "oauth2_token"
+  | "oauth2_refresh"
+  | "oauth2_refresh_failed"
   | "oauth2_client_credentials"
   | "oauth2_revoke"
   | "oauth2_consent"
@@ -57,6 +66,7 @@ export type AuditEventType =
   | "organization_member_role_updated"
   | "permission_created"
   | "permission_deleted"
+  | "permission_role_updated"
   | "application_created"
   | "application_updated"
   | "magic_link_sent"
@@ -87,8 +97,11 @@ export type AuditEventType =
   | "workflow_step_executed"
   | "workflow_created"
   | "workflow_deleted"
+  | "workflow_blocked"
   | "platform_user_updated"
+  | "platform_role_changed"
   | "platform_user_deactivated"
+  | "platform_account_reviewed"
   | "platform_signing_key_rotated"
   | "platform_plugin_unregistered"
   | "platform_feature_flag_updated"
@@ -103,4 +116,19 @@ export type AuditEventType =
   | "federation_identity_linked"
   | "user_token_login"
   | "session_revoked"
-  | "sessions_revoked_all";
+  | "sessions_revoked_all"
+  | "mfa_challenge_created"
+  | "mfa_challenge_failed"
+  | "mfa_challenge_expired"
+  | "mfa_challenge_rejected"
+  | "mfa_verified"
+  | "mfa_bypass_blocked"
+  | "mfa_backup_code_regenerated"
+  | "scim_connection_created"
+  | "scim_connection_rotated"
+  | "scim_connection_revoked"
+  | "scim_authentication_failed"
+  | "scim_access_denied"
+  | "scim_group_created"
+  | "scim_group_updated"
+  | "scim_group_deleted";

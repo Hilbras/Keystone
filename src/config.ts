@@ -10,12 +10,33 @@ function getEnv(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
+/**
+ * Read a positive integer setting. A malformed or non-positive value would
+ * otherwise silently break authentication (an MFA challenge budget of 0 makes
+ * every login impossible), so fall back to the default and warn.
+ */
+function nonNegativeInt(name: string, fallback: string): number {
+  const raw = process.env[name] ?? fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.warn(
+      `[config] ${name} must be a non-negative integer (got ${JSON.stringify(raw)}); using ${fallback}`
+    );
+    return Number(fallback);
   }
-  return value;
+  return parsed;
+}
+
+function positiveInt(name: string, fallback: string): number {
+  const raw = process.env[name] ?? fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    console.warn(
+      `[config] ${name} must be a positive integer (got ${JSON.stringify(raw)}); using ${fallback}`
+    );
+    return Number(fallback);
+  }
+  return parsed;
 }
 
 function requireEnvUnlessSetup(name: string): string {
@@ -31,6 +52,12 @@ function getList(name: string): string[] {
   if (!value) return [];
   return value.split(",").map((s) => s.trim()).filter(Boolean);
 }
+
+const cookieName = getEnv(
+  "COOKIE_NAME",
+  getEnv("NODE_ENV", "development") === "production" ? "__Host-keystone-session" : "keystone-session"
+);
+const isHostCookie = cookieName.startsWith("__Host-");
 
 export const config = {
   NODE_ENV: getEnv("NODE_ENV", "development"),
@@ -58,10 +85,11 @@ export const config = {
   ZITADEL_GOOGLE_IDP_ID: getEnv("ZITADEL_GOOGLE_IDP_ID"),
   ZITADEL_GITHUB_IDP_ID: getEnv("ZITADEL_GITHUB_IDP_ID"),
 
-  COOKIE_NAME: getEnv("COOKIE_NAME", "__Host-keystone-session"),
-  COOKIE_DOMAIN: getEnv("COOKIE_DOMAIN", ".local.hilbras.ai"),
-  COOKIE_SECURE: getEnv("COOKIE_SECURE", "false") === "true",
+  COOKIE_NAME: cookieName,
+  COOKIE_DOMAIN: isHostCookie ? undefined : getEnv("COOKIE_DOMAIN", ".local.hilbras.ai"),
+  COOKIE_SECURE: isHostCookie || getEnv("COOKIE_SECURE", "false") === "true",
   COOKIE_SAME_SITE: getEnv("COOKIE_SAME_SITE", getEnv("NODE_ENV", "development") === "production" ? "strict" : "lax") as "strict" | "lax" | "none",
+  ALLOW_PRIVATE_SSO_ENDPOINTS: getEnv("ALLOW_PRIVATE_SSO_ENDPOINTS", "false") === "true",
 
   AUTH_API_PUBLIC_URL: getEnv("AUTH_API_PUBLIC_URL"),
   ACCESS_TOKEN_TTL_SECONDS: Number(getEnv("JWT_ACCESS_TOKEN_TTL", "900")),
@@ -109,6 +137,24 @@ export const config = {
   OAUTH_CODE_TTL_SECONDS: Number(getEnv("OAUTH_CODE_TTL_SECONDS", "60")),
   TOTP_ISSUER: getEnv("TOTP_ISSUER", "Hilbras"),
   TOTP_ENCRYPTION_KEY: getEnv("KEYSTONE_TOTP_ENCRYPTION_KEY"),
+  // SCIM. `SCIM_BEARER_TOKEN` / `SCIM_ORG_ID` are legacy: they are read once at
+  // startup to create a per-organization connection, then superseded by the
+  // connection API. New deployments should use the connection API only.
+  SCIM_BEARER_TOKEN: getEnv("SCIM_BEARER_TOKEN"),
+  SCIM_ORG_ID: getEnv("SCIM_ORG_ID"),
+  /** How long a rotated-out SCIM token keeps working. */
+  // Default 0: rotating in response to a leak must not leave the old token
+  // working for a day. A grace window is an explicit, audited opt-in.
+  SCIM_ROTATION_GRACE_SECONDS: nonNegativeInt("SCIM_ROTATION_GRACE_SECONDS", "0"),
+  /** Rate limit applied to every SCIM request, keyed by credential. */
+  SCIM_RATE_LIMIT_MAX: positiveInt("SCIM_RATE_LIMIT_MAX", "600"),
+  SCIM_RATE_LIMIT_WINDOW_SECONDS: positiveInt("SCIM_RATE_LIMIT_WINDOW_SECONDS", "60"),
+  /** Budget for unauthenticated SCIM requests, which run before the credential limiter. */
+  SCIM_AUTH_FAILURE_MAX: positiveInt("SCIM_AUTH_FAILURE_MAX", "60"),
+  SCIM_AUTH_FAILURE_WINDOW_SECONDS: positiveInt("SCIM_AUTH_FAILURE_WINDOW_SECONDS", "60"),
+  MFA_CHALLENGE_TTL_SECONDS: positiveInt("MFA_CHALLENGE_TTL_SECONDS", "300"),
+  MFA_MAX_ATTEMPTS: positiveInt("MFA_MAX_ATTEMPTS", "5"),
+  TOTP_BACKUP_CODE_TTL_SECONDS: positiveInt("TOTP_BACKUP_CODE_TTL_SECONDS", "7776000"),
   EMAIL_PROVIDER: getEnv("EMAIL_PROVIDER", "none"),
   EMAIL_FROM: getEnv("EMAIL_FROM", "keystone@local.hilbras.ai"),
   SMTP_HOST: getEnv("SMTP_HOST"),

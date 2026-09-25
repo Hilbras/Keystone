@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { eq, and, or, gt, isNull } from "drizzle-orm";
-import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair, type KeyLike } from "jose";
+import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import { db } from "../../db/index.js";
 import { secrets, type Secret } from "../../db/schema.js";
 import { config } from "../../config.js";

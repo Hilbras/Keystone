@@ -2,18 +2,28 @@ import type { FastifyInstance } from "fastify";
 import { eq, and, sql, desc, gte, count, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { users, organizations, applications, auditLog, refreshTokens } from "../../db/schema.js";
-import { requireOwner, sendResultError } from "./helpers.js";
+import { requirePlatformRole, sendResultError } from "./helpers.js";
+import { toPublicUser } from "../../types.js";
 import { getSdk } from "../../sdk/index.js";
 import { listRegisteredPlugins, listExtensionPoints, unregisterPlugin } from "../../services/plugins/registry.js";
 import { isFeatureEnabled, listFeatureFlags, setFeatureFlag, deleteFeatureFlag } from "../../services/featureFlags.js";
-import { listConfigurationProfiles, getConfigurationProfile } from "../../services/configuration/profiles.js";
+import { listConfigurationProfiles, getConfigurationProfile, redactConfigurationValues } from "../../services/configuration/profiles.js";
 import { z } from "zod";
 
-const UpdateUserSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  username: z.string().min(3).max(32).optional(),
-  role: z.string().optional(),
-  emailVerified: z.boolean().optional(),
+const UpdateUserSchema = z
+  .object({
+    name: z.string().min(1).max(255).optional(),
+    username: z.string().min(3).max(32).optional(),
+    emailVerified: z.boolean().optional(),
+  })
+  .strict();
+
+const UpdatePlatformRoleSchema = z.object({
+  role: z.enum(["owner", "user"]),
+});
+
+const AccountReviewSchema = z.object({
+  active: z.boolean(),
 });
 
 const FeatureFlagSchema = z.object({
@@ -25,7 +35,7 @@ export default async function platformRoutes(app: FastifyInstance) {
   const sdk = getSdk();
 
   // Platform-level owner-only endpoints.
-  app.get("/platform/users", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/users", { preHandler: [requirePlatformRole("owner")] }, async () => {
     const allUsers = await db
       .select({
         id: users.id,
@@ -33,6 +43,8 @@ export default async function platformRoutes(app: FastifyInstance) {
         username: users.username,
         name: users.name,
         role: users.role,
+        isActive: users.isActive,
+        accountReviewRequired: users.accountReviewRequired,
         emailVerified: users.emailVerified,
         createdAt: users.createdAt,
       })
@@ -41,12 +53,12 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { users: allUsers };
   });
 
-  app.get("/platform/organizations", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/organizations", { preHandler: [requirePlatformRole("owner")] }, async () => {
     const allOrganizations = await db.select().from(organizations).orderBy(organizations.createdAt);
     return { organizations: allOrganizations };
   });
 
-  app.get("/platform/applications", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/applications", { preHandler: [requirePlatformRole("owner")] }, async () => {
     const allApplications = await db
       .select({
         id: applications.id,
@@ -67,7 +79,7 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { applications: allApplications };
   });
 
-  app.get("/platform/audit-logs", { preHandler: [requireOwner()] }, async (request) => {
+  app.get("/platform/audit-logs", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
     const query = request.query as { limit?: string; offset?: string; event?: string };
     const logs = await app.container.auditRepository.list({
       event: query.event,
@@ -77,7 +89,7 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { logs };
   });
 
-  app.get("/platform/audit-logs/export", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.get("/platform/audit-logs/export", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const query = request.query as { event?: string; format?: string; limit?: string; orgId?: string; userId?: string };
     const logs = await app.container.auditRepository.list({
       event: query.event,
@@ -119,7 +131,7 @@ export default async function platformRoutes(app: FastifyInstance) {
     return reply.send([header, ...rows].join("\n"));
   });
 
-  app.get("/platform/metrics/usage", { preHandler: [requireOwner()] }, async (request) => {
+  app.get("/platform/metrics/usage", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
     const query = request.query as { days?: string };
     const days = Math.min(Math.max(Number(query.days) || 30, 1), 365);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -141,7 +153,7 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { days, series: rows };
   });
 
-  app.get("/platform/security-summary", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/security-summary", { preHandler: [requirePlatformRole("owner")] }, async () => {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const [loginEvents] = await db
       .select({ total: count() })
@@ -209,19 +221,19 @@ export default async function platformRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/platform/queue", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/queue", { preHandler: [requirePlatformRole("owner")] }, async () => {
     const stats = app.container.queue.getStats ? await app.container.queue.getStats() : [];
     return { stats };
   });
 
-  app.get("/platform/queue/failed", { preHandler: [requireOwner()] }, async (request) => {
+  app.get("/platform/queue/failed", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
     const query = request.query as { limit?: string };
     const queue = app.container.queue;
     const failed = queue.getFailed ? await queue.getFailed(Number(query.limit) || 50) : [];
     return { failed };
   });
 
-  app.post("/platform/queue/failed/:id/retry", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.post("/platform/queue/failed/:id/retry", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const queue = app.container.queue;
     if (!queue.retry) {
@@ -231,32 +243,32 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.post("/platform/queue/retry-all", { preHandler: [requireOwner()] }, async () => {
+  app.post("/platform/queue/retry-all", { preHandler: [requirePlatformRole("owner")] }, async () => {
     const queue = app.container.queue;
     if (queue.retryAll) await queue.retryAll();
     return { success: true };
   });
 
-  app.get("/platform/keys", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/keys", { preHandler: [requirePlatformRole("owner")] }, async () => {
     const keys = await app.container.secretsProvider.listActiveSigningKeys();
     return { keys, provider: app.container.secretsProvider.name };
   });
 
-  app.post("/platform/keys/rotate", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.post("/platform/keys/rotate", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const active = await app.container.secretsProvider.rotateSigningKeys();
     await request.audit("platform_signing_key_rotated", { keyId: active.keyId });
     return reply.status(201).send({ keyId: active.keyId, provider: app.container.secretsProvider.name });
   });
 
-  app.get("/platform/plugins", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/plugins", { preHandler: [requirePlatformRole("owner")] }, async () => {
     return { plugins: listRegisteredPlugins() };
   });
 
-  app.get("/platform/plugins/extensions", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/plugins/extensions", { preHandler: [requirePlatformRole("owner")] }, async () => {
     return { extensionPoints: listExtensionPoints() };
   });
 
-  app.delete("/platform/plugins/:name", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.delete("/platform/plugins/:name", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { name } = request.params as { name: string };
     const removed = unregisterPlugin(name);
     if (!removed) return reply.status(404).send({ error: "Plugin not found" });
@@ -264,11 +276,11 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.get("/platform/feature-flags", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/feature-flags", { preHandler: [requirePlatformRole("owner")] }, async () => {
     return { flags: await listFeatureFlags() };
   });
 
-  app.get("/platform/feature-flags/:key", { preHandler: [requireOwner()] }, async (request) => {
+  app.get("/platform/feature-flags/:key", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
     const { key } = request.params as { key: string };
     const enabled = await isFeatureEnabled(key);
     return { key, enabled };
@@ -276,7 +288,7 @@ export default async function platformRoutes(app: FastifyInstance) {
 
   app.put(
     "/platform/feature-flags/:key",
-    { preHandler: [requireOwner()] },
+    { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
       const { key } = request.params as { key: string };
       const body = FeatureFlagSchema.parse(request.body);
@@ -286,7 +298,7 @@ export default async function platformRoutes(app: FastifyInstance) {
     }
   );
 
-  app.delete("/platform/feature-flags/:key", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.delete("/platform/feature-flags/:key", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { key } = request.params as { key: string };
     const removed = await deleteFeatureFlag(key);
     if (!removed) return reply.status(404).send({ error: "Feature flag not found" });
@@ -294,41 +306,90 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.get("/platform/configuration-profiles", { preHandler: [requireOwner()] }, async () => {
+  app.get("/platform/configuration-profiles", { preHandler: [requirePlatformRole("owner")] }, async () => {
     return { profiles: listConfigurationProfiles() };
   });
 
-  app.get("/platform/configuration-profiles/:id", { preHandler: [requireOwner()] }, async (request, reply) => {
+  app.get("/platform/configuration-profiles/:id", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const profile = getConfigurationProfile(id);
     if (!profile) return reply.status(404).send({ error: "Profile not found" });
-    return { profile };
+    return { profile: { ...profile, values: redactConfigurationValues(profile.values) } };
   });
 
   app.patch(
-    "/platform/users/:id",
-    { preHandler: [requireOwner()] },
+    "/platform/users/:id/role",
+    { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const body = UpdateUserSchema.parse(request.body);
-      const result = await sdk.identity.updateUserProfile(id, body);
+      const parsed = UpdatePlatformRoleSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+      }
+      const body = parsed.data;
+      const result = await sdk.identity.updatePlatformRole(request.user!.id, id, body.role, {
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
       if (!result.success) return sendResultError(reply, result);
-      await request.audit("platform_user_updated", { userId: id, updates: body });
-      return result.data;
+      return toPublicUser(result.data);
+    }
+  );
+
+  app.patch(
+    "/platform/users/:id",
+    { preHandler: [requirePlatformRole("owner")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const parsed = UpdateUserSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+      }
+      const body = parsed.data;
+      const result = await sdk.identity.updateUserProfile(request.user!.id, id, body, {
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+      if (!result.success) return sendResultError(reply, result);
+      return toPublicUser(result.data);
+    }
+  );
+
+  app.post(
+    "/platform/users/:id/account-review",
+    { preHandler: [requirePlatformRole("owner")] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const parsed = AccountReviewSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+      }
+      const result = await sdk.identity.reviewAccount(request.user!.id, id, parsed.data.active, {
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
+      if (!result.success) return sendResultError(reply, result);
+      return toPublicUser(result.data);
     }
   );
 
   app.delete(
     "/platform/users/:id",
-    { preHandler: [requireOwner()] },
+    { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       if (request.user!.id === id) {
         return reply.status(400).send({ error: "Cannot deactivate yourself" });
       }
-      const result = await sdk.identity.deactivate(id);
+      const result = await sdk.identity.deactivate(request.user!.id, id, {
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+      });
       if (!result.success) return sendResultError(reply, result);
-      await request.audit("platform_user_deactivated", { userId: id });
       return { success: true };
     }
   );

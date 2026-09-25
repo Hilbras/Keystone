@@ -10,6 +10,28 @@ describe("Event validation", () => {
     assert.deepStrictEqual(result.errors, []);
   });
 
+  it("accepts all declared authorization and audit event types", () => {
+    for (const type of [
+      "platform_role_changed",
+      "permission_role_updated",
+      "unauthorized_access",
+      "platform_webhook_updated",
+      "platform_webhook_secret_rotated",
+      "federation_identity_linked",
+      "user_token_login",
+      "session_revoked",
+      "sessions_revoked_all",
+      "workflow_blocked",
+      "oauth2_refresh",
+      "oauth2_refresh_failed",
+      "platform_account_reviewed",
+      "api_key_used",
+    ]) {
+      const result = validateEvent(buildEvent(type, { userId: "1" }));
+      assert.strictEqual(result.valid, true, `${type} should be valid`);
+    }
+  });
+
   it("rejects an unknown event type", () => {
     const result = validateEvent(buildEvent("unknown_event", {}));
     assert.strictEqual(result.valid, false);

@@ -1,3 +1,63 @@
+export const REDACTED_CONFIG_VALUE = "[redacted]";
+
+const SENSITIVE_CONFIG_KEYS = new Set([
+  "DATABASE_URL",
+  "REDIS_URL",
+  "SMTP_PASS",
+  "SMTP_PASSWORD",
+  "ZITADEL_SERVICE_CLIENT_SECRET",
+  "ZITADEL_SERVICE_PAT",
+  "ZITADEL_CLIENT_SECRET",
+  "JWT_PRIVATE_KEY",
+  "JWT_PUBLIC_KEY",
+  "KEYSTONE_ENCRYPTION_KEY",
+  "KEYSTONE_TOTP_ENCRYPTION_KEY",
+  "KEYSTONE_INTERNAL_API_KEY",
+  "HILBRAS_INTERNAL_API_KEY",
+  "SENDGRID_API_KEY",
+  "MAILGUN_API_KEY",
+  "TWILIO_AUTH_TOKEN",
+  "WEBHOOK_SIGNING_SECRET",
+  "KEYSTONE_WEBHOOK_SIGNING_SECRET",
+  "KEYSTONE_SEED_OWNER_PASSWORD",
+  "HILBRAS_OS_CLIENT_SECRET",
+  "HILBRAS_AI_CLIENT_SECRET",
+]);
+
+export function isSensitiveConfigurationKey(key: string): boolean {
+  const normalized = key.toUpperCase();
+  return (
+    SENSITIVE_CONFIG_KEYS.has(normalized) ||
+    /(SECRET|TOKEN|PASSWORD|PASS|PAT|PRIVATE_KEY|API_KEY|CREDENTIAL|AUTHORIZATION|DATABASE_URL|REDIS_URL|ENCRYPTION_KEY)/.test(normalized)
+  );
+}
+
+export function redactConfigurationValues(values: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values)
+      .filter((entry): entry is [string, string] => entry[1] !== undefined)
+      .map(([key, value]) => [key, isSensitiveConfigurationKey(key) ? REDACTED_CONFIG_VALUE : value])
+  );
+}
+
+export function mergeConfigurationUpdates(
+  existing: Record<string, string | undefined>,
+  updates: Record<string, string>
+): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const [key, value] of Object.entries(existing)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === REDACTED_CONFIG_VALUE) {
+      if (merged[key] === undefined) throw new Error(`Cannot preserve unset configuration key: ${key}`);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
 export interface ConfigurationProfile {
   name: string;
   description: string;

@@ -1,23 +1,66 @@
 import crypto from "node:crypto";
 import { eq, and } from "drizzle-orm";
 import { db } from "./index.js";
-import { organizations, users, orgMemberships, applications, workflows } from "./schema.js";
+import { organizations, users, orgMemberships, applications, workflows, type User } from "./schema.js";
 import { config } from "../config.js";
-import { createApplication, hashClientSecret } from "../services/applications.js";
+import { createApplication } from "../services/applications.js";
 import { hashPassword } from "../services/secrets.js";
+import { persistAudit } from "../services/audit.js";
+import { DrizzleOrganizationRepository } from "../repositories/organization.js";
 
 async function seed() {
   const clientAppUrl = process.env.CLIENT_APP_URL || "http://localhost:5173";
   const aiAppUrl = process.env.AI_APP_URL || "http://localhost:5174";
   const landingAppUrl = process.env.LANDING_APP_URL || "http://localhost:5175";
+  const ownerEmail = config.SEED_OWNER_EMAIL;
+  const ownerPassword = process.env.KEYSTONE_SEED_OWNER_PASSWORD || crypto.randomUUID();
+  let owner: User | undefined;
+
+  if (ownerEmail) {
+    let [existingOwner] = await db.select().from(users).where(eq(users.email, ownerEmail.toLowerCase())).limit(1);
+    if (!existingOwner) {
+      const username = ownerEmail.split("@")[0].replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
+      [existingOwner] = await db
+        .insert(users)
+        .values({
+          email: ownerEmail.toLowerCase(),
+          username,
+          name: username,
+          provider: "password",
+          emailVerified: true,
+          role: "owner",
+          passwordHash: await hashPassword(ownerPassword),
+        })
+        .returning();
+      await persistAudit({
+        event: "platform_role_changed",
+        metadata: { actor: "seed", targetUserId: existingOwner.id, previousRole: "user", newRole: "owner" },
+      });
+      console.log(`[seed] created owner user ${existingOwner.id} (password not logged)`);
+    } else if (existingOwner.role !== "owner") {
+      await db.update(users).set({ role: "owner" }).where(eq(users.id, existingOwner.id));
+      await persistAudit({
+        event: "platform_role_changed",
+        metadata: { actor: "seed", targetUserId: existingOwner.id, previousRole: existingOwner.role, newRole: "owner" },
+      });
+    }
+    if (!existingOwner.isActive) {
+      throw new Error("Seed owner is deactivated; refusing to create ownerless bootstrap data");
+    }
+    owner = existingOwner;
+  }
 
   // Idempotently create the Hilbras organization.
   let [hilbrasOrg] = await db.select().from(organizations).where(eq(organizations.slug, "hilbras")).limit(1);
   if (!hilbrasOrg) {
-    [hilbrasOrg] = await db
-      .insert(organizations)
-      .values({ name: "Hilbras", slug: "hilbras", plan: "enterprise" })
-      .returning();
+    if (!owner) {
+      throw new Error("KEYSTONE_SEED_OWNER_EMAIL is required to create the bootstrap organization");
+    }
+    const repository = new DrizzleOrganizationRepository();
+    hilbrasOrg = await repository.createWithOwner(
+      { name: "Hilbras", slug: "hilbras", plan: "enterprise" },
+      owner.id
+    );
     console.log(`[seed] created organization ${hilbrasOrg.id}`);
   } else {
     console.log(`[seed] organization Hilbras already exists`);
@@ -69,32 +112,7 @@ async function seed() {
     console.log(`[seed] created application ${app.clientId} (${app.id})`);
   }
 
-  // Ensure a seed owner exists and owns the Hilbras org.
-  const ownerEmail = config.SEED_OWNER_EMAIL;
-  const ownerPassword = process.env.KEYSTONE_SEED_OWNER_PASSWORD || crypto.randomUUID();
-  if (ownerEmail) {
-    let [owner] = await db.select().from(users).where(eq(users.email, ownerEmail.toLowerCase())).limit(1);
-    if (!owner) {
-      const username = ownerEmail.split("@")[0].replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
-      [owner] = await db
-        .insert(users)
-        .values({
-          email: ownerEmail.toLowerCase(),
-          username,
-          name: username,
-          provider: "password",
-          emailVerified: true,
-          passwordHash: await hashPassword(ownerPassword),
-        })
-        .returning();
-      console.log(`[seed] created owner user ${owner.id}`);
-      if (!process.env.KEYSTONE_SEED_OWNER_PASSWORD) {
-        console.log(`[seed] generated owner password: ${ownerPassword}`);
-      }
-    } else {
-      console.log(`[seed] owner user already exists`);
-    }
-
+  if (owner) {
     const existingMembership = await db
       .select()
       .from(orgMemberships)
@@ -107,30 +125,42 @@ async function seed() {
         userId: owner.id,
         role: "owner",
       });
+      await persistAudit({
+        event: "organization_member_invited",
+        userId: owner.id,
+        orgId: hilbrasOrg.id,
+        metadata: { actor: "seed", targetUserId: owner.id, previousRole: null, newRole: "owner" },
+      });
       console.log(`[seed] added owner membership`);
     }
   }
 
   // Seed the default signup workflow.
-  const [existingWorkflow] = await db.select().from(workflows).where(eq(workflows.trigger, "user_registered")).limit(1);
+  const [existingWorkflow] = await db
+    .select()
+    .from(workflows)
+    .where(and(eq(workflows.trigger, "user_registered"), eq(workflows.name, "Default signup")))
+    .limit(1);
   if (!existingWorkflow) {
     await db.insert(workflows).values({
-      orgId: hilbrasOrg.id,
+      orgId: null,
       name: "Default signup",
       trigger: "user_registered",
       definition: {
-        steps: [
-          { type: "assign_role", role: "user" },
-          { type: "create_organization", orgName: "{{username}}-personal", slug: "{{username}}-personal", outputKey: "personalOrgId" },
-          { type: "add_membership", orgRef: "personalOrgId", role: "owner" },
-          { type: "add_app_membership", role: "member" },
-          { type: "send_welcome_email" },
-        ],
+        steps: [{ type: "send_welcome_email" }],
       },
     });
     console.log("[seed] created default signup workflow");
   } else {
-    console.log("[seed] default signup workflow already exists");
+    await db
+      .update(workflows)
+      .set({
+        orgId: null,
+        definition: { steps: [{ type: "send_welcome_email" }] },
+        isActive: true,
+      })
+      .where(eq(workflows.id, existingWorkflow.id));
+    console.log("[seed] normalized default signup workflow");
   }
 
   console.log("[seed] done");

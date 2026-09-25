@@ -4,7 +4,8 @@ This roadmap captures completed milestones and planned work. It is ordered by pr
 
 ## Completed
 
-1. **Local password reset** — token-based password reset independent of Zitadel, with email queued for delivery.
+1. **v1.7 authorization boundary hardening** — separated platform and organization roles, closed tenant workflow escalation paths, scoped SSO lookups, and added security regression coverage.
+2. **Local password reset** — token-based password reset independent of Zitadel, with email queued for delivery.
 2. **BullMQ background queue** — durable Redis-backed queue for email, webhooks, and workflows.
 3. **Sanitized OAuth/Federation errors** — centralized error helper that exposes only opaque public codes.
 4. **Distributed Redis rate limiting** — atomic sliding-window rate limiter with `Retry-After`.

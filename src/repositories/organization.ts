@@ -1,9 +1,11 @@
 import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { organizations, orgMemberships, users, type Organization, type OrgMembership } from "../db/schema.js";
-import type { CreateOrganizationInput, OrganizationRepository } from "./types.js";
+import { LastOwnerInvariantError, type CreateOrganizationInput, type OrganizationRepository } from "./types.js";
 
 export type { OrganizationRepository } from "./types.js";
+
+const ORGANIZATION_ROLES = new Set(["owner", "admin", "member"]);
 
 export class DrizzleOrganizationRepository implements OrganizationRepository {
   private slugify(name: string): string {
@@ -15,19 +17,36 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
       .slice(0, 64);
   }
 
-  async create(input: CreateOrganizationInput): Promise<Organization> {
+  async createWithOwner(input: CreateOrganizationInput, userId: string): Promise<Organization> {
     const baseSlug = input.slug || this.slugify(input.name);
-    const slug = await this.ensureUniqueSlug(baseSlug);
+    return db.transaction(async (tx) => {
+      const [owner] = await tx
+        .select({ id: users.id, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      if (!owner?.isActive) throw new Error("Organization owner must be an active user");
 
-    const [org] = await db
-      .insert(organizations)
-      .values({
-        name: input.name,
-        slug,
-        plan: input.plan || "free",
-      })
-      .returning();
-    return org;
+      let slug = baseSlug || "org";
+      let counter = 2;
+      while (true) {
+        const [existing] = await tx
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.slug, slug))
+          .limit(1);
+        if (!existing) break;
+        slug = `${baseSlug}-${counter}`;
+        counter++;
+      }
+
+      const [org] = await tx
+        .insert(organizations)
+        .values({ name: input.name, slug, plan: input.plan || "free" })
+        .returning();
+      await tx.insert(orgMemberships).values({ orgId: org.id, userId, role: "owner" });
+      return org;
+    });
   }
 
   async findById(id: string): Promise<Organization | undefined> {
@@ -74,7 +93,17 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
     return rows.map((r) => r.org);
   }
 
-  async addMembership(input: { orgId: string; userId: string; role: string }): Promise<OrgMembership> {
+  async addMembership(input: { orgId: string; userId: string; role: "owner" | "admin" | "member" }): Promise<OrgMembership> {
+    // Lock the user row first. A concurrent organization removal decides
+    // whether the account should be deactivated by counting memberships, so
+    // adding one must not be able to slip in after that count is taken.
+    await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, input.userId))
+      .for("update");
+
+    if (!ORGANIZATION_ROLES.has(input.role)) throw new Error("Invalid organization role");
     const [membership] = await db
       .insert(orgMemberships)
       .values({
@@ -107,22 +136,60 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
   async updateMembershipRole(
     orgId: string,
     userId: string,
-    role: string
+    role: "owner" | "admin" | "member"
   ): Promise<OrgMembership | undefined> {
-    const [updated] = await db
-      .update(orgMemberships)
-      .set({ role, updatedAt: sql`now()` })
-      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
-      .returning();
-    return updated;
+    if (!ORGANIZATION_ROLES.has(role)) throw new Error("Invalid organization role");
+
+    return db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+        .limit(1);
+      if (!current) return undefined;
+
+      if (current.role === "owner" && role !== "owner") {
+        const owners = await tx
+          .select({ id: orgMemberships.id })
+          .from(orgMemberships)
+          .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.role, "owner")))
+          .for("update");
+        if (owners.length <= 1) throw new LastOwnerInvariantError("Cannot demote the last organization owner");
+      }
+
+      const [updated] = await tx
+        .update(orgMemberships)
+        .set({ role, updatedAt: sql`now()` })
+        .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+        .returning();
+      return updated;
+    });
   }
 
   async removeMembership(orgId: string, userId: string): Promise<boolean> {
-    const deleted = await db
-      .delete(orgMemberships)
-      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
-      .returning();
-    return deleted.length > 0;
+    return db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+        .limit(1);
+      if (!current) return false;
+
+      if (current.role === "owner") {
+        const owners = await tx
+          .select({ id: orgMemberships.id })
+          .from(orgMemberships)
+          .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.role, "owner")))
+          .for("update");
+        if (owners.length <= 1) throw new LastOwnerInvariantError("Cannot remove the last organization owner");
+      }
+
+      const deleted = await tx
+        .delete(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+        .returning();
+      return deleted.length > 0;
+    });
   }
 
   async countOwners(orgId: string): Promise<number> {
@@ -143,6 +210,7 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
           username: users.username,
           name: users.name,
           avatarUrl: users.avatarUrl,
+          platformRole: users.role,
         },
       })
       .from(orgMemberships)
@@ -150,18 +218,4 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
       .innerJoin(users, eq(orgMemberships.userId, users.id));
   }
 
-  private async ensureUniqueSlug(base: string): Promise<string> {
-    let slug = base || "org";
-    let counter = 2;
-    while (true) {
-      const existing = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(eq(organizations.slug, slug))
-        .limit(1);
-      if (existing.length === 0) return slug;
-      slug = `${base}-${counter}`;
-      counter++;
-    }
-  }
 }

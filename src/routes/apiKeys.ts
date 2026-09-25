@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import { generateApiKey, hashApiKey } from "../services/tokens.js";
-import { toPublicUser } from "../types.js";
+import { toPublicApiKey, toPublicUser } from "../types.js";
 
 const CreateKeySchema = z.object({
   name: z.string().min(1).max(100),
@@ -9,11 +9,29 @@ const CreateKeySchema = z.object({
 });
 
 export default async function apiKeyRoutes(app: FastifyInstance) {
-  app.post("/api-keys", { preHandler: [app.authenticate] }, async (request, reply) => {
+  app.post("/api-keys", { preHandler: [app.authenticate] }, async (request) => {
     const body = CreateKeySchema.parse(request.body);
     const user = request.user!;
-    const orgId = request.state?.org?.id;
-    const appId = request.state?.app?.id;
+    let orgId = user.defaultOrgId ?? null;
+    let appId: string | undefined;
+    if (request.state?.app) {
+      const membership = await app.container.organizationRepository.findMembership(
+        request.state.app.orgId,
+        user.id
+      );
+      if (membership) {
+        orgId = request.state.app.orgId;
+        appId = request.state.app.id;
+        request.state.membership = membership;
+        request.state.org = await app.container.organizationRepository.findById(request.state.app.orgId);
+      }
+    } else if (orgId) {
+      const membership = await app.container.organizationRepository.findMembership(orgId, user.id);
+      if (membership) {
+        request.state.membership = membership;
+        request.state.org = await app.container.organizationRepository.findById(orgId);
+      }
+    }
 
     const { key, prefix } = generateApiKey();
     const record = await app.container.apiKeyRepository.create({
@@ -29,9 +47,11 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
     await request.audit("api_key_created", {
       keyId: record.id,
       name: record.name,
+      orgId,
+      appId,
     });
 
-    return { key, apiKey: record };
+    return { key, apiKey: toPublicApiKey(record) };
   });
 
   app.get("/api-keys", { preHandler: [app.authenticate] }, async (request) => {

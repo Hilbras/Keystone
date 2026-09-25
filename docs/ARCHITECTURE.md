@@ -52,6 +52,17 @@ Domain services encode business rules and depend on repository interfaces:
 
 Repository interfaces (`UserRepository`, `OrganizationRepository`, etc.) hide persistence details. Drizzle ORM implementations live in `src/repositories/`.
 
+## Authorization boundaries
+
+Authorization is evaluated in two independent namespaces:
+
+- **Platform:** `users.role` is limited to `owner` and `user`. Only the explicit platform-role use case and owner-only route may change it.
+- **Organization:** `org_memberships.role` is limited to `owner`, `admin`, and `member`, and is always queried by `(organizationId, userId)`.
+
+Route pre-handlers authenticate the actor and resolve organization membership from trusted database state. Application/domain services enforce actor/target role transitions and last-owner invariants. Client-controlled application or origin headers are context hints only and never establish membership or permission.
+
+The internal identity update contract separates ordinary profile updates from platform-role changes. User-management HTTP responses use a redacted public projection. Role, membership, permission, and denied-authorization transitions emit versioned audit events.
+
 ## Dependency injection
 
 `src/di.ts` wires the container. Services receive dependencies through constructors, making unit tests with mocked repositories easy. The container is exposed to Fastify as `app.container` and can be retrieved globally via `getContainer()`.

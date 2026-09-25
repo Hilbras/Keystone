@@ -8,11 +8,18 @@ import { fileURLToPath } from "node:url";
 import { db, initDb } from "../db/index.js";
 import { users } from "../db/schema.js";
 import { AuthenticationDomainService } from "../services/domain/authentication.js";
-import { DrizzleUserRepository, DrizzleApplicationRepository } from "../repositories/index.js";
+import {
+  DrizzleUserRepository,
+  DrizzleApplicationRepository,
+  DrizzleOrganizationRepository,
+  DrizzleMfaChallengeRepository,
+} from "../repositories/index.js";
+import { MfaService } from "../services/mfa.js";
 import { validateDatabase, validateRedis, validateEmail, validateSms } from "../services/setup/validation.js";
 import { createConfigWriter } from "../services/setup/configWriter.js";
 import { getSetupToken, validateSetupToken } from "../services/setup/token.js";
 import { runSetupDiagnostics } from "../services/setup/diagnostics.js";
+import { redactConfigurationValues } from "../services/configuration/profiles.js";
 import { queue } from "../services/queue/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,7 +64,7 @@ const ValidateSmsSchema = z.object({
 });
 
 const SetupConfigSchema = z.object({
-  env: z.record(z.string()),
+  env: z.record(z.string(), z.string()),
 });
 
 function parseBody<T>(schema: z.ZodSchema<T>, body: unknown, reply: FastifyReply): T | null {
@@ -68,17 +75,6 @@ function parseBody<T>(schema: z.ZodSchema<T>, body: unknown, reply: FastifyReply
     return null;
   }
   return result.data;
-}
-
-async function hasNoUsers(): Promise<boolean> {
-  if (!db) return true;
-  try {
-    const [result] = await db.select({ total: count() }).from(users);
-    return (result?.total ?? 0) === 0;
-  } catch {
-    // Database exists but migrations have not run yet; setup is still required.
-    return true;
-  }
 }
 
 async function hasNoOwners(): Promise<boolean> {
@@ -158,9 +154,7 @@ export default async function setupRoutes(app: FastifyInstance) {
       ok: validationErrors.length === 0,
       validationErrors,
       wouldWrite: Object.keys(body.env),
-      mergedPreview: Object.fromEntries(
-        Object.entries(merged).map(([k, v]) => [k, k.includes("KEY") || k.includes("SECRET") || k.includes("PASS") ? "***" : v])
-      ),
+      mergedPreview: redactConfigurationValues(merged),
     };
   });
 
@@ -271,11 +265,18 @@ export default async function setupRoutes(app: FastifyInstance) {
     const [existing] = await db.select().from(users).where(eq(users.email, body.email)).limit(1);
 
     let ownerUser;
+    let previousRole: string;
     if (existing) {
+      previousRole = existing.role;
       await db.update(users).set({ role: "owner" }).where(eq(users.id, existing.id));
       ownerUser = existing;
     } else {
-      const authService = new AuthenticationDomainService(new DrizzleUserRepository(), new DrizzleApplicationRepository());
+      const authService = new AuthenticationDomainService(
+        new DrizzleUserRepository(),
+        new DrizzleApplicationRepository(),
+        new DrizzleOrganizationRepository(),
+        new MfaService(new DrizzleMfaChallengeRepository(), new DrizzleUserRepository())
+      );
       const result = await authService.register({
         email: body.email,
         password: body.password,
@@ -293,9 +294,17 @@ export default async function setupRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: result.error.message });
       }
 
+      previousRole = result.data.user.role;
       await db.update(users).set({ role: "owner" }).where(eq(users.id, result.data.user.id));
       ownerUser = result.data.user;
     }
+
+    await request.audit("platform_role_changed", {
+      targetUserId: ownerUser.id,
+      previousRole,
+      newRole: "owner",
+      action: "setup_bootstrap",
+    });
 
     try {
       await fs.writeFile(SETUP_MARKER_PATH, new Date().toISOString(), "utf-8");

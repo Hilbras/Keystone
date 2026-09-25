@@ -78,9 +78,42 @@ export interface HealthStatus {
   redis?: boolean;
 }
 
+export interface ScimConnection {
+  id: string;
+  organizationId: string;
+  name: string;
+  tokenHint: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastRotatedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+export interface ScimConfig {
+  enabled: boolean;
+  baseUrl: string;
+  orgId: string;
+  activeConnection: ScimConnection | null;
+  connectionCount: number;
+}
+
 export interface LoginInput {
   email: string;
   password: string;
+}
+
+/** Thrown when the password was accepted but a second factor is still required. */
+export class MfaRequiredError extends Error {
+  readonly challenge: string;
+  readonly expiresAt: string;
+
+  constructor(challenge: string, expiresAt: string) {
+    super("Multi-factor authentication required");
+    this.name = "MfaRequiredError";
+    this.challenge = challenge;
+    this.expiresAt = expiresAt;
+  }
 }
 
 export interface LoginTokenResponse {
@@ -143,6 +176,12 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
       return new Promise(() => {});
     }
     const body = await response.json().catch(() => ({}));
+    // A 401 carrying an MFA challenge is a normal continuation of the login
+    // flow, not an expired session: surface it so the caller can render the
+    // second-factor step instead of bouncing to the login screen.
+    if (response.status === 401 && body.code === "MFA_REQUIRED" && body.challenge) {
+      throw new MfaRequiredError(body.challenge, body.expiresAt);
+    }
     throw new Error(body.error || `Request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;
@@ -178,9 +217,14 @@ export const api = {
   // Token-based authentication and platform admin endpoints.
   loginToken: (input: LoginInput) =>
     fetchJson<LoginTokenResponse>("/auth/token-login", { method: "POST", body: JSON.stringify(input) }),
+  completeMfa: (input: { challenge: string; code: string; factor?: "totp" | "backup_code" }) =>
+    fetchJson<LoginTokenResponse & { factor: string }>("/auth/mfa/verify", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   getMe: () => fetchJson<{ user: unknown }>("/auth/me"),
   getUsers: () => fetchJson<{ users: unknown[] }>("/v1/admin/platform/users"),
-  getOrganizations: () => fetchJson<{ organizations: unknown[] }>("/v1/admin/platform/organizations"),
+  getOrganizations: () => fetchJson<{ organizations: unknown[] }>("/v1/admin/organizations"),
   getApplications: () => fetchJson<{ applications: unknown[] }>("/v1/admin/platform/applications"),
   getAuditLogs: (event?: string) =>
     fetchJson<{ logs: unknown[] }>(`/v1/admin/platform/audit-logs${event ? `?event=${encodeURIComponent(event)}` : ""}`),
@@ -218,8 +262,15 @@ export const api = {
     fetchJson<{ id: string }>(`/v1/admin/organizations/${orgId}/saml-connections`, { method: "POST", body: JSON.stringify(input) }),
   deleteSamlConnection: (orgId: string, connectionId: string) =>
     fetchJson<{ success: boolean }>(`/v1/admin/organizations/${orgId}/saml-connections/${connectionId}`, { method: "DELETE" }),
-  getSamlMetadata: (connectionId: string) =>
-    fetch(`${API_BASE}/v1/admin/organizations/_/saml-connections/${connectionId}/metadata`).then((r) => r.text()),
+  getSamlMetadata: async (orgId: string, connectionId: string) => {
+    const accessToken = getKeystoneAccessToken();
+    const response = await fetch(`${API_BASE}/v1/admin/organizations/${orgId}/saml-connections/${connectionId}/metadata`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+      credentials: "include",
+    });
+    if (!response.ok) throw new Error(`Failed to fetch SAML metadata: ${response.status}`);
+    return response.text();
+  },
   getOidcConnections: (orgId: string) =>
     fetchJson<{ connections: Array<{ id: string; name: string; issuer: string; authorizationEndpoint: string; tokenEndpoint: string; userinfoEndpoint: string | null; jwksUri: string | null; clientId: string; scopes: string[]; isActive: boolean; createdAt: string }> }>(`/v1/admin/organizations/${orgId}/oidc-connections`),
   createOidcConnection: (orgId: string, input: { name: string; issuer: string; authorizationEndpoint: string; tokenEndpoint: string; userinfoEndpoint?: string; jwksUri?: string; clientId: string; clientSecret: string; scopes?: string[]; attributeMapping?: Record<string, string[]>; isActive?: boolean }) =>
@@ -227,12 +278,28 @@ export const api = {
   deleteOidcConnection: (orgId: string, connectionId: string) =>
     fetchJson<{ success: boolean }>(`/v1/admin/organizations/${orgId}/oidc-connections/${connectionId}`, { method: "DELETE" }),
   getScimConfig: (orgId: string) =>
-    fetchJson<{ enabled: boolean; baseUrl: string; orgId: string }>(`/v1/admin/organizations/${orgId}/scim-config`),
+    fetchJson<ScimConfig>(`/v1/admin/organizations/${orgId}/scim-config`),
+  getScimConnections: (orgId: string) =>
+    fetchJson<{ connections: ScimConnection[] }>(`/v1/admin/organizations/${orgId}/scim-connections`),
+  createScimConnection: (orgId: string, input: { name: string; expiresInDays?: number; rotationGraceSeconds?: number }) =>
+    fetchJson<ScimConnection & { token: string }>(`/v1/admin/organizations/${orgId}/scim-connections`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  rotateScimConnection: (orgId: string, connectionId: string, rotationGraceSeconds?: number) =>
+    fetchJson<{ connectionId: string; token: string; tokenHint: string; previousTokenValidUntil: string }>(
+      `/v1/admin/organizations/${orgId}/scim-connections/${connectionId}/rotate`,
+      { method: "POST", body: JSON.stringify({ rotationGraceSeconds }) }
+    ),
+  revokeScimConnection: (orgId: string, connectionId: string) =>
+    fetchJson<{ success: boolean }>(`/v1/admin/organizations/${orgId}/scim-connections/${connectionId}`, {
+      method: "DELETE",
+    }),
 
   // Workflows
-  getWorkflows: () => fetchJson<{ workflows: Array<{ id: string; name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> }; isActive: boolean; createdAt: string }> }>("/v1/admin/workflows"),
-  createWorkflow: (input: { name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> } }) =>
-    fetchJson<{ id: string }>("/v1/admin/workflows", { method: "POST", body: JSON.stringify(input) }),
+  getWorkflows: (orgId: string) => fetchJson<{ workflows: Array<{ id: string; name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> }; isActive: boolean; createdAt: string }> }>(`/v1/admin/workflows?orgId=${encodeURIComponent(orgId)}`),
+  createWorkflow: (orgId: string, input: { name: string; trigger: string; definition: { steps: Array<{ type: string; name?: string }> } }) =>
+    fetchJson<{ id: string }>("/v1/admin/workflows", { method: "POST", body: JSON.stringify({ ...input, orgId }) }),
   deleteWorkflow: (id: string) => fetchJson<{ success: boolean }>(`/v1/admin/workflows/${id}`, { method: "DELETE" }),
   getWorkflowRuns: (id: string) =>
     fetchJson<{ runs: Array<{ id: string; status: string; triggerEvent: string; startedAt: string | null; finishedAt: string | null; log: Array<{ step: string; status: string; error?: string }> }> }>(`/v1/admin/workflows/${id}/runs`),
@@ -275,10 +342,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateUser: (userId: string, input: Partial<{ name: string; username: string; role: string; emailVerified: boolean }>) =>
+  updateUser: (userId: string, input: Partial<{ name: string; username: string; emailVerified: boolean }>) =>
     fetchJson<unknown>(`/v1/admin/platform/users/${userId}`, {
       method: "PATCH",
       body: JSON.stringify(input),
+    }),
+  updatePlatformRole: (userId: string, role: "owner" | "user") =>
+    fetchJson<unknown>(`/v1/admin/platform/users/${userId}/role`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
     }),
   deactivateUser: (userId: string) =>
     fetchJson<{ success: boolean }>(`/v1/admin/platform/users/${userId}`, { method: "DELETE" }),

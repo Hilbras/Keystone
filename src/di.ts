@@ -11,6 +11,9 @@ import {
   DrizzleApiKeyRepository,
   DrizzleSamlConnectionRepository,
   DrizzleOidcConnectionRepository,
+  DrizzleMfaChallengeRepository,
+  DrizzleScimConnectionRepository,
+  DrizzleScimGroupRepository,
 } from "./repositories/index.js";
 import { secretsProvider } from "./services/secrets/index.js";
 import { queue } from "./services/queue/index.js";
@@ -25,6 +28,7 @@ import {
   IdentityApplicationService,
   OrganizationApplicationService,
 } from "./services/application/index.js";
+import { MfaService } from "./services/mfa.js";
 
 export function buildContainer(overrides: Partial<Container> = {}): Container {
   const config = new ConfigurationService();
@@ -39,6 +43,9 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
   const apiKeyRepository = new DrizzleApiKeyRepository();
   const samlConnectionRepository = new DrizzleSamlConnectionRepository();
   const oidcConnectionRepository = new DrizzleOidcConnectionRepository();
+  const mfaChallengeRepository = new DrizzleMfaChallengeRepository();
+  const scimConnectionRepository = new DrizzleScimConnectionRepository();
+  const scimGroupRepository = new DrizzleScimGroupRepository();
 
   const container: Container = {
     config,
@@ -49,6 +56,9 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
     applicationRepository,
     auditRepository,
     permissionRepository,
+    mfaChallengeRepository,
+    scimConnectionRepository,
+    scimGroupRepository,
     apiKeyRepository,
     samlConnectionRepository,
     oidcConnectionRepository,
@@ -67,10 +77,16 @@ export function initializeContainer(overrides?: Partial<Container>): Container {
 }
 
 export function buildApplicationServices(container: Container) {
+  const mfaService = new MfaService(container.mfaChallengeRepository, container.userRepository);
   const authorizationDomain = new AuthorizationDomainService(container.organizationRepository, container.permissionRepository);
-  const authenticationDomain = new AuthenticationDomainService(container.userRepository, container.applicationRepository);
+  const authenticationDomain = new AuthenticationDomainService(
+    container.userRepository,
+    container.applicationRepository,
+    container.organizationRepository,
+    mfaService
+  );
   const identityDomain = new IdentityDomainService(container.userRepository, container.identityRepository);
-  const organizationDomain = new OrganizationDomainService(container.organizationRepository, container.applicationRepository, container.userRepository);
+  const organizationDomain = new OrganizationDomainService(container.organizationRepository, container.applicationRepository);
 
   return {
     auth: new AuthenticationApplicationService(authenticationDomain),

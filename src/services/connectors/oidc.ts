@@ -1,6 +1,7 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { IdentityConnector, ExternalIdentity, AuthorizeUrlOptions, ConnectorConfig } from "./types.js";
 import { cache } from "../cache.js";
+import { assertSafeSsoEndpoint, customFetch, fetchSsoEndpoint, safeJwksFetch } from "../ssoEndpointPolicy.js";
 
 export class OidcConnector implements IdentityConnector {
   id: string;
@@ -44,7 +45,7 @@ export class OidcConnector implements IdentityConnector {
       redirect_uri: redirectUri,
     });
 
-    const res = await fetch(this.config.tokenEndpoint!, {
+    const res = await fetchSsoEndpoint(this.config.tokenEndpoint!, "tokenEndpoint", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString(),
@@ -67,7 +68,9 @@ export class OidcConnector implements IdentityConnector {
     if (!jwksUrl) {
       throw new Error("OIDC connector missing jwks_uri");
     }
-    const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+    const JWKS = createRemoteJWKSet(await assertSafeSsoEndpoint(jwksUrl, "jwksUri"), {
+      [customFetch]: safeJwksFetch,
+    });
     const { payload } = await jwtVerify(token, JWKS, {
       issuer: this.config.issuer,
       audience: this.config.clientId,
@@ -81,7 +84,10 @@ export class OidcConnector implements IdentityConnector {
     const cached = await cache.get<Record<string, unknown>>(key);
     if (cached) return cached;
 
-    const res = await fetch(`${this.config.issuer.replace(/\/$/, "")}/.well-known/openid-configuration`);
+    const res = await fetchSsoEndpoint(
+      `${this.config.issuer.replace(/\/$/, "")}/.well-known/openid-configuration`,
+      "issuer"
+    );
     if (!res.ok) throw new Error(`OIDC discovery failed: ${res.status}`);
     const data = (await res.json()) as Record<string, unknown>;
     await cache.set(key, data, 3600);

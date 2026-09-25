@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 1.0.x | ✅ |
+| 1.7.x | ✅ |
+| 1.6.x | Security fixes only |
 
 ## Reporting a vulnerability
 

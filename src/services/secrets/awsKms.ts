@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } from "jose";
+import { generateKeyPair } from "jose";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
 
@@ -60,8 +60,6 @@ export class AwsKmsSecretsProvider implements SecretsProvider {
 
   async rotateSigningKeys(): Promise<SigningKeyPair> {
     const pair = await generateKeyPair("RS256", { extractable: true });
-    const privatePem = await exportPKCS8(pair.privateKey);
-    const publicPem = await exportSPKI(pair.publicKey);
     const keyId = `aws-${crypto.randomBytes(8).toString("base64url")}`;
 
     // In production: store privatePem/publicPem in AWS Secrets Manager encrypted by KMS.
@@ -87,11 +85,11 @@ export class AwsKmsSecretsProvider implements SecretsProvider {
     throw new Error("AwsKmsSecretsProvider.getEncryptionKey() is not yet implemented");
   }
 
-  async encryptSecret(plain: string): Promise<string> {
+  async encryptSecret(_plain: string): Promise<string> {
     throw new Error("AwsKmsSecretsProvider.encryptSecret() is not yet implemented");
   }
 
-  async decryptSecret(cipherText: string): Promise<string> {
+  async decryptSecret(_cipherText: string): Promise<string> {
     throw new Error("AwsKmsSecretsProvider.decryptSecret() is not yet implemented");
   }
 }

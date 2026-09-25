@@ -2,7 +2,7 @@ import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { eq, and, arrayContains } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { applications, organizations, orgMemberships } from "../db/schema.js";
+import { applications, organizations } from "../db/schema.js";
 
 export default fp(async function appContextPlugin(app: FastifyInstance) {
   app.addHook("onRequest", async (request: FastifyRequest) => {
@@ -20,24 +20,9 @@ export default fp(async function appContextPlugin(app: FastifyInstance) {
 
     if (!appRecord) return;
 
+    // Application context is informational only. Authorization must resolve the
+    // actor and organization after authentication in an explicit pre-handler.
     request.state.app = appRecord;
-    request.state.org = appRecord.organization;
-
-    if (request.user) {
-      const [membership] = await db
-        .select()
-        .from(orgMemberships)
-        .where(
-          and(
-            eq(orgMemberships.orgId, appRecord.organization.id),
-            eq(orgMemberships.userId, request.user.id)
-          )
-        )
-        .limit(1);
-      if (membership) {
-        request.state.membership = membership;
-      }
-    }
   });
 });
 

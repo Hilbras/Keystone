@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { userSessions, refreshTokens } from "../db/schema.js";
-import { eq, and, lt, desc } from "drizzle-orm";
+import { eq, and, isNull, lt, desc } from "drizzle-orm";
 
 export interface CreateSessionInput {
   userId: string;
@@ -77,6 +77,19 @@ export class SessionRepository {
 
   async revokeRefreshToken(tokenId: string) {
     await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.id, tokenId));
+  }
+
+  /**
+   * Mark every active session for a user as ended. Used when a security-relevant
+   * account change (such as enabling MFA) must invalidate existing sessions.
+   */
+  async revokeAllForUser(userId: string): Promise<number> {
+    const rows = await db
+      .update(userSessions)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)))
+      .returning({ id: userSessions.id });
+    return rows.length;
   }
 
   async findRefreshTokenByHash(tokenHash: string) {

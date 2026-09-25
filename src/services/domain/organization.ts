@@ -1,25 +1,39 @@
 import type { Organization, Application, OrgMembership } from "../../db/schema.js";
-import type { OrganizationRepository, ApplicationRepository, UserRepository } from "../../repositories/types.js";
+import { LastOwnerInvariantError, type OrganizationRepository, type ApplicationRepository } from "../../repositories/types.js";
 import { emit } from "../events/bus.js";
 import { ok, err, type Result } from "../../lib/result.js";
+import { isOrganizationRole, type OrgRole } from "./authorization.js";
 
-export type OrgRole = "owner" | "admin" | "member";
+export type { OrgRole } from "./authorization.js";
 
 export class OrganizationDomainService {
   constructor(
     private readonly organizations: OrganizationRepository,
-    private readonly applications: ApplicationRepository,
-    private readonly users?: UserRepository
+    private readonly applications: ApplicationRepository
   ) {}
 
   async createOrganization(
     input: { name: string; slug?: string; plan?: string },
-    userId?: string
+    userId: string
   ): Promise<Result<Organization>> {
-    const org = await this.organizations.create(input);
-    if (userId) {
-      await this.organizations.addMembership({ orgId: org.id, userId, role: "owner" });
+    const org = await this.organizations.createWithOwner(input, userId);
+    const membership = await this.organizations.findMembership(org.id, userId);
+    if (!membership) {
+      return err({ code: "OWNER_MEMBERSHIP_FAILED", message: "Organization owner membership could not be created", statusCode: 500 });
     }
+    await emit({
+      type: "organization_member_invited",
+      payload: {
+        userId,
+        orgId: org.id,
+        metadata: {
+          targetUserId: userId,
+          previousRole: null,
+          newRole: membership.role,
+          action: "organization_created",
+        },
+      },
+    });
     return ok(org);
   }
 
@@ -34,6 +48,9 @@ export class OrganizationDomainService {
   }
 
   async addOrgMembership(input: { orgId: string; userId: string; role: OrgRole }): Promise<Result<OrgMembership>> {
+    if (!isOrganizationRole(input.role)) {
+      return err({ code: "INVALID_ORGANIZATION_ROLE", message: "Invalid organization role", statusCode: 400 });
+    }
     const membership = await this.organizations.addMembership(input);
     return ok(membership);
   }
@@ -49,37 +66,33 @@ export class OrganizationDomainService {
     userId: string,
     role: OrgRole
   ): Promise<Result<OrgMembership>> {
-    const updated = await this.organizations.updateMembershipRole(orgId, userId, role);
-    if (!updated) return err({ code: "MEMBERSHIP_NOT_FOUND", message: "Membership not found", statusCode: 404 });
-    return ok(updated);
-  }
+    if (!isOrganizationRole(role)) {
+      return err({ code: "INVALID_ORGANIZATION_ROLE", message: "Invalid organization role", statusCode: 400 });
+    }
 
-  async removeMembership(orgId: string, userId: string): Promise<Result<boolean>> {
-    return ok(await this.organizations.removeMembership(orgId, userId));
+    try {
+      const updated = await this.organizations.updateMembershipRole(orgId, userId, role);
+      if (!updated) return err({ code: "MEMBERSHIP_NOT_FOUND", message: "Membership not found", statusCode: 404 });
+      return ok(updated);
+    } catch (error) {
+      if (error instanceof LastOwnerInvariantError) {
+        return err({ code: "LAST_OWNER", message: error.message, statusCode: 400 });
+      }
+      throw error;
+    }
   }
 
   async removeOrgMember(orgId: string, userId: string): Promise<Result<{ success: boolean }>> {
-    const membership = await this.organizations.findMembership(orgId, userId);
-    if (!membership) return err({ code: "MEMBERSHIP_NOT_FOUND", message: "Membership not found", statusCode: 404 });
-
-    if (membership.role === "owner" && (await this.organizations.countOwners(orgId)) <= 1) {
-      return err({ code: "LAST_OWNER", message: "Cannot remove the last owner", statusCode: 400 });
+    try {
+      const removed = await this.organizations.removeMembership(orgId, userId);
+      if (!removed) return err({ code: "MEMBERSHIP_NOT_FOUND", message: "Membership not found", statusCode: 404 });
+      return ok({ success: true });
+    } catch (error) {
+      if (error instanceof LastOwnerInvariantError) {
+        return err({ code: "LAST_OWNER", message: error.message, statusCode: 400 });
+      }
+      throw error;
     }
-
-    await this.organizations.removeMembership(orgId, userId);
-    return ok({ success: true });
-  }
-
-  async deactivateOrgUser(orgId: string, userId: string): Promise<Result<{ success: boolean }>> {
-    const membership = await this.organizations.findMembership(orgId, userId);
-    if (!membership) {
-      return err({ code: "MEMBERSHIP_NOT_FOUND", message: "User is not a member of this organization", statusCode: 404 });
-    }
-    if (this.users) {
-      await this.users.deactivate(userId);
-    }
-    await this.organizations.removeMembership(orgId, userId);
-    return ok({ success: true });
   }
 
   async listOrgMembers(orgId: string) {

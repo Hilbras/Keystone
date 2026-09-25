@@ -173,12 +173,13 @@ curl -X POST http://localhost:4001/v1/authz/check \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "subjectId": "api-key-id",
+    "organizationId": "00000000-0000-0000-0000-000000000000",
     "resource": "order",
-    "action": "create",
-    "context": { "orgId": "..." }
+    "action": "create"
   }'
 ```
+
+Authorization checks are organization-scoped. Platform roles (`owner`/`user`) and organization roles (`owner`/`admin`/`member`) are separate; never infer one from the other. User-management responses are redacted and do not include password hashes or TOTP secrets.
 
 ---
 
@@ -239,6 +240,26 @@ export TOKEN=$(curl -s -X POST http://localhost:4001/auth/token-login \
 
 curl -H "Authorization: Bearer $TOKEN" http://localhost:4001/auth/me
 ```
+
+If the account has MFA enabled, the password step returns `401` with
+`code: "MFA_REQUIRED"` and no token. Exchange the returned challenge for one:
+
+```bash
+CHALLENGE=$(curl -s -X POST http://localhost:4001/auth/token-login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"owner@example.com","password":"..."}' | jq -r .challenge)
+
+read -r -p "Authenticator code: " CODE
+
+export TOKEN=$(curl -s -X POST http://localhost:4001/auth/mfa/verify \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nc --arg c "$CHALLENGE" --arg k "$CODE" '{challenge:$c, code:$k, factor:"totp"}')" \
+  | jq -r .accessToken)
+```
+
+The challenge is single-use and short-lived, so request a fresh one per attempt.
+A TOTP time-step is also accepted only once: repeating the same code is rejected
+even with a new challenge.
 
 ---
 

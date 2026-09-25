@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { requireAuthAndRole } from "./helpers.js";
+import { requireOrganizationRole } from "./helpers.js";
 import { getBillingSummary, setOrganizationPlan, provisionBillingCustomer, listPlans } from "../../services/billing.js";
 
 const UpdatePlanSchema = z.object({
@@ -14,7 +14,7 @@ export default async function billingRoutes(app: FastifyInstance) {
 
   app.get(
     "/organizations/:id/billing",
-    { preHandler: [requireAuthAndRole(["owner", "admin"], { resource: "billing", action: "read" })] },
+    { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "billing", action: "read" })] },
     async (request) => {
       const { id } = request.params as { id: string };
       const summary = await getBillingSummary(id);
@@ -24,7 +24,7 @@ export default async function billingRoutes(app: FastifyInstance) {
 
   app.patch(
     "/organizations/:id/plan",
-    { preHandler: [requireAuthAndRole(["owner", "admin"], { resource: "billing", action: "update" })] },
+    { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "billing", action: "update" })] },
     async (request) => {
       const { id } = request.params as { id: string };
       const body = UpdatePlanSchema.parse(request.body);
@@ -36,7 +36,7 @@ export default async function billingRoutes(app: FastifyInstance) {
 
   app.post(
     "/organizations/:id/billing/customer",
-    { preHandler: [requireAuthAndRole(["owner", "admin"], { resource: "billing", action: "update" })] },
+    { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "billing", action: "update" })] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const user = request.user!;

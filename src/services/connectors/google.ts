@@ -1,3 +1,4 @@
+import { fetchSsoEndpoint } from "../ssoEndpointPolicy.js";
 import { OidcConnector, normalizePayload } from "./oidc.js";
 import type { ExternalIdentity, AuthorizeUrlOptions } from "./types.js";
 
@@ -56,7 +57,7 @@ export class GoogleConnector extends OidcConnector {
       redirect_uri: redirectUri,
     });
 
-    const tokenRes = await fetch(this.config.tokenEndpoint!, {
+    const tokenRes = await fetchSsoEndpoint(this.config.tokenEndpoint!, "tokenEndpoint", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString(),
@@ -71,7 +72,7 @@ export class GoogleConnector extends OidcConnector {
       throw new Error("Google did not return an access_token for userinfo");
     }
 
-    const userinfoRes = await fetch(this.config.userinfoEndpoint!, {
+    const userinfoRes = await fetchSsoEndpoint(this.config.userinfoEndpoint!, "userinfoEndpoint", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
 

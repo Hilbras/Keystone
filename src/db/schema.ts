@@ -9,8 +9,11 @@ import {
   index,
   varchar,
   unique,
+  uniqueIndex,
   smallint,
   integer,
+  bigint,
+  check,
 } from "drizzle-orm/pg-core";
 
 export const organizations = pgTable(
@@ -43,6 +46,8 @@ export const users = pgTable(
     provider: text("provider").default("password").notNull(),
     plan: text("plan").default("free").notNull(),
     role: text("role").default("user").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    accountReviewRequired: boolean("account_review_required").default(false).notNull(),
     defaultOrgId: uuid("default_org_id").references(() => organizations.id, { onDelete: "set null" }),
     phoneNumber: text("phone_number"),
     phoneVerified: boolean("phone_verified").default(false).notNull(),
@@ -51,6 +56,7 @@ export const users = pgTable(
     totpSecret: text("totp_secret"),
     totpEnabled: boolean("totp_enabled").default(false).notNull(),
     totpVerifiedAt: timestamp("totp_verified_at", { withTimezone: true }),
+    totpLastStep: bigint("totp_last_step", { mode: "number" }),
     failedLoginAttempts: integer("failed_login_attempts").default(0).notNull(),
     lockedUntil: timestamp("locked_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -60,6 +66,7 @@ export const users = pgTable(
     emailIdx: index("users_email_idx").on(table.email),
     zitadelIdx: index("users_zitadel_idx").on(table.zitadelUserId),
     defaultOrgIdx: index("users_default_org_idx").on(table.defaultOrgId),
+    platformRoleCheck: check("users_platform_role_check", sql`role in ('owner', 'user')`),
   })
 );
 
@@ -76,6 +83,7 @@ export const userSessions = pgTable(
     userAgent: text("user_agent"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
@@ -127,6 +135,7 @@ export const orgMemberships = pgTable(
     orgIdx: index("org_memberships_org_idx").on(table.orgId),
     userIdx: index("org_memberships_user_idx").on(table.userId),
     uniqueMembership: unique("org_memberships_unique").on(table.orgId, table.userId),
+    organizationRoleCheck: check("org_memberships_role_check", sql`role in ('owner', 'admin', 'member')`),
   })
 );
 
@@ -137,7 +146,7 @@ export const refreshTokens = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    appId: uuid("app_id").references(() => applications.id, { onDelete: "set null" }),
+    appId: uuid("app_id").references(() => applications.id, { onDelete: "restrict" }),
     tokenHash: text("token_hash").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
@@ -145,11 +154,16 @@ export const refreshTokens = pgTable(
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
     deviceFingerprint: text("device_fingerprint"),
+    mfaFactor: text("mfa_factor"),
   },
   (table) => ({
     userIdx: index("refresh_tokens_user_idx").on(table.userId),
     appIdx: index("refresh_tokens_app_idx").on(table.appId),
     hashIdx: index("refresh_tokens_hash_idx").on(table.tokenHash),
+    mfaFactorCheck: check(
+      "refresh_tokens_mfa_factor_check",
+      sql`mfa_factor is null or mfa_factor in ('totp', 'backup_code', 'webauthn', 'session')`
+    ),
   })
 );
 
@@ -234,11 +248,17 @@ export const oauth2AuthorizationCodes = pgTable(
     redirectUri: text("redirect_uri"),
     scopes: text("scopes").array().default(sql`'{}'::text[]`).notNull(),
     nonce: text("nonce"),
+    /** Second factor satisfied by the session that approved this code. */
+    mfaFactor: text("mfa_factor"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
+    mfaFactorCheck: check(
+      "oauth2_authorization_codes_mfa_factor_check",
+      sql`mfa_factor is null or mfa_factor in ('totp', 'backup_code', 'webauthn', 'session')`
+    ),
     appIdx: index("oauth2_authorization_codes_app_idx").on(table.appId),
     userIdx: index("oauth2_authorization_codes_user_idx").on(table.userId),
     hashIdx: index("oauth2_authorization_codes_hash_idx").on(table.codeHash),
@@ -350,11 +370,39 @@ export const totpBackupCodes = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     codeHash: text("code_hash").notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     userIdx: index("totp_backup_codes_user_idx").on(table.userId),
-    hashIdx: index("totp_backup_codes_hash_idx").on(table.codeHash),
+    uniqueCode: unique("totp_backup_codes_user_code_unique").on(table.userId, table.codeHash),
+  })
+);
+
+export const mfaChallenges = pgTable(
+  "mfa_challenges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    challengeHash: text("challenge_hash").notNull().unique(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    flow: text("flow").notNull(),
+    clientId: text("client_id"),
+    status: text("status").default("requires_mfa").notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(5).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdx: index("mfa_challenges_user_idx").on(table.userId),
+    statusIdx: index("mfa_challenges_status_idx").on(table.status),
+    flowCheck: check("mfa_challenges_flow_check", sql`flow in ('login', 'token_login')`),
+    statusCheck: check("mfa_challenges_status_check", sql`status in ('requires_mfa', 'consumed', 'failed', 'expired')`),
   })
 );
 
@@ -544,6 +592,37 @@ export const userIdentities = pgTable(
   })
 );
 
+export const ssoIdentityLinks = pgTable(
+  "sso_identity_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    connectionType: text("connection_type").notNull(),
+    connectionId: uuid("connection_id").notNull(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    externalSub: text("external_sub").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    connectionSubUnique: unique("sso_identity_links_connection_sub_unique").on(
+      table.connectionType,
+      table.connectionId,
+      table.externalSub
+    ),
+    userConnectionUnique: unique("sso_identity_links_user_connection_unique").on(
+      table.orgId,
+      table.userId,
+      table.connectionType,
+      table.connectionId
+    ),
+    userIdx: index("sso_identity_links_user_idx").on(table.userId),
+  })
+);
+
 export const secrets = pgTable(
   "secrets",
   {
@@ -662,6 +741,7 @@ export type IdentityProvider = typeof identityProviders.$inferSelect;
 export type NewIdentityProvider = typeof identityProviders.$inferInsert;
 export type UserIdentity = typeof userIdentities.$inferSelect;
 export type NewUserIdentity = typeof userIdentities.$inferInsert;
+export type SsoIdentityLink = typeof ssoIdentityLinks.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;
 export type NewSecret = typeof secrets.$inferInsert;
 export type FeatureFlag = typeof featureFlags.$inferSelect;
@@ -674,3 +754,88 @@ export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 export type NewPasswordResetToken = typeof passwordResetTokens.$inferInsert;
 export type NewWorkflowRun = typeof workflowRuns.$inferInsert;
+export const scimConnections = pgTable(
+  "scim_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // A SCIM credential is always bound to exactly one organization. There is
+    // deliberately no global/default SCIM configuration.
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** SHA-256 of the bearer token. The token itself is never stored. */
+    tokenHash: text("token_hash").notNull(),
+    /** Last four characters, so an administrator can identify a token in a list. */
+    tokenHint: text("token_hint").notNull(),
+    /** Accepted during a rotation grace period, then cleared. */
+    previousTokenHash: text("previous_token_hash"),
+    previousTokenValidUntil: timestamp("previous_token_valid_until", { withTimezone: true }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastRotatedAt: timestamp("last_rotated_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    orgIdx: index("scim_connections_org_idx").on(table.orgId),
+    // Unique: two connections sharing a digest would make the tenant that a
+    // presented token resolves to depend on scan order.
+    tokenHashUnique: uniqueIndex("scim_connections_token_hash_unique").on(table.tokenHash),
+    previousTokenHashIdx: uniqueIndex("scim_connections_previous_token_hash_unique")
+      .on(table.previousTokenHash)
+      .where(sql`previous_token_hash is not null`),
+    // At most one live connection per organization; revoked rows are retained
+    // as an audit trail and do not block a replacement.
+    activeOrgUnique: uniqueIndex("scim_connections_active_org_unique")
+      .on(table.orgId)
+      .where(sql`revoked_at is null`),
+  })
+);
+
+export const scimGroups = pgTable(
+  "scim_groups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    displayName: text("display_name").notNull(),
+    description: text("description"),
+    externalId: text("external_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    orgIdx: index("scim_groups_org_idx").on(table.orgId),
+    orgNameUnique: unique("scim_groups_org_name_unique").on(table.orgId, table.displayName),
+  })
+);
+
+export const scimGroupMembers = pgTable(
+  "scim_group_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => scimGroups.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    groupIdx: index("scim_group_members_group_idx").on(table.groupId),
+    userIdx: index("scim_group_members_user_idx").on(table.userId),
+    memberUnique: unique("scim_group_members_group_user_unique").on(table.groupId, table.userId),
+  })
+);
+
+export type MfaChallenge = typeof mfaChallenges.$inferSelect;
+export type NewMfaChallenge = typeof mfaChallenges.$inferInsert;
+export type ScimConnection = typeof scimConnections.$inferSelect;
+export type NewScimConnection = typeof scimConnections.$inferInsert;
+export type ScimGroup = typeof scimGroups.$inferSelect;
+export type ScimGroupMember = typeof scimGroupMembers.$inferSelect;

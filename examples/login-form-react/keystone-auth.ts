@@ -27,7 +27,24 @@ export interface AuthResult {
 }
 
 /**
+ * Thrown when the password was accepted but the account requires a second
+ * factor. No token has been issued at this point.
+ */
+export class MfaRequiredError extends Error {
+  readonly challenge: string;
+
+  constructor(challenge: string) {
+    super("Multi-factor authentication required");
+    this.name = "MfaRequiredError";
+    this.challenge = challenge;
+  }
+}
+
+/**
  * Log in with email and password.
+ *
+ * Throws {@link MfaRequiredError} when the account has TOTP enabled. Catch it,
+ * render a code field, and pass the challenge to {@link completeMfaLogin}.
  */
 export async function loginWithPassword(
   email: string,
@@ -40,7 +57,33 @@ export async function loginWithPassword(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    if (res.status === 401 && body.code === "MFA_REQUIRED" && body.challenge) {
+      throw new MfaRequiredError(body.challenge);
+    }
     throw new Error(body.error || `Login failed (${res.status})`);
+  }
+
+  return res.json();
+}
+
+/**
+ * Complete a login that stopped at the second-factor step. The challenge is
+ * single-use: a successful call establishes the session cookies, and a repeat
+ * call is rejected.
+ */
+export async function completeMfaLogin(
+  challenge: string,
+  code: string,
+  factor?: "totp" | "backup_code"
+): Promise<AuthResult> {
+  const res = await fetchWithCredentials("/auth/mfa/verify", {
+    method: "POST",
+    body: JSON.stringify({ challenge, code, ...(factor ? { factor } : {}) }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Verification failed (${res.status})`);
   }
 
   return res.json();

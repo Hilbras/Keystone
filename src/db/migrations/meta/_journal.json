@@ -57,6 +57,55 @@
       "when": 1784223453577,
       "tag": "0007_greedy_vindicator",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790267029462,
+      "tag": "0008_flashy_firestar",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790271016658,
+      "tag": "0009_daffy_changeling",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790276829374,
+      "tag": "0010_wealthy_shadow_king",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790281200949,
+      "tag": "0011_overrated_vector",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790365064453,
+      "tag": "0012_brave_darkhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790365489615,
+      "tag": "0013_wonderful_chimera",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790367480928,
+      "tag": "0014_magical_morph",
+      "breakpoints": true
     }
   ]
 }

@@ -1,11 +1,12 @@
 import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { apiKeys, users, serviceAccounts, type User } from "../db/schema.js";
 import { verifyAccessToken, hashApiKey } from "../services/tokens.js";
 import type { TokenClaims } from "../types.js";
+import { emit } from "../services/events/bus.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -78,7 +79,7 @@ export function getRefreshToken(request: FastifyRequest, clientId?: string): str
 
 async function resolveUserFromClaims(claims: TokenClaims) {
   const [user] = await db.select().from(users).where(eq(users.id, claims.sub)).limit(1);
-  return user;
+  return user?.isActive ? user : undefined;
 }
 
 async function resolveApiKeyRecord(key: string) {
@@ -91,7 +92,10 @@ async function resolveApiKeyRecord(key: string) {
   return keyRecord;
 }
 
-async function resolveUserFromApiKey(key: string): Promise<{ user: User; scopes: string[] } | undefined> {
+async function resolveUserFromApiKey(
+  key: string,
+  request: FastifyRequest
+): Promise<{ user: User; scopes: string[] } | undefined> {
   const keyRecord = await resolveApiKeyRecord(key);
   if (!keyRecord) return undefined;
   if (keyRecord.expiresAt && keyRecord.expiresAt < new Date()) return undefined;
@@ -100,7 +104,18 @@ async function resolveUserFromApiKey(key: string): Promise<{ user: User; scopes:
 
   if (keyRecord.userId) {
     const [user] = await db.select().from(users).where(eq(users.id, keyRecord.userId)).limit(1);
-    if (!user) return undefined;
+    if (!user || !user.isActive) return undefined;
+    await emit({
+      type: "api_key_used",
+      payload: {
+        userId: user.id,
+        orgId: keyRecord.orgId ?? undefined,
+        requestId: request.id,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
+        metadata: { keyId: keyRecord.id, scopes: keyRecord.scopes ?? [] },
+      },
+    });
     return { user, scopes: keyRecord.scopes ?? [] };
   }
 
@@ -134,6 +149,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
         return reply.status(401).send({ error: "User not found" });
       }
       request.user = user;
+      request.authClaims = claims;
     } catch {
       return reply.status(401).send({ error: "Invalid token" });
     }
@@ -157,17 +173,28 @@ export default fp(async function authPlugin(app: FastifyInstance) {
       // Not a valid access token — try API key.
     }
 
-    const apiKeyUser = await resolveUserFromApiKey(token);
+    const apiKeyUser = await resolveUserFromApiKey(token, request);
     if (apiKeyUser) {
       request.user = apiKeyUser.user;
       request.apiKeyScopes = apiKeyUser.scopes;
       return;
     }
 
-    const serviceAccount = await resolveServiceAccountFromApiKey(token);
-    if (serviceAccount) {
+    const serviceAccountResult = await resolveServiceAccountFromApiKey(token);
+    if (serviceAccountResult) {
+      const { serviceAccount, keyId, scopes } = serviceAccountResult;
       request.serviceAccount = serviceAccount;
       request.apiKeyScopes = ["api:read", "api:write", "service_account"];
+      await emit({
+        type: "api_key_used",
+        payload: {
+          orgId: serviceAccount.orgId,
+          requestId: request.id,
+          ip: request.ip,
+          userAgent: request.headers["user-agent"],
+          metadata: { serviceAccountId: serviceAccount.id, keyId, scopes },
+        },
+      });
       // Synthesize a user so existing routes that expect request.user keep working.
       request.user = {
         id: `sa:${serviceAccount.id}`,
@@ -178,6 +205,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
         emailVerified: true,
         plan: "enterprise",
         role: "service_account",
+        isActive: true,
         provider: "api_key",
         zitadelUserId: null,
         defaultOrgId: serviceAccount.orgId,
@@ -226,5 +254,5 @@ async function resolveServiceAccountFromApiKey(key: string) {
     .from(serviceAccounts)
     .where(and(eq(serviceAccounts.id, keyRecord.serviceAccountId), eq(serviceAccounts.isActive, true)))
     .limit(1);
-  return account;
+  return account ? { serviceAccount: account, keyId: keyRecord.id, scopes: keyRecord.scopes ?? [] } : undefined;
 }

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair, type KeyLike } from "jose";
+import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import { config } from "../../config.js";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";

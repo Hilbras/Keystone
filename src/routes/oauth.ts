@@ -2,14 +2,12 @@ import crypto from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../config.js";
 import { buildConnector, listSupportedProviders } from "../services/connectors/registry.js";
-import { upsertOAuthUser } from "../services/users.js";
+import { findIdentityProviderByType, upsertOAuthUser } from "../services/users.js";
 import { createTokenSet } from "../services/tokens.js";
 import { setSessionCookies, clearSessionCookies } from "../plugins/auth.js";
 import { findApplicationByClientId } from "../services/applications.js";
 import type { Application } from "../db/schema.js";
 import { buildOAuthErrorRedirect, buildOAuthErrorResponse } from "../lib/errors.js";
-
-const REDIRECT_TARGET = process.env.AUTH_SUCCESS_REDIRECT || "/chat";
 
 const OAuthStartSchema = {
   querystring: {
@@ -91,6 +89,9 @@ export default async function oauthRoutes(app: FastifyInstance) {
     }
 
     const query = request.query as { client_id?: string };
+    if (query.client_id && !(await findApplicationByClientId(query.client_id))) {
+      return reply.status(400).send({ error: "Unknown application" });
+    }
     const state = randomState();
     setOAuthState(reply, state);
     setOAuthClientId(reply, query.client_id);
@@ -132,9 +133,25 @@ export default async function oauthRoutes(app: FastifyInstance) {
       const connector = buildConnector(provider);
       const identity = await connector.exchangeCode(code, callbackRedirectUri(provider));
 
-      const user = await upsertOAuthUser(identity, provider);
+      const providerRecord = await findIdentityProviderByType(provider);
+      const user = await upsertOAuthUser(identity, provider, providerRecord?.id);
+      request.state.auditUserId = user.id;
 
       const app = clientId ? await findApplicationByClientId(clientId) : undefined;
+      if (clientId && !app) {
+        throw new Error("unknown_application");
+      }
+      const membership = app
+        ? await request.server.container.organizationRepository.findMembership(app.orgId, user.id)
+        : undefined;
+      if (app && !membership) {
+        throw new Error("not_member");
+      }
+      if (app && membership) {
+        request.state.app = app;
+        request.state.membership = membership;
+        request.state.org = await request.server.container.organizationRepository.findById(app.orgId);
+      }
       const tokens = await createTokenSet(user, request.ip, request.headers["user-agent"], {
         appId: app?.id,
         orgId: app?.orgId,
@@ -145,6 +162,7 @@ export default async function oauthRoutes(app: FastifyInstance) {
       await request.audit("oauth_callback", {
         provider,
         externalSub: identity.sub,
+        userId: user.id,
         appId: app?.id,
         orgId: app?.orgId,
       });

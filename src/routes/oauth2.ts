@@ -13,7 +13,13 @@ import {
   verifyClientSecret,
 } from "../services/oauth2.js";
 import { findUserById } from "../services/users.js";
-import { revokeRefreshToken, createApplicationAccessToken, rotateRefreshToken } from "../services/tokens.js";
+import {
+  revokeRefreshToken,
+  createApplicationAccessToken,
+  rotateRefreshToken,
+  MfaRequiredError,
+  type MfaAssertion,
+} from "../services/tokens.js";
 import { fingerprintFromRequest } from "../services/devices.js";
 import { rateLimit } from "../plugins/rateLimit.js";
 
@@ -50,6 +56,17 @@ interface ClientCredentials {
   clientSecret?: string;
 }
 
+const MFA_ASSERTIONS = new Set<string>(["totp", "backup_code", "webauthn", "session"]);
+
+/**
+ * The MFA factor is copied out of a verified token into a column guarded by a
+ * CHECK constraint, so it must be validated at runtime rather than cast.
+ * An unrecognised value is treated as "no factor recorded", which fails closed.
+ */
+function asMfaAssertion(value: string | null | undefined): MfaAssertion | undefined {
+  return value && MFA_ASSERTIONS.has(value) ? (value as MfaAssertion) : undefined;
+}
+
 function extractClientCredentials(request: FastifyRequest, body: ClientCredentials): ClientCredentials {
   const authHeader = request.headers.authorization;
   if (authHeader?.toLowerCase().startsWith("basic ")) {
@@ -81,12 +98,30 @@ export default async function oauth2Routes(app: FastifyInstance) {
         return reply.status(400).send({ error: "invalid_client", error_description: "Unknown client" });
       }
 
+      const membership = await app.container.organizationRepository.findMembership(
+        application.orgId,
+        request.user!.id
+      );
+      if (!membership) {
+        await request.audit("unauthorized_access", {
+          action: "oauth_application_tenant_membership",
+          appId: application.id,
+          orgId: application.orgId,
+        });
+        return reply.status(403).send({
+          error: "not_member",
+          error_description: "You are not a member of the application organization",
+        });
+      }
+
       if (!application.redirectUris.includes(query.redirect_uri)) {
         return reply
           .status(400)
           .send({ error: "invalid_redirect_uri", error_description: "Redirect URI not registered" });
       }
 
+      request.state.membership = membership;
+      request.state.org = await app.container.organizationRepository.findById(application.orgId);
       const scopes = query.scope ? query.scope.split(" ").filter(Boolean) : [];
 
       const consent = await hasConsent(request.user!.id, application.id, scopes);
@@ -97,6 +132,10 @@ export default async function oauth2Routes(app: FastifyInstance) {
         });
       }
 
+      // The authorization code inherits the second factor of the session that
+      // approved it, so the token exchange cannot launder an unverified login.
+      const sessionMfaFactor = asMfaAssertion(request.authClaims?.mfa_factor);
+
       const stored = await storeAuthorizationCode({
         appId: application.id,
         userId: request.user!.id,
@@ -105,6 +144,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
         redirectUri: query.redirect_uri,
         scopes,
         nonce: query.nonce,
+        ...(sessionMfaFactor ? { mfaFactor: sessionMfaFactor } : {}),
       });
 
       const url = new URL(query.redirect_uri);
@@ -160,36 +200,101 @@ export default async function oauth2Routes(app: FastifyInstance) {
         }
 
         const user = await findUserById(record.userId);
-        if (!user) {
+        if (!user?.isActive) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
+        const membership = await app.container.organizationRepository.findMembership(
+          application.orgId,
+          user.id
+        );
+        if (!membership) {
+          await request.audit("unauthorized_access", {
+            action: "oauth_application_tenant_membership",
+            appId: application.id,
+            orgId: application.orgId,
+          });
+          return reply.status(400).send({ error: "invalid_grant" });
+        }
+
+        request.state.auditUserId = user.id;
+        request.state.membership = membership;
+        request.state.org = await app.container.organizationRepository.findById(application.orgId);
         await request.audit("oauth2_token", {
           appId: application.id,
           clientId: application.clientId,
           grantType: "authorization_code",
         });
 
+        const storedMfaFactor = asMfaAssertion(record.mfaFactor);
         const fingerprint = fingerprintFromRequest(request);
-        return createTokenResponse(user, application, record.scopes, {
-          ip: request.ip,
-          userAgent: request.headers["user-agent"],
-          deviceFingerprint: fingerprint,
-          nonce: record.nonce ?? undefined,
-        });
+        try {
+          return await createTokenResponse(user, application, record.scopes, {
+            ip: request.ip,
+            userAgent: request.headers["user-agent"],
+            deviceFingerprint: fingerprint,
+            nonce: record.nonce ?? undefined,
+            ...(storedMfaFactor ? { mfaFactor: storedMfaFactor } : {}),
+          });
+        } catch (err) {
+          if (err instanceof MfaRequiredError) {
+            return reply.status(400).send({
+              error: "mfa_required",
+              error_description:
+                "The approving session did not complete multi-factor authentication. Sign in again with your verification code.",
+            });
+          }
+          throw err;
+        }
       }
 
       if (body.grant_type === "refresh_token") {
-        if (!body.refresh_token) {
+        if (!body.refresh_token || !body.client_id || !body.client_secret) {
+          await request.audit("oauth2_refresh_failed", {
+            clientId: body.client_id,
+            reason: "invalid_request",
+          });
           return reply.status(400).send({ error: "invalid_request" });
+        }
+        const application = await verifyClientSecret(body.client_id, body.client_secret);
+        if (!application) {
+          await request.audit("oauth2_refresh_failed", {
+            clientId: body.client_id,
+            reason: "invalid_client",
+          });
+          return reply.status(401).send({ error: "invalid_client" });
         }
 
         // Lazy import to avoid circular dependency.
-        const tokens = await rotateRefreshToken(body.refresh_token, request.ip, request.headers["user-agent"]);
+        const tokens = await rotateRefreshToken(
+          body.refresh_token,
+          request.ip,
+          request.headers["user-agent"],
+          body.client_id,
+          application.id
+        );
         if (!tokens) {
+          request.state.app = application;
+          request.state.org = await app.container.organizationRepository.findById(application.orgId);
+          await request.audit("oauth2_refresh_failed", {
+            appId: application.id,
+            orgId: application.orgId,
+            clientId: application.clientId,
+            reason: "invalid_grant",
+          });
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
+        request.state.auditUserId = tokens.userId;
+        request.state.app = application;
+        request.state.org = await app.container.organizationRepository.findById(application.orgId);
+        request.state.membership = await app.container.organizationRepository.findMembership(application.orgId, tokens.userId);
+        await request.audit("oauth2_refresh", {
+          appId: application.id,
+          orgId: application.orgId,
+          clientId: application.clientId,
+          grantType: "refresh_token",
+        });
         return {
           access_token: tokens.accessToken,
           refresh_token: tokens.refreshToken,
@@ -249,7 +354,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
     }
   );
 
-  app.post("/revoke", async (request, reply) => {
+  app.post("/revoke", async (request) => {
     const body = z.object({ token: z.string() }).parse(request.body);
     await revokeRefreshToken(body.token);
     await request.audit("oauth2_revoke", {});
@@ -266,6 +371,21 @@ export default async function oauth2Routes(app: FastifyInstance) {
         return reply.status(400).send({ error: "invalid_client" });
       }
 
+      const membership = await app.container.organizationRepository.findMembership(
+        application.orgId,
+        request.user!.id
+      );
+      if (!membership) {
+        await request.audit("unauthorized_access", {
+          action: "oauth_application_tenant_membership",
+          appId: application.id,
+          orgId: application.orgId,
+        });
+        return reply.status(403).send({ error: "not_member" });
+      }
+
+      request.state.membership = membership;
+      request.state.org = await app.container.organizationRepository.findById(application.orgId);
       if (body.grant) {
         await grantConsent(request.user!.id, application.id, body.scopes);
       } else {

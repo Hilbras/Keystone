@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* ── Custom Fonts ── */
+  --font-poppins: Poppins, sans-serif;
+  --font-tajawal: Tajawal, sans-serif;
+
+  /* ── Custom Colors ── */
+  --color-gold: #D4AF37;
+  --color-gold-dark: #B8962F;
+  --color-gold-light: #E5C95A;
+  --color-gold-muted: #F0E5B8;
+
+  --color-nu-50: #F4F5F8;
+  --color-nu-100: #ECEEF2;
+  --color-nu-200: #D8DCE3;
+  --color-nu-300: #B0B8C4;
+  --color-nu-400: #8B95A5;
+  --color-nu-500: #5A6578;
+  --color-nu-600: #3D4552;
+  --color-nu-700: #2A3039;
+  --color-nu-800: #1E2229;
+  --color-nu-900: #141820;
+  --color-nu-950: #0D1016;
+
+  /* ── Theme-aware Colors (HSL via CSS vars) ── */
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-destructive: hsl(var(--destructive) / <alpha-value>);
+  --color-destructive-foreground: hsl(var(--destructive-foreground) / <alpha-value>);
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-surface: hsl(var(--surface));
+  --color-panel: hsl(var(--panel));
+  --color-theme: hsl(var(--theme) / <alpha-value>);
+
+  /* ── Border Radius ── */
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xs: calc(var(--radius) - 6px);
+
+  /* ── Box Shadow ── */
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+
+  /* ── Breakpoints ── */
+  --breakpoint-xs: 480px;
+
+  /* ── Animations ── */
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-caret-blink: caret-blink 1.25s ease-out infinite;
+}
+
+@keyframes accordion-down {
+  from { height: 0; }
+  to { height: var(--radix-accordion-content-height); }
+}
+
+@keyframes accordion-up {
+  from { height: var(--radix-accordion-content-height); }
+  to { height: 0; }
+}
+
+@keyframes caret-blink {
+  0%, 70%, 100% { opacity: 1; }
+  20%, 50% { opacity: 0; }
+}

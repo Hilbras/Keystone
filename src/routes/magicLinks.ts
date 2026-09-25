@@ -11,7 +11,7 @@ import { createTokenSet } from "../services/tokens.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
 import { setSessionCookies } from "../plugins/auth.js";
 import { emailProvider } from "../services/email.js";
-import { toPublicUser } from "../types.js";
+import { toSelfUser } from "../types.js";
 import { config } from "../config.js";
 import { rateLimit } from "../plugins/rateLimit.js";
 
@@ -42,7 +42,7 @@ export default async function magicLinkRoutes(app: FastifyInstance) {
   }, async (request, reply) => {
     const body = SendSchema.parse(request.body);
     const user = await findUserByEmail(body.email);
-    if (!user) {
+    if (!user || !user.isActive) {
       return reply.status(200).send({ success: true });
     }
 
@@ -77,9 +77,22 @@ export default async function magicLinkRoutes(app: FastifyInstance) {
     if (!user) {
       return reply.status(400).send({ error: "Invalid or expired token" });
     }
+    if (!user.isActive) {
+      return reply.status(403).send({ error: "Account is deactivated" });
+    }
 
     const fingerprint = fingerprintFromRequest(request);
     await recordDevice(user.id, fingerprint, request.ip, request.headers["user-agent"]);
+
+    if (user.totpEnabled) {
+      // A magic link proves mailbox control, which is weaker than the second
+      // factor the user explicitly enrolled. Refuse rather than downgrade.
+      await request.audit("mfa_bypass_blocked", { userId: user.id, flow: "magic_link" });
+      return reply.status(403).send({
+        error: "Multi-factor authentication is required for this account. Sign in with your password and verification code.",
+        code: "MFA_REQUIRED",
+      });
+    }
 
     const tokens = await createTokenSet(
       user,
@@ -99,7 +112,7 @@ export default async function magicLinkRoutes(app: FastifyInstance) {
     }
 
     return {
-      user: toPublicUser(user),
+      user: toSelfUser(user),
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
     };

@@ -7,6 +7,7 @@ export interface AuthUser {
   username: string;
   name: string | null;
   role?: string;
+  isActive?: boolean;
 }
 
 export interface AuthState {

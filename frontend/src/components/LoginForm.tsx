@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Mail, Lock, Fingerprint, Link2 } from "lucide-react";
+import { Mail, Lock, Fingerprint, Link2, ShieldCheck, ArrowLeft } from "lucide-react";
 import { startAuthentication } from "@simplewebauthn/browser";
-import { api } from "../api.ts";
+import { api, MfaRequiredError } from "../api.ts";
 import { Card } from "./ui/Card.tsx";
 import { Input } from "./ui/Input.tsx";
 import { Label } from "./ui/Label.tsx";
@@ -44,6 +44,10 @@ export function LoginForm({ onLogin }: LoginFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [passkeyLoading, setPasskeyLoading] = useState(false);
+  // Set once the password step succeeds and a second factor is outstanding.
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [useBackupCode, setUseBackupCode] = useState(false);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -55,10 +59,45 @@ export function LoginForm({ onLogin }: LoginFormProps) {
       localStorage.setItem("keystone-access-token", result.accessToken);
       onLogin();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      if (err instanceof MfaRequiredError) {
+        // The password was accepted; no token exists yet, so move to the
+        // second-factor step instead of reporting a failure.
+        setMfaChallenge(err.challenge);
+        setMfaCode("");
+        setError(null);
+      } else {
+        setError(err instanceof Error ? err.message : "Login failed");
+      }
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleMfaSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!mfaChallenge) return;
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      const result = await api.completeMfa({
+        challenge: mfaChallenge,
+        code: mfaCode.trim(),
+        factor: useBackupCode ? "backup_code" : "totp",
+      });
+      localStorage.setItem("keystone-access-token", result.accessToken);
+      onLogin();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Verification failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const backToPassword = () => {
+    setMfaChallenge(null);
+    setMfaCode("");
+    setError(null);
   };
 
   const handleMagicLink = async () => {
@@ -117,6 +156,59 @@ export function LoginForm({ onLogin }: LoginFormProps) {
           </Alert>
         )}
 
+        {mfaChallenge ? (
+          <form onSubmit={handleMfaSubmit} className="space-y-4">
+            <div className="flex items-center gap-2 text-[13px] txt-muted">
+              <ShieldCheck className="w-4 h-4" />
+              <span>Enter the code from your authenticator app</span>
+            </div>
+
+            <div>
+              <Label htmlFor="mfa-code">
+                {useBackupCode ? "Backup code" : "Verification code"}
+              </Label>
+              <Input
+                id="mfa-code"
+                type="text"
+                inputMode={useBackupCode ? "text" : "numeric"}
+                autoComplete="one-time-code"
+                autoFocus
+                placeholder={useBackupCode ? "XXXXX-XXXXX-XXXXX-XXXXX" : "000000"}
+                value={mfaCode}
+                onChange={(e) =>
+                  setMfaCode(useBackupCode ? e.target.value : e.target.value.replace(/\D/g, "").slice(0, 6))
+                }
+                leftIcon={<ShieldCheck className="w-4 h-4" />}
+                required
+              />
+            </div>
+
+            <Button type="submit" className="w-full" isLoading={isLoading}>
+              {isLoading ? "Verifying…" : "Verify"}
+            </Button>
+
+            <div className="flex items-center justify-between text-[13px]">
+              <button
+                type="button"
+                onClick={backToPassword}
+                className="inline-flex items-center gap-1 txt-muted hover:underline"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUseBackupCode((v) => !v);
+                  setMfaCode("");
+                }}
+                className="txt-muted hover:underline"
+              >
+                {useBackupCode ? "Use authenticator code" : "Use a backup code"}
+              </button>
+            </div>
+          </form>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <Label htmlFor="email">Email</Label>
@@ -150,7 +242,9 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             {isLoading ? "Signing in…" : "Sign In"}
           </Button>
         </form>
+        )}
 
+        {!mfaChallenge && (
         <div className="mt-5">
           <div className="relative mb-4">
             <div className="absolute inset-0 flex items-center">
@@ -203,6 +297,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
             </Button>
           </div>
         </div>
+        )}
       </Card>
     </div>
   );

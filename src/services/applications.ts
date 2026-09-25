@@ -43,12 +43,12 @@ export async function findApplicationByClientId(
   clientId: string
 ): Promise<Application | undefined> {
   const cached = await cache.get<Application>(appCacheKey(clientId));
-  if (cached) return cached;
+  if (cached?.isActive) return cached;
 
   const [app] = await db
     .select()
     .from(applications)
-    .where(eq(applications.clientId, clientId))
+    .where(and(eq(applications.clientId, clientId), eq(applications.isActive, true)))
     .limit(1);
   if (app) await cache.set(appCacheKey(clientId), app, 60);
   return app;

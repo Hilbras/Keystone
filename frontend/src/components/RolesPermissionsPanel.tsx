@@ -33,7 +33,7 @@ export function RolesPermissionsPanel() {
   const [resource, setResource] = useState("");
   const [action, setAction] = useState("");
   const [description, setDescription] = useState("");
-  const [newRole, setNewRole] = useState("");
+
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -141,16 +141,6 @@ export function RolesPermissionsPanel() {
     }
   };
 
-  const addCustomRole = (e: React.FormEvent) => {
-    e.preventDefault();
-    const role = newRole.trim().toLowerCase();
-    if (!role) return;
-    if (!roles.includes(role)) setRoles((prev) => [...prev, role].sort());
-    setSelectedRole(role);
-    setNewRole("");
-    addToast(`Role "${role}" ready — assign permissions below, then use it when inviting members.`, "success");
-  };
-
   if (loading) return <LoadingState />;
 
   return (
@@ -164,7 +154,7 @@ export function RolesPermissionsPanel() {
             Roles
           </span>
         }
-        description="Select a role to edit its permissions. Custom roles can be used when inviting organization members."
+        description="Select a built-in organization role to edit its permissions. Roles are limited to owner, admin, and member."
       >
         <div className="flex flex-wrap items-center gap-2 mb-4">
           {roles.map((role) => (
@@ -182,15 +172,7 @@ export function RolesPermissionsPanel() {
             </button>
           ))}
         </div>
-        <form onSubmit={addCustomRole} className="flex flex-wrap items-end gap-2">
-          <FieldHelp label="New custom role" help="Type a role name (e.g. support, billing-manager) and assign it any combination of permissions.">
-            <Input value={newRole} onChange={(e) => setNewRole(e.target.value)} placeholder="e.g. support" className="w-48" />
-          </FieldHelp>
-          <Button type="submit" size="sm" variant="secondary" disabled={!newRole.trim()}>
-            <Plus className="w-3 h-3" />
-            Add role
-          </Button>
-        </form>
+        <Alert variant="info">Only the built-in organization roles are supported in v1.7.0.</Alert>
       </SectionCard>
 
       <SectionCard

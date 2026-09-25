@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { createApplication, findApplicationByClientId } from "../services/applications.js";
-import { createOrganization, findOrganizationBySlug, findOrganizationById } from "../services/organizations.js";
+import { findOrganizationBySlug, findOrganizationById } from "../services/organizations.js";
+import { getSdk } from "../sdk/index.js";
+import { requirePlatformRole } from "./admin/helpers.js";
 
 const gzipAsync = promisify(gzip);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +22,7 @@ const ConnectSchema = z.object({
 });
 
 export default async function sdkRoutes(app: FastifyInstance) {
+  const sdk = getSdk();
   // Serve the drop-in SDK so external projects can load it with one script tag.
   app.get("/keystone-dropin.js", async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -90,7 +93,7 @@ export default async function sdkRoutes(app: FastifyInstance) {
   });
 
   // Register or connect an external project/application.
-  app.post("/connect", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/connect", { preHandler: [requirePlatformRole("owner")] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = ConnectSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
@@ -112,14 +115,29 @@ export default async function sdkRoutes(app: FastifyInstance) {
         });
       }
 
-      // Otherwise create a new public client application for this project.
-      // In production this endpoint should be protected or require an admin API key.
+      // Create a new client application for a project. The route is platform-owner protected.
       let defaultOrg = await findOrganizationBySlug("external-projects");
       if (!defaultOrg) {
-        defaultOrg = await createOrganization({ name: "External Projects", slug: "external-projects" });
+        const created = await sdk.organization.createOrganization(request.user!.id, {
+          name: "External Projects",
+          slug: "external-projects",
+        });
+        if (!created.success) throw new Error(created.error.message);
+        defaultOrg = created.data;
+      } else {
+        const membership = await request.server.container.organizationRepository.findMembership(defaultOrg.id, request.user!.id);
+        if (!membership) {
+          const invited = await sdk.organization.inviteMember(
+            request.user!.id,
+            defaultOrg.id,
+            { email: request.user!.email, role: "owner" },
+            { requestId: request.id, ip: request.ip, userAgent: request.headers["user-agent"] }
+          );
+          if (!invited.success) throw new Error(invited.error.message);
+        }
       }
 
-      const app = await createApplication({
+      const createdApp = await createApplication({
         orgId: defaultOrg.id,
         name: projectId,
         clientId: projectId,
@@ -129,8 +147,8 @@ export default async function sdkRoutes(app: FastifyInstance) {
 
       return reply.status(201).send({
         connected: true,
-        clientId: app.clientId,
-        clientSecret: app.clientSecret,
+        clientId: createdApp.clientId,
+        clientSecret: createdApp.clientSecret,
         message: "Application connected to Keystone",
       });
     } catch (err) {

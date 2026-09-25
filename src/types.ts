@@ -1,14 +1,21 @@
-import type { User, Application, Organization, OrgMembership } from "./db/schema.js";
+import type { User, Application, Organization, OrgMembership, ApiKey, OidcConnection, SamlConnection } from "./db/schema.js";
 import type { KeystonePlugin } from "./services/plugins/types.js";
 import type { Container } from "./container.js";
 
 declare module "fastify" {
   interface FastifyRequest {
     user?: User;
+    /** Claims of the bearer/cookie access token that authenticated this request. */
+    authClaims?: TokenClaims;
     state: {
       app?: Application;
       org?: Organization;
       membership?: OrgMembership;
+      auditUserId?: string;
+      /** Organization pinned to the authenticated SCIM credential. */
+      scimOrgId?: string;
+      /** Connection that authenticated the SCIM request, for audit attribution. */
+      scimConnectionId?: string;
     };
   }
 
@@ -29,12 +36,46 @@ export interface TokenClaims {
   username?: string;
   name?: string;
   plan?: string;
-  role?: string;
+  role?: "owner" | "user";
   provider?: string;
   org_id?: string;
   app_id?: string;
   client_id?: string;
   device_fingerprint?: string;
+  /** Authentication methods used, including the second factor when one was required. */
+  amr?: string[];
+  /** Second factor that was verified for this session, when MFA is enabled. */
+  mfa_factor?: string;
+  mfa_verified?: boolean;
+}
+
+export type PublicApplication = Omit<Application, "clientSecretHash">;
+export type PublicApiKey = Omit<ApiKey, "keyHash">;
+export type PublicOidcConnection = Omit<OidcConnection, "clientSecret">;
+export type PublicSamlConnection = Omit<SamlConnection, "idpCertificate">;
+
+export function toPublicSamlConnection(connection: SamlConnection): PublicSamlConnection {
+  const { idpCertificate: _idpCertificate, ...safeConnection } = connection;
+  return safeConnection;
+}
+
+export function toPublicOidcConnection(connection: OidcConnection): PublicOidcConnection {
+  const { clientSecret: _clientSecret, ...safeConnection } = connection;
+  return safeConnection;
+}
+
+export function toPublicApiKey(apiKey: ApiKey): PublicApiKey {
+  const { keyHash: _keyHash, ...safeApiKey } = apiKey;
+  return safeApiKey;
+}
+
+export function toPublicApplication(
+  application: Application | (PublicApplication & { clientSecret?: string })
+): PublicApplication & { clientSecret?: string } {
+  const { clientSecretHash: _clientSecretHash, ...safeApplication } = application as Application & {
+    clientSecret?: string;
+  };
+  return safeApplication;
 }
 
 export interface PublicUser {
@@ -47,12 +88,17 @@ export interface PublicUser {
   phoneNumber?: string | null;
   phoneVerified?: boolean;
   plan: string;
-  role: string;
+  role: "owner" | "user";
+  isActive: boolean;
+  accountReviewRequired?: boolean;
   provider: string;
+}
+
+export interface SelfUser extends PublicUser {
   metadata: Record<string, unknown>;
 }
 
-export function toPublicUser(user: User): PublicUser {
+export function toPublicUser(user: User | PublicUser): PublicUser {
   return {
     id: user.id,
     email: user.email,
@@ -63,8 +109,17 @@ export function toPublicUser(user: User): PublicUser {
     phoneNumber: user.phoneNumber,
     phoneVerified: user.phoneVerified,
     plan: user.plan,
-    role: user.role,
+    role: user.role === "owner" ? "owner" : "user",
+    isActive: user.isActive,
+    accountReviewRequired: user.accountReviewRequired,
     provider: user.provider,
-    metadata: (user.metadata ?? {}) as Record<string, unknown>,
+  };
+}
+
+export function toSelfUser(user: User | SelfUser): SelfUser {
+  const metadata = "metadata" in user ? user.metadata : undefined;
+  return {
+    ...toPublicUser(user),
+    metadata: metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>) : {},
   };
 }
