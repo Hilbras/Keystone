@@ -70,10 +70,10 @@ export function toPublicApiKey(apiKey: ApiKey): PublicApiKey {
 }
 
 export function toPublicApplication(
-  application: Application | (PublicApplication & { clientSecret?: string })
-): PublicApplication & { clientSecret?: string } {
+  application: Application | (PublicApplication & { clientSecret?: string | null })
+): PublicApplication & { clientSecret?: string | null } {
   const { clientSecretHash: _clientSecretHash, ...safeApplication } = application as Application & {
-    clientSecret?: string;
+    clientSecret?: string | null;
   };
   return safeApplication;
 }

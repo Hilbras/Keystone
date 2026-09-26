@@ -25,6 +25,9 @@ export class OidcConnector implements IdentityConnector {
       scope: scopes.join(" "),
       state: opts.state,
     });
+    if (opts.nonce) {
+      params.set("nonce", opts.nonce);
+    }
     if (this.config.idpHint) {
       params.set("idp_hint", this.config.idpHint);
     }
@@ -36,7 +39,11 @@ export class OidcConnector implements IdentityConnector {
     return `${this.config.authorizationEndpoint}?${params.toString()}`;
   }
 
-  async exchangeCode(code: string, redirectUri: string): Promise<ExternalIdentity> {
+  async exchangeCode(
+    code: string,
+    redirectUri: string,
+    opts: { nonce?: string } = {}
+  ): Promise<ExternalIdentity> {
     const params = new URLSearchParams({
       grant_type: "authorization_code",
       client_id: this.config.clientId,
@@ -60,10 +67,20 @@ export class OidcConnector implements IdentityConnector {
     if (!data.id_token) {
       throw new Error("OIDC provider did not return an id_token");
     }
-    return this.verifyToken(data.id_token);
+    return this.verifyToken(data.id_token, opts.nonce);
   }
 
-  async verifyToken(token: string): Promise<ExternalIdentity> {
+  /**
+   * Verify an ID token from the provider.
+   *
+   * The `nonce` is the part that was missing. `state` already protects the
+   * callback against CSRF, but it says nothing about the *token*: without a
+   * nonce, an ID token minted for a different login — another session, another
+   * user, or one injected through a code obtained elsewhere — verifies
+   * correctly, because issuer, audience, and signature are all still valid. The
+   * nonce is what proves the token belongs to the request we started.
+   */
+  async verifyToken(token: string, expectedNonce?: string): Promise<ExternalIdentity> {
     const jwksUrl = this.config.jwksUri || ((await this.discovery())?.jwks_uri as string);
     if (!jwksUrl) {
       throw new Error("OIDC connector missing jwks_uri");
@@ -74,7 +91,22 @@ export class OidcConnector implements IdentityConnector {
     const { payload } = await jwtVerify(token, JWKS, {
       issuer: this.config.issuer,
       audience: this.config.clientId,
+      // Pin the algorithm instead of accepting whatever the key material
+      // happens to allow, which leaves room for algorithm-confusion attempts.
+      algorithms: ["RS256", "ES256", "PS256"],
+      // Required rather than merely validated when present: a token with no
+      // expiry would otherwise be accepted forever.
+      requiredClaims: ["exp", "iat", "iss", "aud", "sub"],
+      clockTolerance: 5,
     });
+
+    if (expectedNonce) {
+      const presented = typeof payload.nonce === "string" ? payload.nonce : undefined;
+      if (presented !== expectedNonce) {
+        throw new Error("OIDC id_token nonce does not match the authorization request");
+      }
+    }
+
     return normalizePayload(payload as Record<string, unknown>, this.config.attributeMapping);
   }
 

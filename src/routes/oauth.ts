@@ -26,6 +26,35 @@ function randomState(): string {
   return crypto.randomBytes(24).toString("base64url");
 }
 
+/**
+ * The OIDC nonce, kept in its own httpOnly cookie alongside `state`.
+ *
+ * `state` proves the callback belongs to a login this browser started, which is
+ * CSRF protection. The nonce proves the *ID token* belongs to that same login.
+ * Without it, any ID token the provider considers valid is accepted, including
+ * one that was minted for a different user or session.
+ */
+function setOAuthNonce(reply: FastifyReply, nonce: string): void {
+  reply.setCookie("oauth_nonce", nonce, {
+    path: "/",
+    httpOnly: true,
+    secure: config.COOKIE_SECURE,
+    sameSite: "lax" as const,
+    domain: config.COOKIE_DOMAIN || undefined,
+    maxAge: 600,
+  });
+}
+
+function clearOAuthNonce(reply: FastifyReply): void {
+  reply.clearCookie("oauth_nonce", {
+    path: "/",
+    httpOnly: true,
+    secure: config.COOKIE_SECURE,
+    sameSite: "lax",
+    domain: config.COOKIE_DOMAIN || undefined,
+  });
+}
+
 function setOAuthState(reply: FastifyReply, state: string): void {
   reply.setCookie("oauth_state", state, {
     path: "/",
@@ -94,12 +123,15 @@ export default async function oauthRoutes(app: FastifyInstance) {
     }
     const state = randomState();
     setOAuthState(reply, state);
+    const nonce = randomState();
+    setOAuthNonce(reply, nonce);
     setOAuthClientId(reply, query.client_id);
 
     try {
       const connector = buildConnector(provider);
       const url = await connector.getAuthorizeUrl({
         state,
+        nonce,
         redirectUri: callbackRedirectUri(provider),
         scopes: ["openid", "profile", "email"],
       });
@@ -119,19 +151,25 @@ export default async function oauthRoutes(app: FastifyInstance) {
 
     const { code, state } = request.query as { code?: string; state?: string };
     const cookieState = request.cookies.oauth_state;
+    const expectedNonce = request.cookies.oauth_nonce;
     const clientId = getOAuthClientId(request);
 
-    if (!code || !state || state !== cookieState) {
+    // A missing nonce is a failure rather than something to tolerate: this
+    // browser always set one when it started the flow, so its absence means the
+    // callback did not come from a flow this server initiated.
+    if (!code || !state || state !== cookieState || !expectedNonce) {
       clearOAuthState(reply);
+      clearOAuthNonce(reply);
       clearOAuthClientId(reply);
       return reply.redirect(`${redirectTargetUrl(clientId)}?error=${encodeURIComponent("Invalid OAuth state")}`);
     }
     clearOAuthState(reply);
+    clearOAuthNonce(reply);
     clearOAuthClientId(reply);
 
     try {
       const connector = buildConnector(provider);
-      const identity = await connector.exchangeCode(code, callbackRedirectUri(provider));
+      const identity = await connector.exchangeCode(code, callbackRedirectUri(provider), { nonce: expectedNonce });
 
       const providerRecord = await findIdentityProviderByType(provider);
       const user = await upsertOAuthUser(identity, provider, providerRecord?.id);

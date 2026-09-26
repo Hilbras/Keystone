@@ -238,8 +238,14 @@ export class OrganizationApplicationService {
   async createApplication(
     actorId: string,
     orgId: string,
-    input: { name: string; redirectUris?: string[]; allowedOrigins?: string[] }
-  ): Promise<Result<Application & { clientSecret: string }>> {
+    input: {
+      name: string;
+      redirectUris?: string[];
+      allowedOrigins?: string[];
+      clientType?: "confidential" | "public";
+      allowedScopes?: string[];
+    }
+  ): Promise<Result<Application & { clientSecret: string | null }>> {
     const permCheck = await this.authorization.requireOrganizationPermission(
       actorId,
       orgId,
@@ -276,7 +282,7 @@ export class OrganizationApplicationService {
     actorId: string,
     orgId: string,
     appId: string,
-    updates: Partial<{ name: string; redirectUris: string[]; allowedOrigins: string[]; allowedIps: string[]; blockedIps: string[]; isActive: boolean }>
+    updates: Partial<{ name: string; redirectUris: string[]; allowedOrigins: string[]; allowedIps: string[]; blockedIps: string[]; isActive: boolean; clientType: "confidential" | "public"; allowedScopes: string[] }>
   ): Promise<Result<Application>> {
     const permCheck = await this.authorization.requireOrganizationPermission(
       actorId,

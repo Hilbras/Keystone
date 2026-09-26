@@ -5,6 +5,82 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-09-27
+
+### Security
+
+- **The `authorization_code` grant did not authenticate the client.** It looked
+  the application up by `client_id` and went straight to redeeming the code,
+  never calling `verifyClientSecret`. RFC 6749 §3.2.1 requires a confidential
+  client to authenticate at the token endpoint. The code and its PKCE verifier
+  were the only factors, so an intercepted code was redeemable by whoever
+  intercepted it. Confidential clients must now present `client_secret`; public
+  clients are exempt because they have none, and PKCE is what authenticates them.
+- **Redirect URIs accepted script-bearing schemes.** Registration validated with
+  `z.string().url()`, which accepts anything the URL parser accepts — verified to
+  include `javascript:alert(1)` and
+  `data:text/html,<script>alert(1)</script>`. A redirect URI becomes a `Location`
+  header that the identity provider itself emits, so an organization admin could
+  register one and hand any user who authorized their application a redirect
+  toward script execution on the auth domain. Browser policy against top-level
+  `javascript:` navigation limits the practical impact, but on an identity
+  provider this is not an acceptable input. Registration now also rejects
+  wildcards, fragments, embedded credentials, and plaintext HTTP to non-loopback
+  hosts. A test records that `z.string().url()` accepted each of these.
+- **OIDC federation sent no nonce and verified none.** `state` proved the callback
+  belonged to a login this browser started, but nothing bound the returned ID
+  token to that login. Any ID token the provider considered valid was accepted,
+  including one minted for a different user or session. A nonce is now generated
+  per authorization request, kept in an httpOnly cookie, sent to the provider, and
+  required to match.
+- **ID token verification inferred rather than required.** Algorithms are now
+  pinned to RS256/ES256/PS256 instead of being derived from the key material, and
+  `exp`, `iat`, `iss`, `aud`, `sub` are required rather than validated only when
+  present — a token with no expiry was previously accepted indefinitely.
+
+### Changed
+
+- **Effective scopes are intersected, not trusted.** The client's `scope`
+  parameter was stored verbatim, with consent as the only filter. The effective
+  set is now registered ∩ requested ∩ consented, and a scope outside the
+  registration is refused with `invalid_scope` rather than silently dropped, so a
+  client asking for authority it was never granted is visible instead of quietly
+  downgraded. An empty `allowed_scopes` preserves existing behaviour.
+- **Public clients.** A `client_type` column distinguishes `confidential` from
+  `public`; a public client is issued no secret rather than a secret it is
+  expected to ignore, and a check constraint keeps the two halves consistent.
+  `client_secret_hash` is now nullable. PKCE is mandatory for a secretless client
+  at both `/authorize` and `/token`; the `verifyPKCE` branch that returned true
+  when no challenge was registered is gone.
+- **Redirect URIs are compared with one shared helper** at registration and at
+  use, so the two cannot drift. Exact string comparison throughout — no prefix
+  matching, no normalization, no case folding. The token endpoint's dead
+  `redirect_uri IS NULL` tolerance was removed: `redirect_uri` is required at
+  `/authorize`, so the branch was unreachable, and it would have accepted any
+  redirect URI had the field ever become optional.
+- **Refresh tokens carry the granted scope set** in a new `scopes` column, so the
+  authorization context survives rotation instead of being dropped at the first
+  refresh. A refresh may narrow the grant but never widen it.
+- **PKCE comparison is constant-time**, so a verifier cannot be recovered byte by
+  byte.
+
+### Already sound, verified rather than assumed
+
+Authorization code consumption was already atomic — a conditional `UPDATE` with
+`used_at IS NULL` and a required returned row — and is now covered by a
+concurrency test (20 parallel redemptions, exactly one winner). PKCE was already
+required at `/authorize` by the request schema, so the dead branch in
+`verifyPKCE` was a latent weakness rather than a live bypass. The refresh grant
+already validated client binding, MFA context, and organization membership.
+
+### Added
+
+- 42 tests: redirect URI registration and exact matching, PKCE verification,
+  scope intersection, client authentication at the token endpoint, public client
+  invariants, atomic code consumption, ID token verification against a locally
+  signed key (missing / wrong / replayed / expired nonce, no-expiry, wrong issuer,
+  wrong audience, foreign signing key), and scope preservation across rotation.
+
 ## [2.3.0] - 2026-09-27
 
 ### Security

@@ -223,6 +223,10 @@ export interface CreateApplicationInput {
   allowedOrigins?: string[];
   clientId?: string;
   clientSecret?: string;
+  /** `public` clients are issued no secret and must authenticate with PKCE. */
+  clientType?: "confidential" | "public";
+  /** Scopes the client is registered to request. Empty means unrestricted. */
+  allowedScopes?: string[];
 }
 
 export interface UpdateApplicationInput {
@@ -236,7 +240,7 @@ export interface UpdateApplicationInput {
 }
 
 export interface ApplicationRepository {
-  create(input: CreateApplicationInput): Promise<Application & { clientSecret: string }>;
+  create(input: CreateApplicationInput): Promise<Application & { clientSecret: string | null }>;
   findByClientId(clientId: string): Promise<Application | undefined>;
   listByOrgId(orgId: string): Promise<Application[]>;
   update(appId: string, orgId: string, input: UpdateApplicationInput): Promise<Application | undefined>;

@@ -1,11 +1,24 @@
 import { z } from "zod";
+import { isRedirectUriRegistered, validateRedirectUri } from "../services/redirectUri.js";
+
+/**
+ * A redirect URI must survive the same validation at use time as at registration
+ * time, so a value that could never have been registered is also refused here.
+ */
+const redirectUriParam = z.string().superRefine((value, ctx) => {
+  const result = validateRedirectUri(value);
+  if (!result.ok) ctx.addIssue({ code: z.ZodIssueCode.custom, message: result.reason });
+});
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../config.js";
 import {
   storeAuthorizationCode,
   consumeAuthorizationCode,
   verifyPKCE,
+  requiresPkce,
   hasConsent,
+  findConsent,
+  resolveEffectiveScopes,
   grantConsent,
   revokeConsent,
   createTokenResponse,
@@ -25,7 +38,7 @@ import { rateLimit } from "../plugins/rateLimit.js";
 
 const AuthorizeQuerySchema = z.object({
   client_id: z.string(),
-  redirect_uri: z.string().url(),
+  redirect_uri: redirectUriParam,
   response_type: z.literal("code"),
   scope: z.string().optional(),
   state: z.string().optional(),
@@ -37,7 +50,7 @@ const AuthorizeQuerySchema = z.object({
 const TokenBodySchema = z.object({
   grant_type: z.enum(["authorization_code", "refresh_token", "client_credentials"]),
   code: z.string().optional(),
-  redirect_uri: z.string().url().optional(),
+  redirect_uri: redirectUriParam.optional(),
   code_verifier: z.string().min(43).max(128).optional(),
   refresh_token: z.string().optional(),
   client_id: z.string().optional(),
@@ -114,18 +127,62 @@ export default async function oauth2Routes(app: FastifyInstance) {
         });
       }
 
-      if (!application.redirectUris.includes(query.redirect_uri)) {
+      // Exact string comparison, via the shared helper so registration-time and
+      // use-time rules cannot drift apart.
+      if (!isRedirectUriRegistered(application.redirectUris, query.redirect_uri)) {
         return reply
           .status(400)
           .send({ error: "invalid_redirect_uri", error_description: "Redirect URI not registered" });
+      }
+
+      // A client that cannot keep a secret gets no protection from the
+      // client-authentication step, so PKCE is not optional for it: an
+      // intercepted code would otherwise be redeemable by whoever intercepted
+      // it. Reject here rather than at /token, so the client learns before the
+      // user is redirected.
+      const pkceRequired = requiresPkce(application.clientSecretHash);
+      if (pkceRequired && !query.code_challenge) {
+        return reply.status(400).send({
+          error: "invalid_request",
+          error_description: "code_challenge is required for this client",
+        });
+      }
+      if (query.code_challenge && query.code_challenge_method !== "S256") {
+        return reply.status(400).send({
+          error: "invalid_request",
+          error_description: "code_challenge_method must be S256; plain is not accepted",
+        });
       }
 
       request.state.membership = membership;
       request.state.org = await app.container.organizationRepository.findById(application.orgId);
       const scopes = query.scope ? query.scope.split(" ").filter(Boolean) : [];
 
-      const consent = await hasConsent(request.user!.id, application.id, scopes);
-      if (!consent) {
+      // Effective scopes are the intersection of registered, requested, and
+      // consented. An unregistered or unconsented scope is refused outright
+      // rather than quietly dropped, so a client asking for more than it has is
+      // visible instead of silently downgraded.
+      const consentRecord = await findConsent(request.user!.id, application.id);
+      const resolved = resolveEffectiveScopes({
+        requested: scopes,
+        allowed: application.allowedScopes ?? [],
+        consented: consentRecord ? consentRecord.scopes : [],
+      });
+
+      if (!resolved.ok) {
+        await request.audit("unauthorized_access", {
+          action: "oauth_scope_not_registered",
+          appId: application.id,
+          orgId: application.orgId,
+          scope: resolved.scope,
+        });
+        return reply.status(400).send({
+          error: resolved.error,
+          error_description: `Scope "${resolved.scope}" is not available to this client`,
+        });
+      }
+
+      if (!consentRecord && resolved.scopes.length > 0) {
         return reply.status(403).send({
           error: "consent_required",
           error_description: "User consent required",
@@ -142,7 +199,7 @@ export default async function oauth2Routes(app: FastifyInstance) {
         challenge: query.code_challenge,
         challengeMethod: query.code_challenge_method,
         redirectUri: query.redirect_uri,
-        scopes,
+        scopes: resolved.scopes,
         nonce: query.nonce,
         ...(sessionMfaFactor ? { mfaFactor: sessionMfaFactor } : {}),
       });
@@ -185,17 +242,40 @@ export default async function oauth2Routes(app: FastifyInstance) {
           return reply.status(400).send({ error: "invalid_client" });
         }
 
+        // RFC 6749 3.2.1: a confidential client must authenticate at the token
+        // endpoint. This grant previously looked the client up and went straight
+        // to redeeming the code, so client authentication was skipped entirely
+        // and the code plus its PKCE verifier were the only factors. A public
+        // client is exempt because it has no secret to present -- PKCE is what it
+        // authenticates with, and that is enforced immediately below.
+        const authenticatesWithSecret = !requiresPkce(application.clientSecretHash);
+        if (authenticatesWithSecret) {
+          const authenticated = await verifyClientSecret(body.client_id, body.client_secret ?? "");
+          if (!authenticated) {
+            await request.audit("oauth2_token", {
+              appId: application.id,
+              clientId: application.clientId,
+              grantType: "authorization_code",
+              outcome: "invalid_client",
+            });
+            return reply.status(401).send({ error: "invalid_client" });
+          }
+        }
+
         const record = await consumeAuthorizationCode(body.code, application.id, body.redirect_uri);
         if (!record) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
-        const verifier = body.code_verifier;
-        if (!verifier) {
-          return reply.status(400).send({ error: "invalid_request", error_description: "PKCE verifier required" });
+        const pkceRequired = requiresPkce(application.clientSecretHash);
+        if (!body.code_verifier && pkceRequired) {
+          return reply.status(400).send({
+            error: "invalid_request",
+            error_description: "code_verifier is required for this client",
+          });
         }
 
-        if (!verifyPKCE(record.challenge, record.challengeMethod, verifier)) {
+        if (!verifyPKCE(record.challenge, record.challengeMethod, body.code_verifier, { requireChallenge: pkceRequired })) {
           return reply.status(400).send({ error: "invalid_grant", error_description: "PKCE verification failed" });
         }
 

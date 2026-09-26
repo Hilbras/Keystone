@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { validateRedirectUris } from "../../services/redirectUri.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getSdk } from "../../sdk/index.js";
 import { toPublicApplication, toPublicUser } from "../../types.js";
@@ -17,9 +18,38 @@ const UpdateOrgSchema = z.object({
   branding: BrandingSchema.optional(),
 });
 
+/**
+ * `z.string().url()` accepts anything the URL parser accepts, which includes
+ * `javascript:` and `data:`. A redirect URI is a value this server puts in a
+ * `Location` header on its own origin, so it is validated properly instead.
+ */
+const redirectUriList = z
+  .array(z.string())
+  .max(50)
+  .superRefine((uris, ctx) => {
+    for (const problem of validateRedirectUris(uris)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem.reason });
+    }
+  });
+
+/**
+ * A public client is an SPA or native app: it cannot keep a secret, so it
+ * authenticates with PKCE alone. The database enforces that such a client has
+ * no stored secret.
+ */
+const clientTypeSchema = z.enum(["confidential", "public"]).optional();
+
+/** Scope names are opaque strings; only length and charset are constrained. */
+const scopeList = z
+  .array(z.string().min(1).max(128).regex(/^[A-Za-z0-9._:*-]+$/))
+  .max(100)
+  .optional();
+
 const CreateAppSchema = z.object({
   name: z.string().min(1).max(255),
-  redirectUris: z.array(z.string().url()).optional(),
+  clientType: clientTypeSchema,
+  allowedScopes: scopeList,
+  redirectUris: redirectUriList.optional(),
   allowedOrigins: z.array(z.string()).optional(),
   allowedIps: z.array(ipEntry).optional(),
   blockedIps: z.array(ipEntry).optional(),
@@ -27,7 +57,9 @@ const CreateAppSchema = z.object({
 
 const UpdateAppSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  redirectUris: z.array(z.string().url()).optional(),
+  clientType: clientTypeSchema,
+  allowedScopes: scopeList,
+  redirectUris: redirectUriList.optional(),
   allowedOrigins: z.array(z.string()).optional(),
   allowedIps: z.array(ipEntry).optional(),
   blockedIps: z.array(ipEntry).optional(),

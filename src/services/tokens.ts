@@ -106,6 +106,8 @@ export interface AccessTokenOptions {
   deviceFingerprint?: string;
   /** Proof that the MFA requirement for this user was satisfied. */
   mfaFactor?: MfaAssertion;
+  /** Scopes granted at the authorization step, carried on the refresh token. */
+  scopes?: string[];
 }
 
 export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Promise<string> {
@@ -222,6 +224,7 @@ export async function createTokenSet(
     userAgent: userAgent ?? null,
     deviceFingerprint: deviceFingerprint ?? null,
     mfaFactor: opts.mfaFactor ?? null,
+    scopes: opts.scopes ?? [],
   }).returning();
 
   try {
@@ -338,6 +341,10 @@ export async function rotateRefreshToken(
       orgId,
       clientId,
       deviceFingerprint: claimed.deviceFingerprint ?? undefined,
+      // Carried forward from the token being rotated. A refresh may narrow the
+      // grant but never widen it, so the stored set is authoritative rather than
+      // anything the caller supplies.
+      ...(claimed.scopes?.length ? { scopes: claimed.scopes } : {}),
       ...(claimed.mfaFactor
         ? { mfaFactor: claimed.mfaFactor as MfaAssertion }
         : {}),

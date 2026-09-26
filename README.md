@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.3.0`**
+**Current version: `2.4.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,18 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.4.0
+
+> **Breaking.** The `authorization_code` grant now requires client authentication. A client redeeming an authorization code must present its `client_secret`; requests without one now receive `401 invalid_client`. Clients that were relying on the grant working without a secret must send it.
+
+- **The authorization code grant now authenticates the client** — it previously looked the client up and redeemed the code without ever checking a secret, so the code and its PKCE verifier were the only factors. This violates RFC 6749 §3.2.1 for confidential clients.
+- **`javascript:` and `data:` are refused as redirect URIs** — validation was `z.string().url()`, which accepts anything the URL parser accepts, including script-bearing schemes. A redirect URI is a value Keystone puts in a `Location` header on its own origin, so an org admin could previously register one and hand any user who authorized their app a redirect toward script execution. Also rejects wildcards, fragments, embedded credentials, and plaintext HTTP to non-loopback hosts.
+- **Public clients are supported and must use PKCE** — a `public` client type is issued no secret at all, rather than a secret it is expected to ignore, and a database constraint keeps the two halves of a client type consistent. PKCE is then mandatory for it, because client authentication is the only thing a secretless client cannot do.
+- **Scopes are intersected, not trusted** — the effective set is registered ∩ requested ∩ consented. A scope outside the registration is refused with `invalid_scope` rather than silently dropped, so a client asking for more than it has is visible instead of quietly downgraded. An empty registration preserves existing behaviour.
+- **OIDC federation sends and verifies a nonce** — `state` already proved the callback belonged to a login this browser started, but nothing bound the *ID token* to it. Any ID token the provider considered valid was accepted, including one minted for a different user or session.
+- **ID token verification is stricter** — algorithms are pinned rather than inferred from key material, and `exp`, `iat`, `iss`, `aud`, `sub` are *required* rather than merely checked when present. A token with no expiry was previously accepted indefinitely.
+- **Refresh tokens carry the granted scope set** — rotation preserves the authorization context instead of dropping it at the first refresh, and a refresh can narrow the grant but never widen it.
 
 ## What's new in v2.3.0
 
