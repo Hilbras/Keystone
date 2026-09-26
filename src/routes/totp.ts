@@ -2,9 +2,8 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { config } from "../config.js";
 import { rateLimit } from "../plugins/rateLimit.js";
-import { revokeAllUserRefreshTokens } from "../services/tokens.js";
+import { revokeUserSessions } from "../services/sessionRevocation.js";
 import { requireStepUp } from "../services/stepUp.js";
-import { SessionRepository } from "../repositories/session.js";
 import {
   generateSecret,
   buildProvisioningUri,
@@ -159,9 +158,9 @@ export default async function totpRoutes(app: FastifyInstance) {
       await app.container.userRepository.enableTotp(user.id);
 
       // Enrolling MFA must not leave sessions that were created before the
-      // second factor existed.
-      await revokeAllUserRefreshTokens(user.id);
-      await new SessionRepository().revokeAllForUser(user.id);
+      // second factor existed. Routed through the centralized revocation layer
+      // so this rule cannot drift from the one applied on password reset.
+      await revokeUserSessions(user.id);
       await app.container.mfaChallengeRepository.invalidateUserChallenges(user.id, new Date());
 
       await request.audit("totp_enabled", { userId: user.id });

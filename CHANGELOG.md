@@ -5,6 +5,52 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-09-27
+
+### Security
+
+**Completing a password reset did not remove existing access.** It changed the
+password and left every session, every refresh token, and every other
+outstanding reset token working. A password reset is the standard response to a
+suspected compromise, so the previous behaviour defeated its own purpose: an
+attacker who triggered the reset kept their session and kept their access, while
+the victim believed they had locked the intruder out.
+
+- A successful reset now invalidates all sessions, all refresh tokens, and all
+  outstanding recovery credentials for the account.
+- Reset tokens issued alongside the one used are now spent, so a reset email
+  captured earlier cannot be completed after the user has already recovered.
+- Revocation is centralized in `src/services/sessionRevocation.ts`
+  (`revokeUserSessions`, `revokeRefreshTokens`,
+  `revokeAuthenticationSessions`, `revokeRecoveryCredentials`). It was
+  previously open-coded at each call site, which is how the most important site
+  came to omit it. The MFA-enablement path now routes through the same function,
+  so the rule cannot drift between the two.
+- Revocation is scoped to one user, is idempotent, and honours an exclusion for
+  a change the user makes to their own account.
+
+API keys are deliberately **not** revoked by a password reset. They are
+separately issued, long-lived credentials belonging to integrations rather than
+to the person, and killing them silently breaks deployments. The residual gap is
+real — a key minted by an attacker who already held the password survives — and
+key expiry and rotation is the right answer rather than coupling key lifetime to
+a human's password.
+
+### Already sound, verified rather than assumed
+
+- Recovery credentials are 384-bit `crypto.randomBytes`, stored only as a SHA-256
+  digest, single-use (since 2.2.0), valid for one hour, rate-limited to 5 per 15
+  minutes, and audited.
+- `POST /auth/forgot-password` returns `{ success: true }` on both the found and
+  not-found paths, so the response does not disclose whether an account exists.
+  (A residual timing difference remains, since the found path sends mail.)
+
+### Added
+
+- 9 tests, including that an attacker's session and refresh token do not survive
+  a reset, that an intercepted earlier reset token is dead, that a bystander's
+  credentials are untouched, and that the recovered user can still log in.
+
 ## [2.2.0] - 2026-09-26
 
 ### Security

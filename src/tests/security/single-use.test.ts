@@ -48,14 +48,9 @@ function sha256(value: string) {
 const FUTURE = () => new Date(Date.now() + 3_600_000);
 const PAST = () => new Date(Date.now() - 3_600_000);
 
-let orgId: string;
-
 before(async () => {
   await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
   await loadSigningKeys();
-  const [org] = await db.select({ id: organizations.id }).from(organizations).limit(1);
-  assert.ok(org, "expected at least one organization");
-  orgId = org.id;
   // The password-reset test drives the SDK, which resolves services through the
   // DI container that the application bootstrap normally initializes.
   const { initializeContainer } = await import("../../di.js");

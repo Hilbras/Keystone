@@ -64,6 +64,20 @@ Default provider stores secrets in PostgreSQL. Production deployments should use
 
 Administrative and organization user responses use a redacted public projection. Password hashes, TOTP secrets, setup tokens, and sensitive metadata are never returned by user-management endpoints. Self-service profile responses may return the authenticated user's own metadata, but API-key validation and cross-principal projections never do. Treat any client that depends on administrative metadata fields as requiring a separate, explicitly authorized migration.
 
+## Sessions and credential revocation
+
+All revocation goes through `src/services/sessionRevocation.ts`. Revocation that is open-coded per call site is revocation that eventually omits the important case — which is how completing a password reset came to change the password while leaving every session and refresh token working, defeating the point of a reset.
+
+A successful password reset invalidates:
+
+- every authentication session,
+- every refresh token, so no further access token can be minted,
+- every outstanding recovery credential, so a reset email captured earlier cannot be completed after the user has already recovered.
+
+Enabling MFA applies the same rule, through the same function.
+
+**API keys are not revoked by a password reset.** They are separately issued, long-lived credentials belonging to integrations rather than to the person, and silently invalidating them on a password reset breaks deployments. The residual gap is that a key minted by an attacker who already held the password survives the recovery. That is a key-lifetime problem, and the fix is expiry and rotation, not coupling key lifetime to a human's password. If your threat model requires otherwise, revoke the keys explicitly through the key API.
+
 ## Single-use credentials
 
 Magic links, password reset tokens, SMS OTP codes, MFA challenges, TOTP backup codes, OAuth2 authorization codes, and refresh tokens are each consumable exactly once, enforced by the database rather than by application logic.
