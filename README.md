@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.1.0`**
+**Current version: `2.2.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,14 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.2.0
+
+- **Magic links can no longer be redeemed twice at once** — consumption was a conditional `SELECT` followed by an *unconditional* `UPDATE`. Any number of parallel redemptions passed the check and every one of them logged in. The write is now the gate, so exactly one succeeds.
+- **Password reset tokens are spent exactly once** — the same race meant parallel resets each wrote a different password, last writer winning. This was the most consequential of the three, since whoever won held the account.
+- **SMS OTP codes are spent exactly once** — same shape, same fix.
+- **Replays are reported, not just refused** — a credential presented after it was already used now emits `magic_link_replayed`, `sms_otp_replayed`, or `password_reset_token_replayed`, which reaches the audit log. Previously a replay was indistinguishable from a typo, so a leaked token coming back was invisible. An *expired* credential is deliberately not reported as a replay, since that is not a leak.
+- **One shared primitive** — all consumption goes through a single atomic claim, so the pattern exists once rather than in three places that can drift.
 
 ## What's new in v2.1.0
 

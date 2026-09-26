@@ -5,6 +5,71 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-09-26
+
+### Security
+
+Three single-use credentials were validated with a conditional `SELECT` and then
+marked used with an **unconditional** `UPDATE`:
+
+```text
+SELECT ... WHERE used_at IS NULL      <- conditional
+if (!row) return
+UPDATE ... SET used_at = now()        <- UNCONDITIONAL: the race
+```
+
+Between those two statements, any number of concurrent requests pass the same
+check. Every one of them then succeeds.
+
+- **Magic links** could be redeemed by any number of parallel requests, each
+  producing a full login. A link that was meant to be usable once was usable
+  indefinitely under concurrency.
+- **Password reset tokens** could be spent by parallel requests, each writing a
+  different password, last writer winning. This was the most consequential of
+  the three: whoever won the race held the account, and an attacker racing the
+  legitimate user could take it over.
+- **SMS OTP codes** could be verified more than once concurrently, so a
+  six-digit code was not single-use.
+
+The fix is to make the write the gate rather than a follow-up:
+
+```text
+UPDATE ... SET used_at = now()
+WHERE token_hash = ? AND expires_at > now() AND used_at IS NULL
+RETURNING ...
+```
+
+PostgreSQL evaluates that predicate while holding a row lock, so exactly one
+transaction updates the row and observes a returned row. The claim and the
+validation become one statement with no window between them.
+
+The four other single-use credentials in scope were already atomic and were
+verified rather than assumed: refresh token rotation, MFA challenges, OAuth2
+authorization codes, and TOTP backup codes all perform a conditional update and
+require a returned row.
+
+### Added
+
+- `src/services/singleUse.ts` — one atomic claim and refusal-classification
+  primitive, used by all three credentials. Consumption now lives in one place,
+  so a credential cannot drift back into a hand-rolled read-then-write.
+- Replay detection. A credential presented after it was already spent now emits
+  `magic_link_replayed`, `sms_otp_replayed`, or
+  `password_reset_token_replayed`, all of which reach the audit log through the
+  event bus. Previously a replay was indistinguishable from a typo, so a leaked
+  token returning was invisible to an operator. An **expired** credential is
+  deliberately not reported as a replay, because that is not a leak.
+- 25 tests, including the plan's 10 / 50 / 100 concurrent-request levels against
+  every affected credential, and the same levels through the service entry points
+  a route actually calls.
+
+### Changed
+
+- `resetPasswordWithToken` now spends the token before doing any work, and
+  reports an expired link distinctly from an invalid one. Spending other live
+  reset tokens for the same user after a successful reset, since any were issued
+  alongside the one just used.
+
 ## [2.1.0] - 2026-09-26
 
 ### Security
