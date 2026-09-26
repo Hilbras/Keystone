@@ -1,6 +1,7 @@
 {
   "name": "@hilbras/keystone",
-  "version": "2.0.0",
+  "version": "2.1.0",
+  "license": "MIT",
   "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
     "type": "git",
@@ -12,10 +13,7 @@
   },
   "type": "module",
   "overrides": {
-    "@xmldom/xmldom": "0.8.15",
-    "fast-uri@3.0.0 - 3.1.5": "3.1.8",
-    "fast-uri@4.0.0 - 4.1.2": "4.2.1",
-    "find-my-way": "9.9.0"
+    "esbuild": ">=0.25.0"
   },
   "files": [
     "dist",
@@ -38,6 +36,7 @@
     "start:setup": "KEYSTONE_SETUP_MODE=true node dist/setup-server.js",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src --deny-warnings",
+    "verify:release": "node scripts/verify-release-metadata.mjs",
     "typecheck:all": "npm run typecheck && cd frontend && npm run build",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

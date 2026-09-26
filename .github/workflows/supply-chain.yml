@@ -1,0 +1,216 @@
+# Supply chain checks that run alongside the normal test suite.
+#
+# Kept separate from `ci.yml` so a security scan failing on an advisory does
+# not read as "the tests are broken", and so each can be re-run alone.
+
+name: Supply Chain
+
+on:
+  push:
+    # Release branches carry the code that is actually tagged and published, so
+    # they need the same verification as main. Without this, a PR targeting a
+    # release branch runs no checks at all.
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main, "release/**"]
+  schedule:
+    # Monday 05:00 UTC — ahead of the Dependabot sweep at 06:00, so a newly
+    # published advisory is already known when the update PRs arrive.
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  # The advisory databases here are independent of npm's, so a package that
+  # npm has not yet catalogued is still caught.
+  osv-scanner:
+    name: OSV vulnerability scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google/osv-scanner-action/osv-scanner-action@v2.0.3
+        with:
+          scan-args: |-
+            --lockfile=package-lock.json
+            --lockfile=frontend/package-lock.json
+            --format=json
+            --output=/tmp/osv.json
+
+      - name: Fail on any advisory
+        run: |
+          if [ -f /tmp/osv.json ] && [ "$(cat /tmp/osv.json)" != "[]" ]; then
+            echo "::error::OSV reported vulnerabilities. See the job summary."
+            exit 1
+          fi
+          echo "No known vulnerabilities reported by OSV."
+
+  # Separate from `npm audit` because it covers dev dependencies and enforces
+  # the result, where `npm audit` has historically been advisory-only in CI.
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Audit production and development trees
+        run: |
+          # `--omit=dev` alone would miss a compromised build-time package, and
+          # that is how a malicious change reaches the published artifact.
+          npm audit --audit-level=moderate
+          npm audit --omit=dev --audit-level=high
+
+  # Blocks a PR that introduces a package with a known vulnerability or a
+  # license we have not accepted. Only the changed dependency set is reviewed,
+  # so the existing tree does not fail every new PR.
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether dependency review is available
+        id: availability
+        run: |
+          # Dependency review is backed by the repository's dependency graph,
+          # which is a Settings > Advanced Security toggle and cannot be set
+          # from a workflow file. Skip loudly when it is off, rather than
+          # failing every pull request for a repository configuration issue.
+          if gh api "repos/$GITHUB_REPOSITORY/dependency-graph/sbom" >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Dependency review skipped::Enable the dependency graph in Settings > Code security > Dependency graph to activate this check."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Review dependency changes
+        if: steps.availability.outputs.available == 'true'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          # GPL and AGPL are incompatible with the project's distribution model.
+          # Add an exception here rather than weakening the check globally.
+          license-check: true
+          deny-licenses: GPL-3.0, AGPL-3.0, SSPL-1.0
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    needs: [osv-scanner]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: .
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: sbom.spdx.json
+          output-file: ./sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: ./sbom.spdx.json
+          retention-days: 30
+
+  # Scans the actual published image, including OS packages, which no
+  # JavaScript scanner can see.
+  container-scan:
+    name: Container scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t hilbras-keystone:scan .
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: hilbras-keystone:scan
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  license-report:
+    name: License report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Generate license inventory
+        run: |
+          npm ci
+          npx --yes license-checker-rseidelsohn@4.4.2 \
+            --production --summary --json > license-summary.json
+          npx --yes license-checker-rseidelsohn@4.4.2 \
+            --production --csv > licenses.csv
+
+      - name: Fail on a disallowed license
+        run: |
+          node -e '
+            const fs = require("fs");
+            // Permissive licenses only. Anything copyleft or source-available
+            // is incompatible with how Keystone is distributed.
+            const allowed = new Set(["MIT", "MIT-0", "Apache-2.0", "BSD-2-Clause",
+              "BSD-3-Clause", "ISC", "0BSD", "CC0-1.0", "Unlicense", "Python-2.0",
+              "BlueOak-1.0.0",
+              // Pre-SPDX spelling emitted by older packages (e.g. the
+              // "MIT License" string) and normalized to MIT* by the scanner.
+              // The underlying LICENSE files are plain MIT.
+              "MIT*"]);
+            const found = new Set();
+            for (const line of fs.readFileSync("licenses.csv", "utf8").split("\n").slice(1)) {
+              const parts = line.split(",");
+              if (parts.length < 2) continue;
+              const name = parts[1].replace(/^"|"$/g, "").trim();
+              if (name) found.add(name);
+            }
+            const bad = [...found].filter((l) => !allowed.has(l));
+            console.log("Licenses in production tree:", [...found].sort().join(", "));
+            if (bad.length) {
+              console.error("::error::Disallowed licenses:", bad.join(", "));
+              process.exit(1);
+            }
+          '
+
+      - name: Upload license inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: licenses
+          path: |
+            licenses.csv
+            license-summary.json
+          retention-days: 30

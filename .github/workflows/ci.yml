@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Release branches carry the code that is actually tagged and published, so
+    # they need the same verification as main. Without this, a PR targeting a
+  # release branch runs no checks at all.
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
 
 jobs:
   backend:
@@ -47,6 +50,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Verify release metadata
+        run: npm run verify:release
 
       - name: Build backend
         run: npm run build

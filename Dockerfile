@@ -22,7 +22,18 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev \
+    && npm cache clean --force
+
+# The runtime image never invokes npm. `CMD` is `node dist/index.js`, and the
+# development compose override builds the `builder` target, which keeps its own
+# npm. So the bundled npm is dead weight that ships 8 HIGH-severity advisories
+# (brace-expansion, ip-address, pacote, picomatch, sigstore) inherited from the
+# base image's npm 10.9.9. Those are invisible to `npm audit` and the OSV
+# scanner, which only see package-lock.json; container scanning is what catches
+# them. Removing npm removes the whole surface rather than patching it.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/packages/keystone-sdk/dist ./packages/keystone-sdk/dist
