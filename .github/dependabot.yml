@@ -1,33 +1,67 @@
+# Automated dependency maintenance.
+#
+# Grouped so a routine patch sweep produces a handful of reviewable PRs instead
+# of dozens, and so a single compromised transitive package cannot reach main
+# inside an unrelated major upgrade.
 version: 2
+
 updates:
+  # Application dependencies.
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    labels: [dependencies, security]
+    # Security updates are not grouped with each other: when a package is
+    # compromised, the fix should land alone and be identifiable.
     groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
+      fastify-core:
+        patterns: ["fastify", "@fastify/*"]
+      test-tooling:
+        patterns: ["vitest", "tsx", "drizzle-kit", "typescript", "oxlint"]
+      # Everything else that is a routine patch or minor.
+      production-patches:
+        update-types: [patch, minor]
+        exclude-patterns: ["fastify", "@fastify/*"]
+
+  # Frontend dependencies.
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: [dependencies, frontend]
     groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
-  - package-ecosystem: npm
-    directory: /packages/keystone-sdk
-    schedule:
-      interval: weekly
-    groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
+      frontend-patches:
+        update-types: [patch, minor]
+
+  # The CI and release workflows are part of the product's security posture:
+  # a compromised action can read every secret in the repository.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    labels: [dependencies, ci]
+    groups:
+      actions-patches:
+        update-types: [patch, minor]
+
+  # Base image and OS package updates for the published image.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    labels: [dependencies, docker]

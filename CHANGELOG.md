@@ -5,6 +5,51 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-09-26
+
+### Security
+
+Four moderate advisories in the development tree, from `drizzle-kit` pulling
+`@esbuild-kit/esm-loader`, which pinned its own copy of `esbuild@0.18.20`
+(`GHSA-67mh-4wv8-2f99`, fixed in 0.25.0).
+
+The advisory allows a website to send requests to an esbuild **dev server** and
+read the response. Keystone never calls esbuild's `serve()` API, the packages
+are `devDependencies`, and `npm audit --omit=dev` was already clean, so this was
+not exploitable here. It was still a real advisory in the tree that builds and
+publishes the artifact, and `npm audit fix --force` offered only a downgrade of
+`drizzle-kit` to 0.18.1, which is a breaking change.
+
+Resolved with an `overrides` entry forcing `esbuild >= 0.25.0`, which collapses
+all three copies to 0.28.2 and clears the audit for production and development
+trees alike. Verified that `db:generate`, `db:migrate`, and `db:seed` all still
+work against the forced version, and that no non-dev package resolves esbuild.
+
+### Added
+
+- `.github/dependabot.yml` — weekly updates for npm (root and frontend), GitHub
+  Actions, and Docker. Routine patches are grouped; security updates are not, so
+  a compromised package lands alone and identifiable.
+- `.github/workflows/supply-chain.yml` — OSV scanning (independent advisory
+  source from npm's), enforced `npm audit` over both trees, dependency review on
+  pull requests, SBOM generation, container scanning, and a license gate.
+- `npm run verify:release` — fails on a version that disagrees between
+  `package.json` and the lockfile, a dependency in one and not the other, a
+  missing or malformed license, or a missing `repository` field. Wired into both
+  CI and the release workflow so a bad artifact cannot be published.
+
+### Fixed
+
+- `package.json` declared no `license` field, despite shipping an MIT `LICENSE`
+  file. The published package carried no machine-readable terms.
+
+### Changed
+
+- Fastify is at 5.12.5 and `fast-uri` resolves to 3.1.8, both already above the
+  5.12.2 / 3.1.7 targets. No upgrade was required.
+- The license allowlist permits only permissive terms, with an explicit
+  exception for the pre-SPDX `MIT*` identifier that older packages emit.
+
 ## [2.0.0] - 2026-09-26
 
 ### Security

@@ -108,7 +108,7 @@ export async function buildApp() {
       info: {
         title: "Hilbras Keystone API",
         description: "Identity platform API for Hilbras products and third-party apps.",
-        version: "2.0.0",
+        version: "2.1.0",
       },
       servers: [{ url: config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}` }],
       tags: [
