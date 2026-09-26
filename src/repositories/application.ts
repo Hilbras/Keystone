@@ -14,14 +14,20 @@ export class DrizzleApplicationRepository implements ApplicationRepository {
     return `app_${crypto.randomBytes(16).toString("base64url")}`;
   }
 
-  async create(input: CreateApplicationInput): Promise<Application & { clientSecret: string }> {
-    const clientSecret = input.clientSecret || generateClientSecret();
+  async create(input: CreateApplicationInput): Promise<Application & { clientSecret: string | null }> {
+    // A public client is issued no secret at all, rather than a secret it is
+    // expected to ignore. Storing one would leave a credential in the database
+    // that appears to protect the client and does not.
+    const clientType = input.clientType ?? "confidential";
+    const clientSecret = clientType === "public" ? null : input.clientSecret || generateClientSecret();
     const [app] = await db
       .insert(applications)
       .values({
         orgId: input.orgId,
         clientId: input.clientId || this.generateClientId(),
-        clientSecretHash: hashClientSecret(clientSecret),
+        clientSecretHash: clientSecret ? hashClientSecret(clientSecret) : null,
+        clientType,
+        allowedScopes: input.allowedScopes ?? [],
         name: input.name,
         redirectUris: input.redirectUris ?? [],
         allowedOrigins: input.allowedOrigins ?? [],

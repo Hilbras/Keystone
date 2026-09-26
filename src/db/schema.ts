@@ -100,7 +100,22 @@ export const applications = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     clientId: text("client_id").notNull().unique(),
-    clientSecretHash: text("client_secret_hash").notNull(),
+    /**
+     * Null for a public client. A public client is an SPA or a native app: it
+     * cannot keep a secret, so the OAuth security model gives it nothing at the
+     * client-authentication step and PKCE becomes its only protection against
+     * authorization code interception.
+     */
+    clientSecretHash: text("client_secret_hash"),
+    /** `confidential` (default) authenticates with a secret; `public` must use PKCE. */
+    clientType: text("client_type").default("confidential").notNull(),
+    /**
+     * Scopes this client is registered to ask for. The effective scope set is
+     * the intersection of what is registered here, what was requested, and what
+     * the user consented to, so a client cannot ask for authority it was never
+     * granted — only for authority the user gave it.
+     */
+    allowedScopes: text("allowed_scopes").array().default(sql`'{}'::text[]`).notNull(),
     name: text("name").notNull(),
     redirectUris: text("redirect_uris").array().default(sql`'{}'::text[]`).notNull(),
     allowedOrigins: text("allowed_origins").array().default(sql`'{}'::text[]`).notNull(),
@@ -114,6 +129,19 @@ export const applications = pgTable(
   (table) => ({
     orgIdx: index("applications_org_idx").on(table.orgId),
     clientIdIdx: index("applications_client_id_idx").on(table.clientId),
+    // A public client has no secret, so client authentication cannot be the
+    // thing that stops it. Enforced here rather than only in application code
+    // so the invariant holds for every writer.
+    clientTypeCheck: check(
+      "applications_client_type_check",
+      sql`${table.clientType} in ('confidential', 'public')`
+    ),
+    // The two halves of a client type have to agree: a public client must not
+    // carry a secret, and a confidential client must.
+    publicClientHasNoSecret: check(
+      "applications_public_client_no_secret_check",
+      sql`(${table.clientType} = 'public' and ${table.clientSecretHash} is null) or ${table.clientType} <> 'public'`
+    ),
   })
 );
 
@@ -155,6 +183,12 @@ export const refreshTokens = pgTable(
     userAgent: text("user_agent"),
     deviceFingerprint: text("device_fingerprint"),
     mfaFactor: text("mfa_factor"),
+    /**
+     * The scopes this token was granted. Carried across rotation so the
+     * authorization context a client received at the code grant is not silently
+     * discarded on the first refresh, and so a refresh cannot widen it.
+     */
+    scopes: text("scopes").array().default(sql`'{}'::text[]`).notNull(),
   },
   (table) => ({
     userIdx: index("refresh_tokens_user_idx").on(table.userId),

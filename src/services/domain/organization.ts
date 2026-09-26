@@ -104,7 +104,9 @@ export class OrganizationDomainService {
     name: string;
     redirectUris?: string[];
     allowedOrigins?: string[];
-  }): Promise<Result<Application & { clientSecret: string }>> {
+    clientType?: "confidential" | "public";
+    allowedScopes?: string[];
+  }): Promise<Result<Application & { clientSecret: string | null }>> {
     const app = await this.applications.create(input);
     await emit({ type: "application_created", payload: { orgId: input.orgId, appId: app.id } });
     return ok(app);
@@ -117,7 +119,7 @@ export class OrganizationDomainService {
   async updateApplication(
     appId: string,
     orgId: string,
-    updates: Partial<{ name: string; redirectUris: string[]; allowedOrigins: string[]; allowedIps: string[]; blockedIps: string[]; isActive: boolean; branding: Record<string, unknown> }>
+    updates: Partial<{ name: string; redirectUris: string[]; allowedOrigins: string[]; allowedIps: string[]; blockedIps: string[]; isActive: boolean; branding: Record<string, unknown>; clientType: "confidential" | "public"; allowedScopes: string[] }>
   ): Promise<Result<Application>> {
     const updated = await this.applications.update(appId, orgId, updates);
     if (!updated) return err({ code: "APP_NOT_FOUND", message: "Application not found", statusCode: 404 });

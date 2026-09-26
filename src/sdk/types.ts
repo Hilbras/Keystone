@@ -61,7 +61,8 @@ export interface OrganizationSdk {
   inviteMember(actorId: string, orgId: string, input: { email: string; role: "owner" | "admin" | "member" }, context?: EventContext): Promise<Result<{ user: PublicUser; membership: OrgMembership }>>;
   updateMemberRole(actorId: string, orgId: string, targetUserId: string, role: "owner" | "admin" | "member", context?: EventContext): Promise<Result<OrgMembership>>;
   removeMember(actorId: string, orgId: string, targetUserId: string, context?: EventContext): Promise<Result<{ success: boolean }>>;
-  createApplication(actorId: string, orgId: string, input: { name: string; redirectUris?: string[]; allowedOrigins?: string[] }): Promise<Result<PublicApplication & { clientSecret: string }>>;
+  /** `clientSecret` is null for a public client, which authenticates with PKCE. */
+  createApplication(actorId: string, orgId: string, input: { name: string; redirectUris?: string[]; allowedOrigins?: string[]; clientType?: "confidential" | "public"; allowedScopes?: string[] }): Promise<Result<PublicApplication & { clientSecret: string | null }>>;
   listOrganizationApplications(actorId: string, orgId: string): Promise<Result<PublicApplication[]>>;
   updateApplication(actorId: string, orgId: string, appId: string, updates: Partial<{ name: string; redirectUris: string[]; allowedOrigins: string[]; allowedIps: string[]; blockedIps: string[]; isActive: boolean; branding: Record<string, unknown> }>): Promise<Result<PublicApplication>>;
 }

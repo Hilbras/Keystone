@@ -13,6 +13,11 @@ export interface AuthorizeUrlOptions {
   redirectUri: string;
   scopes?: string[];
   extraParams?: Record<string, string>;
+  /**
+   * Binds the ID token to this authorization request. The connector sends it to
+   * the provider and the returned ID token must carry the same value.
+   */
+  nonce?: string;
 }
 
 export interface IdentityConnector {
@@ -20,7 +25,12 @@ export interface IdentityConnector {
   name: string;
   type: string;
   getAuthorizeUrl(opts: AuthorizeUrlOptions): string | Promise<string>;
-  exchangeCode(code: string, redirectUri: string): Promise<ExternalIdentity>;
+  /**
+   * `nonce` is the value sent in the authorization request. When supplied, the
+   * returned ID token must carry it, which is what binds the token to this
+   * login attempt rather than to any other.
+   */
+  exchangeCode(code: string, redirectUri: string, opts?: { nonce?: string }): Promise<ExternalIdentity>;
   verifyToken?(token: string): Promise<ExternalIdentity>;
 }
 

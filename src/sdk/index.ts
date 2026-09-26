@@ -177,7 +177,17 @@ class SdkOrganizationClient implements OrganizationSdk {
     return this.app.removeMember(actorId, orgId, targetUserId, context);
   }
 
-  async createApplication(actorId: string, orgId: string, input: { name: string; redirectUris?: string[]; allowedOrigins?: string[] }) {
+  async createApplication(
+    actorId: string,
+    orgId: string,
+    input: {
+      name: string;
+      redirectUris?: string[];
+      allowedOrigins?: string[];
+      clientType?: "confidential" | "public";
+      allowedScopes?: string[];
+    }
+  ) {
     const result = await this.app.createApplication(actorId, orgId, input);
     if (!result.success) return result;
     const safeApplication = toPublicApplication(result.data);

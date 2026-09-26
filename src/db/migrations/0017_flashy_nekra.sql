@@ -1,0 +1,1 @@
+ALTER TABLE "refresh_tokens" ADD COLUMN "scopes" text[] DEFAULT '{}'::text[] NOT NULL;
