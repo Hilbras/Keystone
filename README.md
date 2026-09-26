@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `1.9.0`**
+**Current version: `2.0.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,22 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.0.0
+
+> **Breaking.** Two changes affect every deployment. `x-service-account-id` no
+> longer authenticates on its own, and `x-forwarded-for` is no longer believed
+> unless `KEYSTONE_TRUSTED_PROXIES` is set — behind a proxy with it unset, all
+> clients share one rate-limit budget. Read
+> [MIGRATION-2.0.md](docs/MIGRATION-2.0.md) before upgrading.
+
+- **A service account cannot be named into existence** — `x-service-account-id` previously authenticated as any service account named in the header, with no certificate and no credential. Identity now comes only from a certificate bound to the account or an authenticated credential.
+- **Certificates are bound to a fingerprint** — a service account authenticates by a client certificate whose SHA-256 fingerprint is bound to it, uniquely. A fingerprint can map to at most one account, and malformed values are rejected before they reach the database.
+- **Client identity headers are stripped from untrusted peers** — an `onRequest` hook removes them before routing and authentication, so no route can read a spoofed identity by accident.
+- **Rate limits can no longer be escaped** — the limiter previously read `x-forwarded-for` unconditionally, so any client could present a fresh address per request and never be limited. Keys come from the peer address unless a trusted proxy forwarded one.
+- **`KEYSTONE_TRUSTED_PROXIES`** names the proxies permitted to set identity headers. Unset by default, which trusts nothing.
+- **Service accounts can be revoked** — `POST /v1/admin/organizations/:id/service-accounts/:accountId/revoke` stops both certificate and API-key authentication.
+- **Documented trust boundaries** — [trust-boundaries.md](docs/security/trust-boundaries.md), [proxy-security.md](docs/security/proxy-security.md), and [mtls.md](docs/security/mtls.md).
 
 ## What's new in v1.9.0
 
@@ -519,6 +535,7 @@ services:
 | `SCIM_ROTATION_GRACE_SECONDS` | Grace window for a rotated SCIM token. Defaults to `0`, so rotation revokes the previous token |
 | `SCIM_RATE_LIMIT_MAX` / `SCIM_RATE_LIMIT_WINDOW_SECONDS` | Per-credential SCIM request budget |
 | `SCIM_AUTH_FAILURE_MAX` / `SCIM_AUTH_FAILURE_WINDOW_SECONDS` | Budget for unauthenticated SCIM requests, applied before authentication |
+| `KEYSTONE_TRUSTED_PROXIES` | Comma-separated proxy IPs / CIDRs allowed to set client-identity headers. **Unset means trust nothing** — forwarded headers are stripped and all clients share one rate-limit budget. Required when Keystone runs behind a reverse proxy |
 
 ---
 
