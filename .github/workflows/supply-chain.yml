@@ -81,14 +81,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check whether dependency review is available
+        id: availability
+        run: |
+          # Dependency review is backed by the repository's dependency graph,
+          # which is a Settings > Advanced Security toggle and cannot be set
+          # from a workflow file. Skip loudly when it is off, rather than
+          # failing every pull request for a repository configuration issue.
+          if gh api "repos/$GITHUB_REPOSITORY/dependency-graph/sbom" >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Dependency review skipped::Enable the dependency graph in Settings > Code security > Dependency graph to activate this check."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Review dependency changes
+        if: steps.availability.outputs.available == 'true'
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: moderate
           # GPL and AGPL are incompatible with the project's distribution model.
           # Add an exception here rather than weakening the check globally.
           license-check: true
-          fail-on-license: GPL-3.0, AGPL-3.0, SSPL-1.0
+          deny-licenses: GPL-3.0, AGPL-3.0, SSPL-1.0
 
   sbom:
     name: SBOM
@@ -134,7 +151,7 @@ jobs:
         run: docker build -t hilbras-keystone:scan .
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: hilbras-keystone:scan
           format: table
