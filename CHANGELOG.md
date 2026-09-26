@@ -25,6 +25,23 @@ all three copies to 0.28.2 and clears the audit for production and development
 trees alike. Verified that `db:generate`, `db:migrate`, and `db:seed` all still
 work against the forced version, and that no non-dev package resolves esbuild.
 
+### Fixed
+
+- The published container image shipped 8 HIGH-severity advisories that no
+  JavaScript scanner can detect. `npm audit` and OSV both read
+  `package-lock.json` and correctly reported zero, because the vulnerable
+  packages are not in Keystone's dependency tree: they are the ones bundled
+  inside the base image's `npm@10.9.9` (`brace-expansion@2.0.2`,
+  `ip-address@10.1.0`, `pacote@19.0.2`, `picomatch@4.0.3`, `sigstore@3.1.0`).
+  The runtime image never invokes npm — `CMD` is `node dist/index.js`, and the
+  development compose override builds the `builder` target, which keeps its own
+  npm — so it is now removed from the production stage. This clears all 8 and
+  reduces the image from 600 MB to 550 MB.
+
+  Only container scanning finds this class of problem, which is why the gate
+  exists. Keystones own `brace-expansion@5.0.12` is already above the fixed
+  version and was never affected.
+
 ### Added
 
 - `.github/dependabot.yml` — weekly updates for npm (root and frontend), GitHub
