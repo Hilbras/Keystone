@@ -3,6 +3,7 @@ import { eq, and, gt, isNull } from "drizzle-orm";
 import { config, isZitadelConfigured } from "../../config.js";
 import { db } from "../../db/index.js";
 import { users, passwordResetTokens, type User } from "../../db/schema.js";
+import { consumePasswordResetTokenRow } from "../singleUse.js";
 import { createHumanUser, verifyPassword as verifyZitadelPassword } from "../zitadel.js";
 import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
 import { isPasswordBreached } from "../hibp.js";
@@ -343,23 +344,23 @@ export class AuthenticationDomainService {
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const now = new Date();
 
-    const [record] = await db
-      .select()
-      .from(passwordResetTokens)
-      .where(
-        and(
-          eq(passwordResetTokens.tokenHash, tokenHash),
-          gt(passwordResetTokens.expiresAt, now),
-          isNull(passwordResetTokens.usedAt)
-        )
-      )
-      .limit(1);
-
-    if (!record) {
-      return err({ code: "INVALID_TOKEN", message: "Invalid or expired reset token.", statusCode: 400 });
+    // Claim the token before doing any work. A conditional SELECT followed by an
+    // unconditional UPDATE would let parallel requests all pass the check and
+    // each write a different password, last writer winning — so the claim is
+    // the gate, and it happens first.
+    const claim = await consumePasswordResetTokenRow(tokenHash, now);
+    if (claim.outcome !== "consumed" || !claim.record) {
+      if (claim.reason === "replayed") {
+        await emit({ type: "password_reset_token_replayed", payload: {} });
+      }
+      return err({
+        code: "INVALID_TOKEN",
+        message: claim.reason === "expired" ? "This reset link has expired." : "Invalid or expired reset token.",
+        statusCode: 400,
+      });
     }
 
-    const user = await this.users.findById(record.userId);
+    const user = await this.users.findById(claim.record.userId);
     if (!user?.isActive) {
       return err({ code: "ACCOUNT_DEACTIVATED", message: "This account is deactivated.", statusCode: 403 });
     }
@@ -372,16 +373,17 @@ export class AuthenticationDomainService {
     }
 
     const passwordHash = await hashPassword(newPassword);
-    await db.transaction(async (tx) => {
-      await tx
-        .update(passwordResetTokens)
-        .set({ usedAt: now })
-        .where(eq(passwordResetTokens.id, record.id));
-      await tx
-        .update(users)
-        .set({ passwordHash, updatedAt: now })
-        .where(eq(users.id, user.id));
-    });
+    await db
+      .update(users)
+      .set({ passwordHash, updatedAt: now })
+      .where(eq(users.id, user.id));
+
+    // Every other live reset token for this user is now redundant: this one has
+    // been spent and any others in flight were issued alongside it.
+    await db
+      .update(passwordResetTokens)
+      .set({ usedAt: now })
+      .where(and(eq(passwordResetTokens.userId, user.id), isNull(passwordResetTokens.usedAt)));
 
     await emit({ type: "password_reset_completed", payload: { userId: user.id } });
     return ok(user);

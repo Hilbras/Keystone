@@ -64,6 +64,22 @@ Default provider stores secrets in PostgreSQL. Production deployments should use
 
 Administrative and organization user responses use a redacted public projection. Password hashes, TOTP secrets, setup tokens, and sensitive metadata are never returned by user-management endpoints. Self-service profile responses may return the authenticated user's own metadata, but API-key validation and cross-principal projections never do. Treat any client that depends on administrative metadata fields as requiring a separate, explicitly authorized migration.
 
+## Single-use credentials
+
+Magic links, password reset tokens, SMS OTP codes, MFA challenges, TOTP backup codes, OAuth2 authorization codes, and refresh tokens are each consumable exactly once, enforced by the database rather than by application logic.
+
+The claim is a single conditional write:
+
+```sql
+UPDATE <table> SET used_at = now()
+WHERE <hash> = ? AND expires_at > now() AND used_at IS NULL
+RETURNING *
+```
+
+Exactly one transaction can match that predicate, so concurrency cannot redeem a credential twice. Every consumption goes through `src/services/singleUse.ts`; a credential that reads and then writes inline can be raced.
+
+Presenting an already-spent credential is reported as a **replay** and emits an audit event (`magic_link_replayed`, `sms_otp_replayed`, `password_reset_token_replayed`). An expired credential is not a replay and is not reported as one. A token that never existed is reported only as invalid, so the endpoint does not become an oracle for which tokens once existed.
+
 ## Trust boundaries
 
 Keystone trusts exactly two things: the socket peer address, and credentials it can verify cryptographically. Everything arriving in a header is attacker-controlled unless the peer is a configured trusted proxy.

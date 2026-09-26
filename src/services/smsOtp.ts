@@ -3,6 +3,8 @@ import { eq, and, gt, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { smsOtpCodes, users, type User } from "../db/schema.js";
 import { smsProvider } from "./sms.js";
+import { consumeSmsOtpCodeRow } from "./singleUse.js";
+import { emit } from "./events/bus.js";
 
 const CODE_TTL_SECONDS = 300;
 const CODE_LENGTH = 6;
@@ -38,22 +40,16 @@ export async function verifySmsOtp(userId: string, code: string): Promise<boolea
   const codeHash = hashCode(code);
   const now = new Date();
 
-  const [record] = await db
-    .select()
-    .from(smsOtpCodes)
-    .where(
-      and(
-        eq(smsOtpCodes.userId, userId),
-        eq(smsOtpCodes.codeHash, codeHash),
-        gt(smsOtpCodes.expiresAt, now),
-        isNull(smsOtpCodes.usedAt)
-      )
-    )
-    .limit(1);
-
-  if (!record) return false;
-
-  await db.update(smsOtpCodes).set({ usedAt: now }).where(eq(smsOtpCodes.id, record.id));
+  // Claim atomically, so a code cannot be spent by two parallel verifications.
+  // Scoped to the user as well as the hash: a six-digit code is short enough
+  // that a global lookup could collide across accounts.
+  const result = await consumeSmsOtpCodeRow(userId, codeHash, now);
+  if (result.outcome !== "consumed") {
+    if (result.reason === "replayed") {
+      emit({ type: "sms_otp_replayed", payload: { userId } });
+    }
+    return false;
+  }
   return true;
 }
 
