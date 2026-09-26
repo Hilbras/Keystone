@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.0.0`**
+**Current version: `2.1.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,14 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.1.0
+
+- **Dependency tree is clean** — `npm audit` reports zero vulnerabilities across production *and* development trees, including a transitive `esbuild@0.18.20` that `drizzle-kit` was pinning. Resolved with an `overrides` entry rather than `audit fix --force`, which offered only a breaking downgrade of `drizzle-kit`.
+- **Continuous dependency security** — Dependabot for npm, GitHub Actions, and Docker; OSV scanning as an advisory source independent of npm's; enforced `npm audit`; dependency review on pull requests; SBOM generation; container scanning; and a license gate restricted to permissive terms.
+- **Release metadata is verified** — `npm run verify:release` fails the build on a version that disagrees between `package.json` and the lockfile, a missing or malformed license, or a missing `repository` field. Runs in CI and again before `npm publish`.
+- **The container image no longer ships a vulnerable npm** — the runtime image carried 8 HIGH-severity advisories inherited from the base image's bundled `npm@10.9.9`, invisible to `npm audit` and OSV because they are not in the dependency tree. npm is now removed from the production stage, which the app never invokes, clearing all 8 and shrinking the image from 600 MB to 550 MB.
+- **The package now declares its license** — `package.json` had no `license` field despite shipping an MIT `LICENSE` file, so the published package carried no machine-readable terms.
 
 ## What's new in v2.0.0
 
