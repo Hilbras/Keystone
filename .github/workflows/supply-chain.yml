@@ -7,9 +7,12 @@ name: Supply Chain
 
 on:
   push:
-    branches: [main]
+    # Release branches carry the code that is actually tagged and published, so
+    # they need the same verification as main. Without this, a PR targeting a
+    # release branch runs no checks at all.
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   schedule:
     # Monday 05:00 UTC — ahead of the Dependabot sweep at 06:00, so a newly
     # published advisory is already known when the update PRs arrive.
