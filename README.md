@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.2.0`**
+**Current version: `2.3.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,15 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.3.0
+
+- **A password reset now actually logs the attacker out** — completing a reset changed the password but left every existing session and refresh token working. A reset is the standard response to a suspected compromise, so this defeated its own purpose: whoever prompted the reset kept their access. Sessions, refresh tokens, and outstanding recovery credentials are now all invalidated.
+- **An intercepted earlier reset email is dead** — reset tokens issued alongside the one used are now spent, so someone who captured a previous reset email cannot complete it after the user has already recovered.
+- **One revocation layer** — `revokeUserSessions`, `revokeRefreshTokens`, `revokeAuthenticationSessions`, and `revokeRecoveryCredentials` live in one place. Revocation was previously open-coded per call site, which is how the reset path came to omit it; the MFA-enable path now routes through the same function so the rule cannot drift.
+- **Recovery is left intact** — resetting revokes access but does not lock the user out: they can immediately log in with the new password. Covered by a test.
+
+> **Not revoked on reset:** API keys. They are separately issued, long-lived credentials belonging to integrations rather than to the person, and killing them silently breaks deployments. The residual gap — a key minted by an attacker who already held the password — is real; see [SECURITY.md](docs/SECURITY.md) for why key expiry is the right fix.
 
 ## What's new in v2.2.0
 

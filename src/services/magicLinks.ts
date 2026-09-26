@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { magicLinks, users, type User } from "../db/schema.js";
 import { config } from "../config.js";

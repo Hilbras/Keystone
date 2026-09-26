@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { smsOtpCodes, users, type User } from "../db/schema.js";
 import { smsProvider } from "./sms.js";

@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { config, isZitadelConfigured } from "../../config.js";
 import { db } from "../../db/index.js";
 import { users, passwordResetTokens, type User } from "../../db/schema.js";
 import { consumePasswordResetTokenRow } from "../singleUse.js";
+import { revokeAllUserCredentials } from "../sessionRevocation.js";
 import { createHumanUser, verifyPassword as verifyZitadelPassword } from "../zitadel.js";
 import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
 import { isPasswordBreached } from "../hibp.js";
@@ -378,14 +379,22 @@ export class AuthenticationDomainService {
       .set({ passwordHash, updatedAt: now })
       .where(eq(users.id, user.id));
 
-    // Every other live reset token for this user is now redundant: this one has
-    // been spent and any others in flight were issued alongside it.
-    await db
-      .update(passwordResetTokens)
-      .set({ usedAt: now })
-      .where(and(eq(passwordResetTokens.userId, user.id), isNull(passwordResetTokens.usedAt)));
+    // A reset is the standard response to a suspected compromise, so it has to
+    // actually remove the intruder. Changing the password while leaving live
+    // sessions and refresh tokens would let whoever prompted the reset keep
+    // using the account. Also spends any other reset token issued alongside
+    // this one, so an intercepted earlier email cannot be completed later.
+    const revoked = await revokeAllUserCredentials(user.id);
 
-    await emit({ type: "password_reset_completed", payload: { userId: user.id } });
+    await emit({
+      type: "password_reset_completed",
+      payload: {
+        userId: user.id,
+        revokedSessions: revoked.sessions,
+        revokedRefreshTokens: revoked.refreshTokens,
+        revokedRecoveryCredentials: revoked.recoveryCredentials,
+      },
+    });
     return ok(user);
   }
 }
