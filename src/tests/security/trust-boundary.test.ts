@@ -36,6 +36,9 @@ const {
   fastifyTrustProxySetting,
   isTrustedProxy,
   isValidFingerprint,
+  hasTrustedProxies,
+  isInfrastructureAddress,
+  describeUntrustedPeer,
   normalizeAddress,
   peerAddress,
   resetTrustedProxyCache,
@@ -302,6 +305,64 @@ describe("Header stripping", () => {
     assert.equal(observedHeaders.fingerprint, undefined, "fingerprint must be stripped");
     assert.equal(observedHeaders.serviceAccount, undefined, "service-account hint must be stripped");
     assert.equal(observedHeaders.forwardedFor, undefined, "forwarded-for must be stripped");
+  });
+});
+
+describe("Misconfiguration diagnostics", () => {
+  it("recognises infrastructure addresses", () => {
+    for (const address of [
+      "127.0.0.1",
+      "::1",
+      "10.1.2.3",
+      "172.16.0.1",
+      "172.31.255.255",
+      "192.168.1.1",
+      "169.254.169.254",
+      "fe80::1",
+      "fd00::1",
+      "::ffff:127.0.0.1",
+      // Fully expanded forms must classify the same as the compressed ones.
+      "fe80:0000:0000:0000:0000:0000:0000:0001",
+      "fd12:3456:789a:bcde:f012:3456:789a:bcde",
+    ]) {
+      assert.equal(isInfrastructureAddress(address), true, address);
+    }
+  });
+
+  it("does not treat public client addresses as infrastructure", () => {
+    for (const address of [
+      "203.0.113.9",
+      "198.51.100.7",
+      "8.8.8.8",
+      // 172.15/16 and 172.32/16 sit just outside RFC 1918.
+      "172.15.0.1",
+      "172.32.0.1",
+      "11.0.0.1",
+      "192.169.0.1",
+      "2001:db8::1",
+    ]) {
+      assert.equal(isInfrastructureAddress(address), false, address);
+    }
+  });
+
+  it("reports a proxied deployment that forgot to configure trusted proxies", async () => {
+    await withTrustedProxies("", async () => {
+      assert.equal(hasTrustedProxies(), false);
+      const reason = describeUntrustedPeer("10.0.0.1");
+      assert.ok(reason, "an infrastructure peer with no configured proxy is a misconfiguration");
+      assert.match(reason, /KEYSTONE_TRUSTED_PROXIES/);
+      assert.match(reason, /rate-limit/, "the warning must name the observable symptom");
+    });
+  });
+
+  it("stays quiet for a public client and once proxies are configured", async () => {
+    await withTrustedProxies("", async () => {
+      assert.equal(describeUntrustedPeer("203.0.113.9"), null, "a hostile client is not a misconfiguration");
+    });
+    await withTrustedProxies("10.0.0.0/8", async () => {
+      assert.equal(hasTrustedProxies(), true);
+      assert.equal(describeUntrustedPeer("192.168.1.1"), null, "the operator configured this deliberately");
+    });
   });
 });
 

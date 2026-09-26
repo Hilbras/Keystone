@@ -146,6 +146,14 @@ export function resetTrustedProxyCache(): void {
   cachedConfig = null;
 }
 
+/**
+ * Is at least one trusted proxy configured? False means client-identity headers
+ * are stripped from every request and rate limits key on the peer address.
+ */
+export function hasTrustedProxies(): boolean {
+  return trustedEntries().length > 0;
+}
+
 export function isTrustedProxy(address: string | undefined): boolean {
   const entries = trustedEntries();
   if (entries.length === 0) return false;
@@ -207,6 +215,53 @@ export function stripUntrustedHeaders(request: FastifyRequest): boolean {
 export function fastifyTrustProxySetting(): boolean | string[] {
   const entries = trustedEntries();
   return entries.length > 0 ? entries : false;
+}
+
+/**
+ * Does this address look like infrastructure rather than a public client?
+ *
+ * Loopback, RFC 1918, link-local, and unique-local ranges are where reverse
+ * proxies, load balancers, and service meshes live. A request arriving from one
+ * of these while no trusted proxy is configured is the signature of a proxied
+ * deployment that forgot `KEYSTONE_TRUSTED_PROXIES` — which fails silently, as
+ * every client collapsing into a single rate-limit budget.
+ */
+export function isInfrastructureAddress(address: string): boolean {
+  const target = normalizeAddress(address);
+  if (!target) return false;
+  if (target === "127.0.0.1" || target === "::1" || target === "0.0.0.0" || target === "::") {
+    return true;
+  }
+  if (target.startsWith("10.")) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(target)) return true;
+  if (target.startsWith("192.168.")) return true;
+  if (target.startsWith("169.254.")) return true;
+  // IPv6: fe80::/10 link-local, fc00::/7 unique-local. Compare the first
+  // hextet regardless of how many there are, so a fully expanded address
+  // (`fe80:0000:...:0001`) is classified the same as the compressed form.
+  const first = parseInt(target.split(":")[0] ?? "", 16);
+  if (Number.isInteger(first)) {
+    if ((first & 0xffc0) === 0xfe80) return true;
+    if ((first & 0xfe00) === 0xfc00) return true;
+  }
+  return false;
+}
+
+/**
+ * Why no forwarded headers were believed, or `null` when the peer was trusted.
+ *
+ * Returned so the caller can log a warning only in the case that indicates a
+ * misconfiguration, rather than on every stripped request.
+ */
+export function describeUntrustedPeer(address: string): string | null {
+  if (hasTrustedProxies()) return null;
+  if (!isInfrastructureAddress(address)) return null;
+  return (
+    "client-identity headers were stripped from an infrastructure address while " +
+    "KEYSTONE_TRUSTED_PROXIES is unset. If Keystone is behind a reverse proxy, " +
+    "set it to the proxy's address: until then every client shares one rate-limit " +
+    "budget and forwarded client addresses are ignored. See docs/security/proxy-security.md"
+  );
 }
 
 const FINGERPRINT_HEX = /^[0-9a-f]{64}$/i;
