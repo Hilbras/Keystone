@@ -5,6 +5,91 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-09-26
+
+### Security
+
+The mTLS trust boundary trusted whatever the request said about itself. Any
+client that could reach Keystone could name a service account in a header and
+become it, and could set its own IP address to escape every rate limit. This
+release makes identity come only from values a client cannot forge.
+
+- **`x-service-account-id` no longer authenticates.** It previously resolved a
+  service account on its own, with no certificate and no credential, so anyone
+  who knew or guessed an account ID became that account. It is now read only as a
+  hint alongside a valid certificate, and only when the account it names is the
+  one that certificate is bound to. A mismatch is refused, not fallen back from.
+- **Client identity is bound to a certificate fingerprint.** A new unique
+  `service_accounts.cert_fingerprint` column pins a SHA-256 fingerprint to
+  exactly one account. Fingerprints are stored canonicalized, so the hex and
+  colon-separated spellings of one certificate cannot become two bindings, and
+  malformed values are rejected before reaching the database. Service accounts
+  are resolved by fingerprint rather than by their operator-chosen name.
+- **Identity headers are stripped from untrusted peers.** An `onRequest` hook
+  registered before every plugin and route removes
+  `x-forwarded-client-cert`, `x-client-cert-fingerprint`,
+  `x-forwarded-client-cert-chain`, `x-service-account-id`, `x-forwarded-for`,
+  `x-real-ip`, and `forwarded` unless the peer is a configured trusted proxy.
+  Stripping rather than ignoring means a route added later cannot read a
+  spoofed identity by accident.
+- **Rate limits can no longer be escaped.** The server was created with
+  `trustProxy: true` and the limiter read `x-forwarded-for` unconditionally, so
+  any client could present a fresh address per request and never be limited —
+  including against login, password reset, MFA verification, and SCIM. Limit keys
+  now come from the peer address unless a trusted proxy forwarded one.
+- **Trust decisions do not use `request.ip`.** With `trustProxy` enabled that
+  value is derived from the attacker-controlled header, so the trusted-proxy
+  check uses the socket peer address, the only value a client cannot set.
+- **Forwarded values are validated before use.** Certificate headers are
+  length-capped, and a fingerprint must be a well-formed SHA-256 digest, so
+  garbage cannot be used as a lookup key.
+- **Inactive and revoked service accounts cannot authenticate by certificate.**
+
+### Added
+
+- `KEYSTONE_TRUSTED_PROXIES` — comma-separated proxy IPs, IPv4 CIDRs, or IPv6
+  prefixes permitted to set client-identity headers. Unset by default, which
+  trusts nothing. IPv4-mapped IPv6 peers are normalized before matching, and
+  unrecognized input fails closed.
+- `PUT /v1/admin/organizations/:id/service-accounts/:accountId/certificate` —
+  bind or clear a client-certificate fingerprint, auditing
+  `service_account_certificate_bound` / `service_account_certificate_unbound`.
+  A certificate already held by another account returns `409`.
+- `POST /v1/admin/organizations/:id/service-accounts/:accountId/revoke` —
+  permanently stop an account authenticating, auditing
+  `service_account_revoked`. Revoking an already-revoked account returns `409`
+  rather than a silent success.
+- `docs/security/trust-boundaries.md`, `docs/security/proxy-security.md`, and
+  `docs/security/mtls.md` — the trust model, proxy requirements with working
+  nginx and ALB configuration, and the mTLS identity rules.
+- `docs/MIGRATION-2.0.md` — migration instructions, including the failure mode
+  that presents as unrelated clients sharing a rate-limit budget.
+
+### Fixed
+
+- The SCIM token-hash unique indexes introduced in 1.9.0 were declared in the
+  Drizzle schema but never emitted as a migration, so they did not exist in any
+  deployed database. They are created by migration `0015`.
+- The documented nginx configuration used `$proxy_add_x_forwarded_for`, which
+  appends to a client-supplied value and lets a client prepend a forged address.
+  Corrected to `$remote_addr`, with inbound identity headers stripped.
+
+### Changed
+
+- `trustProxy` is derived from `KEYSTONE_TRUSTED_PROXIES` instead of being
+  unconditionally `true`.
+- `requireMTLS` distinguishes an untrusted peer (`401 MTLS_UNTRUSTED_PEER`) from
+  a missing certificate (`401 MTLS_CERTIFICATE_MISSING`), so a misconfiguration
+  is distinguishable from an attack.
+
+### Breaking
+
+- mTLS clients that authenticated with `x-service-account-id` alone must bind a
+  certificate fingerprint instead.
+- Deployments behind a reverse proxy must set `KEYSTONE_TRUSTED_PROXIES`.
+  Without it, forwarded headers are stripped and every client shares one
+  rate-limit budget, so unrelated users can rate-limit each other.
+
 ## [1.9.0] - 2026-09-25
 
 ### Security

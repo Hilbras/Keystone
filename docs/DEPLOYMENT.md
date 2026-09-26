@@ -176,11 +176,33 @@ server {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # $remote_addr, NOT $proxy_add_x_forwarded_for. The append form lets a client
+    # prepend a forged address, which then becomes the value Keystone believes.
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Drop inbound identity headers. Keystone ignores them from untrusted peers
+    # anyway, but stripping them here keeps a misconfiguration from being
+    # exploitable and keeps the proxy honest.
+    proxy_set_header X-Forwarded-Client-Cert "";
+    proxy_set_header X-Client-Cert-Fingerprint "";
+    proxy_set_header X-Service-Account-Id "";
   }
 }
 ```
+
+**Set the trusted proxy list.** Since 2.0.0, Keystone does not believe
+forwarded headers unless the request arrived from a configured proxy, and it
+keys rate limits on the peer address otherwise — which, behind a reverse proxy,
+means every client shares one budget:
+
+```bash
+KEYSTONE_TRUSTED_PROXIES="127.0.0.1,::1"
+```
+
+Use the address the proxy connects from. Keep the list as narrow as possible.
+Full requirements, including why each header matters:
+[security/proxy-security.md](security/proxy-security.md).
 
 ### Option C: Cloudflare
 

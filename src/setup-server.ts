@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fastifyTrustProxySetting } from "./services/trustedProxies.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fs from "node:fs/promises";
 import fastify from "fastify";
@@ -12,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 async function buildSetupApp() {
   const app = fastify({
     logger: { level: config.NODE_ENV === "production" ? "info" : "debug" },
-    trustProxy: true,
+    trustProxy: fastifyTrustProxySetting(),
     genReqId: () => crypto.randomUUID(),
   });
 

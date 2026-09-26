@@ -176,12 +176,22 @@ export const serviceAccounts = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
+    /**
+     * Canonical SHA-256 fingerprint of the client certificate this account is
+     * allowed to authenticate with. Identity is bound here rather than to a
+     * name, so a caller cannot choose which account it becomes.
+     */
+    certFingerprint: text("cert_fingerprint"),
     isActive: boolean("is_active").default(true).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     orgIdx: index("service_accounts_org_idx").on(table.orgId),
+    certFingerprintIdx: uniqueIndex("service_accounts_cert_fingerprint_unique")
+      .on(table.certFingerprint)
+      .where(sql`cert_fingerprint is not null`),
   })
 );
 
