@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { redis, isRedisReady } from "../services/redis.js";
+import { clientAddress } from "../services/trustedProxies.js";
 
 interface RateLimitPluginOptions {
   keyPrefix: string;
@@ -78,21 +79,21 @@ function cryptoRandom(): string {
   return crypto.randomBytes(8).toString("hex");
 }
 
+/**
+ * Rate-limit key source. Uses the peer address unless the request came from a
+ * configured trusted proxy, so a client cannot rotate `x-forwarded-for` to get a
+ * fresh budget.
+ */
 function clientIdentifier(request: FastifyRequest): string {
-  return (
-    (request.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-    request.ip
-  );
+  return clientAddress(request);
 }
 
 /**
- * The resolved client address. Exposed so a route that must run before the
- * normal limiter (because it emits audit events on failure) can still budget
- * itself rather than being unbounded.
+ * Re-exported so a route that must run before the normal limiter (because it
+ * emits audit events on failure) can still budget itself rather than being
+ * unbounded.
  */
-export function clientAddress(request: FastifyRequest): string {
-  return clientIdentifier(request);
-}
+export { clientAddress };
 
 /** Raw sliding-window check, for the same pre-limiter case. */
 export { isAllowed };

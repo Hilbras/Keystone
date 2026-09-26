@@ -400,6 +400,8 @@ are available to any authenticated member.
 | GET | `/v1/admin/organizations/:id/service-accounts` | org permission | List service accounts |
 | GET | `/v1/admin/organizations/:id/service-accounts/:accountId` | org permission | Service account detail |
 | PATCH | `/v1/admin/organizations/:id/service-accounts/:accountId` | org permission | Update service account |
+| PUT | `/v1/admin/organizations/:id/service-accounts/:accountId/certificate` | org permission (`service_account:update`) | Bind or clear a client-certificate SHA-256 fingerprint. `409` if already bound to another account |
+| POST | `/v1/admin/organizations/:id/service-accounts/:accountId/revoke` | org permission (`service_account:update`) | Revoke a service account. `409` if already revoked |
 | POST | `/v1/admin/organizations/:id/service-accounts/:accountId/api-keys` | org permission | Issue API key for service account |
 
 Organization user PATCH/DELETE routes are retained only as explicit migration tombstones (`410`) for clients that used them to mutate global accounts. Use platform user administration for account-wide changes and `/members/:userId` for organization roles.

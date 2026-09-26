@@ -11,6 +11,7 @@ import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { initializeContainer } from "./di.js";
 import { getContainer } from "./container.js";
+import { fastifyTrustProxySetting } from "./services/trustedProxies.js";
 import { redis } from "./services/redis.js";
 import { loadSigningKeys, getPublicJwks } from "./services/tokens.js";
 
@@ -33,6 +34,7 @@ import type { KeystonePlugin } from "./services/plugins/types.js";
 import appContextPlugin from "./plugins/appContext.js";
 import permissionsPlugin from "./plugins/permissions.js";
 import mtlsPlugin from "./plugins/mtls.js";
+import headerSanitization from "./plugins/headerSanitization.js";
 import metricsPlugin from "./plugins/metrics.js";
 import { globalRateLimit } from "./plugins/rateLimit.js";
 import authRoutes from "./routes/auth.js";
@@ -88,20 +90,25 @@ export async function buildApp() {
 
   const app = fastify({
     logger: { level: config.NODE_ENV === "production" ? "info" : "debug" },
-    trustProxy: true,
+    // Derived from KEYSTONE_TRUSTED_PROXIES; `false` by default so a client
+    // cannot spoof its address through x-forwarded-for.
+    trustProxy: fastifyTrustProxySetting(),
     genReqId: () => crypto.randomUUID(),
   });
 
   app.decorate("container", container);
 
   await app.register(requestLogger);
+  // Must precede every plugin and route: strips client-identity headers from
+  // requests that did not arrive from a configured trusted proxy.
+  await app.register(headerSanitization);
 
   await app.register(swagger, {
     openapi: {
       info: {
         title: "Hilbras Keystone API",
         description: "Identity platform API for Hilbras products and third-party apps.",
-        version: "1.9.0",
+        version: "2.0.0",
       },
       servers: [{ url: config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}` }],
       tags: [

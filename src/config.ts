@@ -152,6 +152,14 @@ export const config = {
   /** Budget for unauthenticated SCIM requests, which run before the credential limiter. */
   SCIM_AUTH_FAILURE_MAX: positiveInt("SCIM_AUTH_FAILURE_MAX", "60"),
   SCIM_AUTH_FAILURE_WINDOW_SECONDS: positiveInt("SCIM_AUTH_FAILURE_WINDOW_SECONDS", "60"),
+  /**
+   * Comma-separated IP addresses and CIDR ranges of reverse proxies allowed to
+   * set client-identity headers (`x-forwarded-for`, `x-forwarded-client-cert`,
+   * ...). Empty means trust nothing: the peer address is used and those headers
+   * are stripped. Set this only when Keystone genuinely sits behind a proxy you
+   * control — an over-broad value lets any client behind it forge an identity.
+   */
+  TRUSTED_PROXIES: getEnv("KEYSTONE_TRUSTED_PROXIES"),
   MFA_CHALLENGE_TTL_SECONDS: positiveInt("MFA_CHALLENGE_TTL_SECONDS", "300"),
   MFA_MAX_ATTEMPTS: positiveInt("MFA_MAX_ATTEMPTS", "5"),
   TOTP_BACKUP_CODE_TTL_SECONDS: positiveInt("TOTP_BACKUP_CODE_TTL_SECONDS", "7776000"),

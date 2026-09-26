@@ -64,9 +64,21 @@ Default provider stores secrets in PostgreSQL. Production deployments should use
 
 Administrative and organization user responses use a redacted public projection. Password hashes, TOTP secrets, setup tokens, and sensitive metadata are never returned by user-management endpoints. Self-service profile responses may return the authenticated user's own metadata, but API-key validation and cross-principal projections never do. Treat any client that depends on administrative metadata fields as requiring a separate, explicitly authorized migration.
 
+## Trust boundaries
+
+Keystone trusts exactly two things: the socket peer address, and credentials it can verify cryptographically. Everything arriving in a header is attacker-controlled unless the peer is a configured trusted proxy.
+
+`KEYSTONE_TRUSTED_PROXIES` (comma-separated IPs, IPv4 CIDRs, or IPv6 prefixes) names the proxies permitted to set client-identity headers. It is **empty by default**, which means nothing is trusted: forwarded headers are stripped in an `onRequest` hook before routing, and rate limiting keys on the peer address.
+
+A service account authenticates only with a client certificate whose SHA-256 fingerprint is bound to it in `service_accounts.cert_fingerprint`, or with an authenticated credential (API key, session, bearer token). No header establishes identity — before v2.0.0, `x-service-account-id` alone authenticated as any named service account.
+
+Details: [trust-boundaries.md](security/trust-boundaries.md), [proxy-security.md](security/proxy-security.md), [mtls.md](security/mtls.md). Upgrade notes: [MIGRATION-2.0.md](MIGRATION-2.0.md).
+
 ## Rate limiting
 
 A Redis-backed sliding-window rate limiter protects authentication and public endpoints. It returns `429 Too Many Requests` with a `Retry-After` header. It fails open if Redis is unreachable.
+
+Rate-limit keys come from the peer address unless the request came from a configured trusted proxy, in which case the forwarded client address is used. Before v2.0.0 the limiter read `x-forwarded-for` unconditionally, so any client could present a fresh address per request and never be limited.
 
 SCIM carries two budgets: one keyed on the authenticated credential, so one noisy identity provider cannot exhaust every other tenant's allowance, and an address-keyed budget in front of the authentication hook, because that hook runs before the credential limiter and emits audit and webhook events on failure.
 
