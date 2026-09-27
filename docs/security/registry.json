@@ -630,6 +630,18 @@
       "test": "src/tests/security/audit-export.test.ts",
       "documentation": "docs/security/audit.md",
       "covers": []
+    },
+    {
+      "id": "SEC-046",
+      "title": "Every service-account request produced no audit record at all",
+      "severity": "high",
+      "component": "audit",
+      "release": "2.9.0",
+      "issue": "A machine principal is represented in memory by a user object whose id is the sentinel `sa:<uuid>`, so that routes expecting `request.user` keep working without a matching user row. The audit subscriber passed that sentinel straight into `audit_log.user_id`, which is a uuid column. Postgres rejected the insert, the subscriber's catch logged `failed to write event` and the audit record was lost. The request itself succeeded, so nothing failed visibly, and the absence of a record looked exactly like a request that never happened. The practical effect was that every request authenticated by an API key or an mTLS service account left no audit trail — the privileged, non-human path, which is the one an attacker would most want to use quietly. Surfaced by a test whose fixture failed in CI and not locally, because CI's request ids and principal resolution differed enough for the bad insert to occur there.",
+      "fix": "src/services/events/subscribers/auditLog.ts — the sentinel is stripped, user_id is left null, and the service account is recorded in metadata",
+      "test": "src/tests/security/service-accounts/audit-attribution.test.ts",
+      "documentation": "docs/security/audit.md",
+      "covers": []
     }
   ]
 }

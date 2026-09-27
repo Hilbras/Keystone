@@ -4,12 +4,12 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**45 findings.**
+**46 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
-| high | 25 |
+| high | 26 |
 | medium | 13 |
 | low | 1 |
 
@@ -461,6 +461,18 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Test.** `src/tests/security/saml/saml-validator.test.ts`
 
 **Documentation.** [docs/security/enterprise-sso.md](./enterprise-sso.md)
+
+### SEC-046 — Every service-account request produced no audit record at all
+
+*Fixed in v2.9.0. Component: `audit`.*
+
+**Issue.** A machine principal is represented in memory by a user object whose id is the sentinel `sa:<uuid>`, so that routes expecting `request.user` keep working without a matching user row. The audit subscriber passed that sentinel straight into `audit_log.user_id`, which is a uuid column. Postgres rejected the insert, the subscriber's catch logged `failed to write event` and the audit record was lost. The request itself succeeded, so nothing failed visibly, and the absence of a record looked exactly like a request that never happened. The practical effect was that every request authenticated by an API key or an mTLS service account left no audit trail — the privileged, non-human path, which is the one an attacker would most want to use quietly. Surfaced by a test whose fixture failed in CI and not locally, because CI's request ids and principal resolution differed enough for the bad insert to occur there.
+
+**Fix.** src/services/events/subscribers/auditLog.ts — the sentinel is stripped, user_id is left null, and the service account is recorded in metadata
+
+**Test.** `src/tests/security/service-accounts/audit-attribution.test.ts`
+
+**Documentation.** [docs/security/audit.md](./audit.md)
 
 ## Medium
 

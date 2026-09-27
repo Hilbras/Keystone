@@ -101,6 +101,24 @@ function rowMetadata(row: { metadata: unknown }): Record<string, unknown> {
 }
 
 /**
+ * Rows added since a snapshot, identified by id.
+ *
+ * `select()` without an `ORDER BY` makes "the last row" arbitrary, so
+ * `.slice(-1)` asserts on whatever Postgres happened to return. When the suite
+ * shares the audit table with everything else, that is regularly the wrong row —
+ * and a test that checks the wrong row fails for a reason unrelated to the
+ * behaviour it claims to cover.
+ */
+async function newRowsSince(snapshot: Set<string>) {
+  const all = await db.select().from(auditLog);
+  return all.filter((row) => !snapshot.has(row.id));
+}
+
+async function snapshotIds(): Promise<Set<string>> {
+  return new Set((await db.select().from(auditLog)).map((r) => r.id));
+}
+
+/**
  * Audit rows of a given type for an actor, newest first.
  *
  * Events are stored with their schema version appended — `user_login:v1` — so a
@@ -120,7 +138,7 @@ async function auditRows(type: string, userId?: string) {
 describe("Failed logins are recorded", () => {
   it("records a failed password attempt", async () => {
     const { email } = await createUser();
-    const before = (await auditRows("user_login_failed")).length;
+    const snapshot = await snapshotIds();
 
     const response = await app.inject({
       method: "POST",
@@ -129,13 +147,15 @@ describe("Failed logins are recorded", () => {
     });
     assert.equal(response.statusCode, 401, "a wrong password must be rejected");
 
-    const after = await auditRows("user_login_failed");
+    const added = (await newRowsSince(snapshot)).filter(
+      (r) => r.event === "user_login_failed:v1"
+    );
     assert.ok(
-      after.length > before,
+      added.length > 0,
       "a rejected login must leave a record; before 2.8.0 it produced a 401 and nothing else"
     );
     assert.ok(
-      after.some((row) => rowMetadata(row).email === email),
+      added.some((row) => rowMetadata(row).email === email),
       "the record must identify the address that was attempted"
     );
   });
@@ -159,7 +179,7 @@ describe("Failed logins are recorded", () => {
 
   it("records a failure on the token login route as well", async () => {
     const { email } = await createUser();
-    const before = (await auditRows("user_login_failed")).length;
+    const snapshot = await snapshotIds();
 
     const response = await app.inject({
       method: "POST",
@@ -168,9 +188,11 @@ describe("Failed logins are recorded", () => {
     });
     assert.ok(response.statusCode >= 400, `expected a rejection, got ${response.statusCode}`);
 
-    const after = await auditRows("user_login_failed");
+    const added = (await newRowsSince(snapshot)).filter(
+      (r) => r.event === "user_login_failed:v1"
+    );
     assert.ok(
-      after.length > before,
+      added.length > 0,
       "the second login route must be audited too; sharing the guard is not the same as covering both"
     );
   });
@@ -223,19 +245,20 @@ describe("A replayed refresh token is detected", () => {
     const first = await refreshWith(refreshToken);
     assert.equal(first.statusCode, 200, "the first use is legitimate");
 
-    const before = (await auditRows("refresh_token_replayed")).length;
+    const snapshot = await snapshotIds();
     const second = await refreshWith(refreshToken);
     assert.equal(second.statusCode, 401, "a spent token must not mint another session");
 
-    const after = await auditRows("refresh_token_replayed");
+    const added = (await newRowsSince(snapshot)).filter(
+      (r) => r.event === "refresh_token_replayed:v1"
+    );
     assert.equal(
-      after.length,
-      before + 1,
+      added.length,
+      1,
       "a replay must be distinguishable from an unknown token; before 2.9.0 both returned the same error"
     );
-    const [row] = after.slice(-1);
     assert.equal(
-      rowMetadata(row).replayed,
+      rowMetadata(added[0]).replayed,
       true,
       "the event must say the token was spent, not merely unknown"
     );
@@ -278,12 +301,16 @@ describe("A replayed refresh token is detected", () => {
   it("does not revoke anything for a token that was never issued", async () => {
     const { userId } = await loginAndRotate();
 
+    const snapshot = await snapshotIds();
     const response = await refreshWith("a-token-that-was-never-issued");
     assert.equal(response.statusCode, 401);
 
-    const [row] = (await auditRows("refresh_token_replayed")).slice(-1);
+    const added = (await newRowsSince(snapshot)).filter(
+      (r) => r.event === "refresh_token_replayed:v1"
+    );
+    assert.equal(added.length, 1, "the attempt must be recorded even though nothing was revoked");
     assert.equal(
-      rowMetadata(row).replayed,
+      rowMetadata(added[0]).replayed,
       false,
       "an unknown token is a guess or a stale client, not evidence of a leak, and must not revoke the account"
     );

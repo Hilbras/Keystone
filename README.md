@@ -24,7 +24,7 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 
 ## What's new in v2.9.0
 
-- **A permanent regression registry for every finding.** `docs/security/registry.json` records all **45** vulnerabilities found across the hardening programme — the issue, the fix, the test that fails without it, the documentation, and the release. It is machine-readable, so `npm run registry:check` **fails** if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered. A registry that can quietly become false is worse than none.
+- **A permanent regression registry for every finding.** `docs/security/registry.json` records all **46** vulnerabilities found across the hardening programme — the issue, the fix, the test that fails without it, the documentation, and the release. It is machine-readable, so `npm run registry:check` **fails** if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered. A registry that can quietly become false is worse than none.
 - **A security test suite per domain.** Tests moved from 14 flat files into 16 suites grouped by area — authentication, authorization, mfa, oauth, oidc, saml, scim, mtls, sessions, tokens, api-keys, configuration, proxy, rate-limiting. Verified lossless: 381 security tests before and after.
 - **Two test harnesses that were reporting on less than the repository contained.**
   - **`tsc` never cleaned `dist`.** Output for a renamed or deleted source file survived, so a moved suite ran twice and a *deleted* suite kept running. Test discovery did not reflect the source tree.
@@ -35,7 +35,8 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **The release gate is now explicit.** A release fails on a critical or high advisory without a documented, time-bounded exception; on secret scanning; on a registry that does not validate; or on any of lint, typecheck, build, tests, security tests and the audit.
 - **A failed login is audited on both login routes**, and **a replayed refresh token is detected** and revokes the account's remaining credentials — while an unknown token revokes nothing. Both shipped in 2.8.0 with no test.
 - **The audit log export no longer evaluates as a spreadsheet formula.** It quoted values containing a delimiter, but a value beginning with `=`, `+`, `-` or `@` is evaluated as a formula when the file is opened — and the exported user agent is attacker-supplied. An audit export is exactly the file an operator opens in a spreadsheet. Found while triaging Semgrep's advisory findings; the rule that pointed at it was a false positive, but the code was not.
-- **12 new tests** covering the above, each verified by reverting the fix.
+- **Service-account requests are no longer invisible in the audit log.** A machine principal carries a sentinel id of `sa:<uuid>`, which the audit subscriber was writing into a **uuid** column. Postgres rejected the insert, the subscriber logged a failure, and the record was lost — so **every request authenticated by an API key or an mTLS service account left no audit trail at all.** The request succeeded, so nothing failed visibly, and a missing record looks exactly like a request that never happened. The privileged machine path was the one that left no trace. (SEC-046)
+- **17 new tests** covering the above, each verified by reverting the fix.
 
 ## What's new in v2.8.0
 

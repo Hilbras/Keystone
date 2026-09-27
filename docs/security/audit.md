@@ -42,6 +42,25 @@ records which of the two it was:
   is revoked, because an attacker guessing random values must not be able to log
   a user out.
 
+## A machine principal is not a user
+
+A service account is represented in memory by a user object whose id is the
+sentinel `sa:<uuid>`, so routes expecting `request.user` keep working without a
+matching user row.
+
+That sentinel was being passed straight into `audit_log.user_id`, which is a uuid
+column. Postgres rejected the insert, the subscriber logged a failure, and the
+record was lost. Nothing failed visibly — the request succeeded, and a missing
+audit record is indistinguishable from a request that never happened.
+
+So **every request authenticated by an API key or an mTLS service account left no
+audit trail at all.** The privileged, non-human path was the one that was
+invisible, which is precisely the wrong direction for that gap to point.
+
+The sentinel is now stripped, `user_id` is left null, and the service account is
+recorded in `metadata.serviceAccountId` — the record still identifies who acted,
+without violating the column type. (SEC-046)
+
 ## The audit export is opened in a spreadsheet
 
 The CSV export quotes a value containing a delimiter or a quote. It also

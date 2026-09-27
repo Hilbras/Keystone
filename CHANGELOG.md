@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **The security regression registry is now machine-enforced.** All 45 findings
+- **The security regression registry is now machine-enforced.** All 46 findings
   from the hardening programme are recorded in `docs/security/registry.json` with
   the issue, the fix, the test that fails without it, the documentation and the
   release. `npm run registry:check` fails when an entry names a test that does not
@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/tests/security/authentication/login-abuse.test.ts` — 7 tests for 2.8.0
   behaviour that shipped untested.
 - `src/tests/security/audit-export.test.ts` — 5 tests for the CSV export.
+- `src/tests/security/service-accounts/audit-attribution.test.ts` — 5 tests for
+  audit attribution of a machine principal.
 - `.github/workflows/{codeql,sast}.yml`, `.semgrep.yml`, `.gitleaks.toml`.
 - 7 release-gate steps in `release.yml`, replacing a single audit call.
 
@@ -96,6 +98,22 @@ organisational, which is the point: 430 tests before the restructure, 430 after,
   It came out of triaging Semgrep's advisory findings. The rule that pointed at
   the code, `direct-response-write`, is a false positive — the content type is set
   explicitly and every field is escaped — but the code it flagged was not sound.
+- **Every service-account request produced no audit record at all.** A machine
+  principal carries a sentinel id of `sa:<uuid>` so that routes expecting
+  `request.user` keep working without a matching user row. The audit subscriber
+  passed that sentinel into `audit_log.user_id`, which is a uuid column. Postgres
+  rejected the insert, the subscriber's `catch` logged `failed to write event`, and
+  the record was lost. The request succeeded, so nothing failed visibly, and a
+  missing audit record is indistinguishable from a request that never happened.
+
+  So every request authenticated by an API key or an mTLS service account left no
+  audit trail. The privileged, non-human path was the one that was invisible,
+  which is the wrong direction for that gap to point. The sentinel is now stripped,
+  `user_id` is left null, and the service account is recorded in
+  `metadata.serviceAccountId`. (SEC-046)
+
+  It surfaced in CI and not locally: a new test's fixture passed on this machine
+  and failed in CI, and the reason was visible in the log above the failure.
 
 ### Known limitations
 
