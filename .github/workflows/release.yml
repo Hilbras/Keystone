@@ -111,23 +111,38 @@ jobs:
       - name: Build backend
         run: npm run build
 
-      - name: Run backend tests
+      - name: Run backend and security tests
         env:
           DATABASE_URL: postgresql://hilbras:hilbras@localhost:5432/hilbras
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
           KEYSTONE_INTERNAL_API_KEY: test-key
           KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+        # One run, not two. `npm test` globs `dist/tests/**` and therefore
+        # already includes all 402 security tests — the separate `test:security`
+        # step re-ran the same files, which doubled the request volume against
+        # the shared Redis and tripped the global rate limiter mid-suite, failing
+        # the release on 429s where the assertions were sound.
+        #
+        # The security gate below now proves the suite is *part of* this run
+        # rather than executing it a second time.
         run: npm test -- --test-timeout=60000
 
-      - name: Run security regression suite
-        env:
-          DATABASE_URL: postgresql://hilbras:hilbras@localhost:5432/hilbras
-          REDIS_URL: redis://localhost:6379
-          NODE_ENV: test
-          KEYSTONE_INTERNAL_API_KEY: test-key
-          KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
-        run: npm run test:security
+      - name: Gate — the security suite is part of that run
+        shell: bash
+        run: |
+          set -euo pipefail
+          suites=$(find dist/tests/security -name '*.test.js' | wc -l)
+          tests=$(grep -rhoE '^\s*it\(' dist/tests/security --include='*.test.js' | wc -l)
+          echo "security suites: $suites, tests: $tests"
+          if [ "$suites" -eq 0 ]; then
+            echo "::error::No security suites found. The security gate would be vacuous."
+            exit 1
+          fi
+          if [ "$tests" -lt 100 ]; then
+            echo "::error::Only $tests security tests discovered; expected the full suite."
+            exit 1
+          fi
 
       - name: Install frontend dependencies
         working-directory: frontend
