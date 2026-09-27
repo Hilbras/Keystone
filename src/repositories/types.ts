@@ -201,6 +201,7 @@ export interface ScimGroupRepository {
   ): Promise<ScimGroup | undefined>;
   deleteInOrg(orgId: string, groupId: string): Promise<boolean>;
   listMembers(orgId: string, groupId: string): Promise<{ userId: string; email: string; name: string | null }[]>;
+  listMembersForGroups(orgId: string, groupIds: string[]): Promise<Map<string, { userId: string; email: string; name: string | null }[]>>;
   addMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
   removeMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
 }

@@ -92,23 +92,40 @@ distinguishes *argon2id was the right answer* from *a database query in a loop*.
 **Fix:** instrument the four chokepoints, or drop the dependency. Both are
 defensible; the current state is not.
 
-### 2.3 Two tables have no index at all — **High**
+### 2.3 Two tables have no index — **re-measured in 3.1.0, and it is not a problem**
+
+The original finding here was **High**: *"two tables on the hottest read path have
+no index at all"*. Measured in v3.1.0, that was wrong.
 
 ```
-permissions        0 indexes
-role_permissions   0 indexes
+permissions       145 rows, 0 indexes
+role_permissions  292 rows, 0 indexes
+
+Seq Scan on permissions     (actual time=0.017..0.057 rows=1)   Execution Time: 0.128 ms
+Seq Scan on role_permissions (actual time=0.016..0.079 rows=18)  Execution Time: 0.315 ms
 ```
 
-Both are read on the authorization path. `permissions` is seeded at boot and
-queried by `requirePermission`; `role_permissions` joins to it. At small
-permission counts a sequential scan is invisible, which is exactly why this will
-be found in production rather than in CI.
+A sequential scan of 145 rows in 0.13 ms is the **correct plan**, and the planner
+is choosing it. A permission catalogue is bounded by the resource:action surface —
+145 rows across 32 resources — not by user count, so it does not grow into the
+case where an index would matter. An operator can add permissions at runtime, but
+deliberately and slowly.
 
-Every other table has at least one index. These two are the exception, and they
-sit on the hottest read path in the system.
+The same measurement confirmed the tables that *are* indexed are indexed properly:
 
-**Fix:** index the columns these are actually queried by. Cheap, and testable
-with `EXPLAIN`.
+```
+org_memberships by user  →  Index Scan using org_memberships_user_idx   0.066 ms
+organizations by id      →  Index Scan using organizations_pkey         0.064 ms
+```
+
+**The finding is kept rather than deleted, because the reasoning is the useful
+part.** I rated it High from a count of `index()` declarations without running
+`EXPLAIN`, and the count says nothing about whether the plan is right. Adding two
+indexes would have cost write throughput on the authorization path and bought
+nothing measurable.
+
+Deferring it to 3.2.0 as cheap insurance, if the catalogue is ever allowed to
+grow unbounded, is the correct residual action — not a fix.
 
 ### 2.4 N+1 and O(n²) in SCIM group handling — **High**
 
@@ -288,7 +305,7 @@ no lockfile-scanner-visible advisories in the image, signed provenance, SBOM.
 | Supply chain | **Strong**, with one real gap (§2.1). |
 | Test discipline | **Strong on security, thin on behaviour** (§2.8). |
 | Observability | **Weak.** Dependency present, nothing instrumented (§2.2). |
-| Data layer | **Adequate.** Two unindexed hot tables, N+1 in SCIM (§2.3, §2.4). |
+| Data layer | **Adequate.** N+1 in SCIM, measured at 57× (§2.4). The two unindexed tables turned out to be correctly planned (§2.3). |
 | Consistency | **Adequate.** Layering and error handling are conventions, not rules. |
 | Operability | **Adequate.** Dockerfile and compose present, `.dockerignore` missing. |
 

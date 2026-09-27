@@ -70,25 +70,33 @@ confirming the gate fails.
 **Done when:** context size is reported in the build log and a planted `.env`
 does not reach the builder layer.
 
-## 1.2 Query plans for every indexed-by-claim table
+## 1.2 Query plans for every table the analysis claimed was at risk
 
-**Finding:** §2.3. `permissions` and `role_permissions` have **no index**, and
-`requirePermission` reads them on every organization-scoped request.
+**Finding:** §2.3 claimed `permissions` and `role_permissions` were a **High**
+risk because they have no index, and `requirePermission` reads them on every
+organization-scoped request.
 
-**Do:**
-- `EXPLAIN (ANALYZE, BUFFERS)` every query the repositories issue, at realistic
-  row counts — say 10k users, 100 orgs, 200 permissions
-- index the columns actually filtered and joined on; for the two unindexed
-  tables that is a migration plus a composite index on the join pair
-- record the plan in `docs/performance/query-plans.md` so a later change is
-  comparable
+**Measured — and the finding was wrong.** At 145 and 292 rows a sequential scan
+is the correct plan, at 0.13 ms and 0.32 ms. The catalogue is bounded by the
+resource:action surface, not by user count. Two of the three high-severity
+suspicions in the analysis survived contact with a measurement; this one did not,
+and adding the indexes would have cost write throughput for nothing.
 
-**Gate:** a test that asserts no sequential scan on any table over 1,000 rows.
-Not a threshold on timing — a plan shape, because a timing assertion in CI is
-flaky and a flaky gate gets disabled.
+**Done:**
+- `EXPLAIN (ANALYZE, BUFFERS)` for every repository query, at this repository's
+  real row counts (33k users, 15k orgs, 50k audit rows) rather than a guess
+- record the plans in `docs/performance/query-plans.md`
+- carry the two unindexed tables into 3.2.0 as *insurance*, not as a fix, with the
+  condition that triggers it written down: if the permission catalogue is ever
+  allowed to grow unbounded, revisit
 
-**Done when:** no repository query plans a sequential scan at production-shaped
-row counts.
+**Gate:** assert plan **shape**, not timing — no repository query sequential-scans
+a table above 1,000 rows. Timing assertions in CI are flaky, and a flaky gate gets
+disabled. Note this gate must encode the exception, or it fails on the two tables
+that are *correctly* sequential.
+
+**Done when:** every repository plan is recorded, and the two unindexed tables
+have a written trigger for revisiting.
 
 ## 1.3 Four spans on the paths that matter
 
