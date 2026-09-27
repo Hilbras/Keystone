@@ -51,11 +51,15 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Verify release metadata
-        run: npm run verify:release
-
       - name: Build backend
         run: npm run build
+
+      # After the build, not before it. This check verifies that `main` and
+      # `types` point at files that exist, which is only meaningful once `dist/`
+      # is there — running it earlier fails on a clean tree and teaches everyone
+      # to ignore it.
+      - name: Verify release metadata
+        run: npm run verify:release
 
       - name: Run backend tests
         env:
