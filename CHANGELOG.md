@@ -115,6 +115,26 @@ organisational, which is the point: 430 tests before the restructure, 430 after,
   It surfaced in CI and not locally: a new test's fixture passed on this machine
   and failed in CI, and the reason was visible in the log above the failure.
 
+### Fixed
+
+- **The published package could not be imported.** `dist/index.js` and
+  `dist/index.d.ts` shipped with no `main` and no `types`, so
+  `import "@hilbras/keystone"` did not resolve. The `bin` worked, so the CLI was
+  usable and the library surface was not — and nothing failed, which is why it
+  went unnoticed. `main` and `types` are now declared. Deliberately *not* `exports`:
+  that would be the more complete fix but is a breaking change for anyone
+  deep-importing `dist/` paths, and 2.6.0 is already published.
+- **The migration guides did not ship.** `docs/` was never in `files`, so the
+  instructions for the breaking changes in 2.4.0, 2.6.0 and 2.7.0 were reachable
+  only on GitHub. Someone upgrading via npm received the changelog but not the
+  document it referred to.
+- **`npm run verify:release` had a gap that allowed both.** It checked version,
+  license and repository, and a package with no entry point and no documentation
+  passed. It now also requires `main`/`types` to exist on disk, requires the
+  migration docs in `files`, requires `dist/tests` to stay excluded, and refuses
+  to publish credential material. Verified by reverting: each of the three
+  defects is caught with a message naming the problem.
+
 ### Known limitations
 
 - The Semgrep scan covers the backend. Semgrep's TypeScript support fails on a

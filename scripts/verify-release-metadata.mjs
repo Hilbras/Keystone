@@ -103,6 +103,77 @@ if (pkg.overrides && Object.keys(pkg.overrides).length > 0) {
   );
 }
 
+// --- publishable entry points ---------------------------------------------
+// This package shipped dist/index.js and dist/index.d.ts with no `main` and no
+// `types`, so `import "@hilbras/keystone"` did not resolve for anyone installing
+// from npm. The `bin` worked, so the CLI was usable and the library surface was
+// not — which is why it went unnoticed: nothing failed, the package just could
+// not be imported.
+if (!pkg.private) {
+  for (const field of ["main", "types"]) {
+    if (!pkg[field]) {
+      failures.push(
+        `package.json has no \`${field}\` field. The package ships ${
+          field === "main" ? "dist/index.js" : "dist/index.d.ts"
+        }, so without it the published package cannot be imported.`
+      );
+      continue;
+    }
+    const target = path.join(root, pkg[field]);
+    if (!fs.existsSync(target)) {
+      failures.push(`\`${field}\` points at ${pkg[field]}, which does not exist.`);
+    }
+  }
+
+  const bin = typeof pkg.bin === "string" ? { [pkg.name.split("/").pop()]: pkg.bin } : pkg.bin;
+  for (const [name, target] of Object.entries(bin ?? {})) {
+    if (!fs.existsSync(path.join(root, target))) {
+      failures.push(`bin "${name}" points at ${target}, which does not exist.`);
+    }
+  }
+}
+
+// --- tarball contents -----------------------------------------------------
+// A published tarball is a permanent artefact, and the things that should never
+// be in one are exactly the things that are easy to commit. These are checked
+// here rather than left to a manual `npm pack` review, because a review that is
+// only done sometimes is not a control.
+const shipped = pkg.files ?? ["."];
+const mustShip = ["docs", "CHANGELOG.md", "README.md"];
+for (const entry of mustShip) {
+  const negated = shipped.some((f) => f === `!${entry}` || f.startsWith(`!${entry}/`));
+  if (negated) {
+    failures.push(
+      `\`files\` excludes ${entry}. Migration guides and the changelog are the only ` +
+        `documentation a consumer installing from npm receives.`
+    );
+  }
+}
+if (shipped.includes("dist") && !shipped.includes("!dist/tests")) {
+  failures.push(
+    "`files` ships `dist` without excluding `dist/tests`. Compiled tests are not " +
+      "part of the package, and they carry test-only credentials."
+  );
+}
+for (const pattern of [/^\.env/, /\.(pem|key|p12|pfx)$/]) {
+  const strays = [];
+  const walk = (dir, depth = 0) => {
+    if (depth > 3) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (["node_modules", ".git", "dist", "frontend", "coverage"].includes(entry.name)) continue;
+      const rel = path.relative(root, path.join(dir, entry.name));
+      if (pattern.test(entry.name) && shipped.some((f) => f === entry.name || f === rel || rel.startsWith(f + "/"))) {
+        strays.push(rel);
+      }
+      if (entry.isDirectory()) walk(path.join(dir, entry.name), depth + 1);
+    }
+  };
+  walk(root);
+  if (strays.length) {
+    failures.push(`files would publish credential material: ${strays.join(", ")}`);
+  }
+}
+
 // --- report --------------------------------------------------------------
 for (const note of notes) console.log(`  note: ${note}`);
 
