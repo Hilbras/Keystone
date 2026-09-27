@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.4.0`**
+**Current version: `2.5.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,15 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.5.0
+
+- **The OIDC nonce now reaches the Google connector** — `GoogleConnector.exchangeCode` overrode the base method without forwarding its options, so the nonce added in 2.4.0 was silently discarded for the default provider. Every non-Google OIDC provider validated the nonce; Google, the most likely to be in use, did not.
+- **The unsigned SAML `Issuer` is now validated** — the response-level `<saml:Issuer>` sits outside both signed regions, so rewriting it does not invalidate the signature, and nothing compared it to the registered IdP. An assertion could claim to come from a different identity provider. Keystone now checks it against the connection, as SAML 2.0 §2.5.1.5 requires. The assertion's own issuer is inside the signed region and was always covered.
+- **`RelayState` verification returns false instead of throwing** — a malformed RelayState is a bad request an attacker fully controls, so it produced a 500 rather than a 400.
+- **A missing userinfo endpoint is reported as unconfigured** — it was passed to the fetcher with a non-null assertion, surfacing a misleading "must be a valid URL" for a URL that was never set.
+- **24 adversarial SAML tests** — tampered signatures, untrusted signing keys, rotated-out certificates, unsigned assertions, XML signature wrapping, issuer and audience substitution, destination and recipient prefix/superstring/case variants, expired and not-yet-valid assertions, `InResponseTo` mismatch, transaction replay, and five RelayState tampering scenarios.
+- **[enterprise-sso.md](docs/security/enterprise-sso.md)** — SAML and OIDC setup, every check applied to an assertion or ID token, certificate rotation (and its lack of a grace period), endpoint SSRF policy, organization scoping, and recommendations.
 
 ## What's new in v2.4.0
 

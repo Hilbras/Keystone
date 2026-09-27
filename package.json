@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "license": "MIT",
   "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {

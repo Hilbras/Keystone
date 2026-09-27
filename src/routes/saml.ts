@@ -21,7 +21,7 @@ const SAML_TRANSACTION_COOKIE = "keystone_saml_transaction";
 const SAML_TRANSACTION_TTL_SECONDS = 600;
 const relayStateSecret = config.INTERNAL_API_KEY || crypto.randomBytes(32).toString("base64url");
 
-const RelayStateSchema = z.object({
+export const RelayStateSchema = z.object({
   transactionId: z.string().min(32),
   connectionId: z.string().min(1),
   orgId: z.string().uuid(),
@@ -37,11 +37,23 @@ type SamlTransaction = {
   browserNonce: string;
 };
 
-function signRelayState(value: { transactionId: string; connectionId: string; orgId: string; nonce: string }): string {
+export function signRelayState(value: { transactionId: string; connectionId: string; orgId: string; nonce: string }): string {
   return crypto.createHmac("sha256", relayStateSecret).update(JSON.stringify(value)).digest("base64url");
 }
 
-function verifyRelayState(value: z.infer<typeof RelayStateSchema>): boolean {
+/**
+ * Verify a RelayState signature.
+ *
+ * Returns false for anything malformed rather than throwing. The caller treats
+ * a false result as "reject", so a throw here would surface as a 500 on a
+ * request an attacker fully controls — a malformed RelayState is a bad request,
+ * not a server error.
+ */
+export function verifyRelayState(value: z.infer<typeof RelayStateSchema>): boolean {
+  if (typeof value?.signature !== "string" || value.signature === "") return false;
+  if (typeof value.transactionId !== "string" || typeof value.connectionId !== "string") return false;
+  if (typeof value.orgId !== "string" || typeof value.nonce !== "string") return false;
+
   const unsigned = {
     transactionId: value.transactionId,
     connectionId: value.connectionId,
@@ -194,6 +206,7 @@ export function validateSamlSemantics(
     samlContent?: string;
     extract: {
       audience?: string | string[];
+      issuer?: string | string[];
       response?: Record<string, string | string[]>;
       nameID?: string;
     };
@@ -204,6 +217,22 @@ export function validateSamlSemantics(
   const audiences = valuesOf(result.extract.audience);
   if (!audiences.includes(connection.spEntityId)) {
     throw new Error("SAML audience mismatch");
+  }
+
+  // The Response-level <saml:Issuer> sits outside both signed regions, so
+  // rewriting it does not invalidate the signature, and samlify does not compare
+  // it to the IdP metadata. SAML 2.0 2.5.1.5 requires a relying party to verify
+  // an unsigned issuer against trusted metadata, which is what this does.
+  //
+  // The assertion's own issuer is inside the signed region, so that one cannot be
+  // swapped without breaking the signature. This covers the element the
+  // signature cannot.
+  if (connection.idpEntityId) {
+    const issuer = result.extract.issuer;
+    const presented = valuesOf(issuer as string | string[] | undefined);
+    if (presented.length !== 1 || presented[0] !== connection.idpEntityId) {
+      throw new Error("SAML issuer mismatch");
+    }
   }
 
   const responseDestination = result.extract.response?.Destination ?? result.extract.response?.destination;
