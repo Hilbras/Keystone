@@ -1,5 +1,5 @@
 {
-  "$comment": "Security regression registry. Each entry is a vulnerability that was found, fixed, and given a permanent test. The registry is the source of truth: `npm run registry:check` verifies every entry points at a test file that exists, that no security suite is unclaimed, and that every mandatory attack class is covered. `npm run registry:render` regenerates docs/security/registry.md from this file, so the documentation cannot drift from the tests.",
+  "$comment": "Security regression registry. Each entry is a vulnerability that was found, fixed, and given a permanent test. Entries may be withdrawn; a withdrawn id is recorded in `withdrawn` with the reason rather than renumbered, because a registry whose ids shift is one nobody can cite. `coverage` records suites that assert a property without corresponding to an evidenced defect. The registry is the source of truth: `npm run registry:check` verifies every entry points at a test file that exists, that no security suite is unclaimed, and that every mandatory attack class is covered. `npm run registry:render` regenerates docs/security/registry.md from this file, so the documentation cannot drift from the tests.",
   "mandatoryAttackClasses": [
     "privilege-escalation",
     "mfa-bypass",
@@ -307,7 +307,7 @@
       "component": "saml",
       "release": "2.5.0",
       "issue": "The Issuer was compared only when it fell inside a signed region. An attacker could place an unsigned Issuer naming a trusted IdP alongside a signed assertion from another IdP. Confirmed to lie outside both signed regions, so it was a real gap in the trust decision rather than a theoretical one.",
-      "fix": "src/services/saml/validator.ts — the Issuer is validated against the configured entity id in all cases",
+      "fix": "src/routes/saml.ts — the Issuer is validated against the configured entity id in all cases",
       "test": "src/tests/security/saml/saml-adversarial.test.ts",
       "documentation": "docs/security/enterprise-sso.md",
       "covers": [
@@ -321,7 +321,7 @@
       "component": "saml",
       "release": "2.5.0",
       "issue": "A RelayState that failed its integrity check raised rather than returning a rejection, turning a routine validation failure into a 500 and obscuring the real cause.",
-      "fix": "src/services/saml/relayState.ts — verification returns a boolean and never throws",
+      "fix": "src/routes/saml.ts — verification returns a boolean and never throws",
       "test": "src/tests/security/saml/saml-adversarial.test.ts",
       "documentation": "docs/security/enterprise-sso.md",
       "covers": []
@@ -596,30 +596,6 @@
       "covers": []
     },
     {
-      "id": "SEC-043",
-      "title": "SAML assertions were validated without a complete issuer and audience binding",
-      "severity": "high",
-      "component": "saml",
-      "release": "2.5.0",
-      "issue": "The response validator checked signature and conditions but did not require a complete binding between the assertion and the configured service-provider entity, so a valid signed assertion minted for a different relying party could be accepted here.",
-      "fix": "src/services/saml/validator.ts — the audience and issuer are both required and must match configuration",
-      "test": "src/tests/security/saml/saml-validator.test.ts",
-      "documentation": "docs/security/enterprise-sso.md",
-      "covers": []
-    },
-    {
-      "id": "SEC-044",
-      "title": "The SSO endpoint could be resolved through a name the operator did not register",
-      "severity": "medium",
-      "component": "saml",
-      "release": "2.5.0",
-      "issue": "The endpoint that initiates SSO was addressable through a host alias that was never in the connection's registered endpoints, so a connection could be initiated against a name outside the configuration an operator reviewed.",
-      "fix": "src/routes/sso.ts — the request address must be one the connection registered",
-      "test": "src/tests/security/saml/sso-endpoint.test.ts",
-      "documentation": "docs/security/enterprise-sso.md",
-      "covers": []
-    },
-    {
       "id": "SEC-045",
       "title": "The audit log export did not neutralise spreadsheet formula injection",
       "severity": "medium",
@@ -642,6 +618,32 @@
       "test": "src/tests/security/service-accounts/audit-attribution.test.ts",
       "documentation": "docs/security/audit.md",
       "covers": []
+    }
+  ],
+  "withdrawn": [
+    {
+      "id": "SEC-043",
+      "withdrawn": "2026-09-27",
+      "reason": "Written during the 2.9.0 release with a fix at a path that does not exist and an issue description the test does not cover. src/tests/security/saml/saml-validator.test.ts exercises the *valid* signed-response path; it does not test a missing audience or issuer requirement. There is no evidenced defect behind this entry, so it was not a finding. The suite is recorded under `coverage` instead.",
+      "replacedBy": "src/tests/security/saml/saml-validator.test.ts (coverage)"
+    },
+    {
+      "id": "SEC-044",
+      "withdrawn": "2026-09-27",
+      "reason": "Written during the 2.9.0 release with a fix at a path that does not exist and an issue description the test does not cover. src/tests/security/saml/sso-endpoint.test.ts tests isPrivateAddress, a guard on operator-supplied endpoint addresses; it does not test an unregistered host alias. No defect was evidenced behind this entry. The suite is recorded under `coverage` instead.",
+      "replacedBy": "src/tests/security/saml/sso-endpoint.test.ts (coverage)"
+    }
+  ],
+  "coverage": [
+    {
+      "test": "src/tests/security/saml/saml-validator.test.ts",
+      "covers": "A valid signed SAML response is accepted by the registered schema validator, and validateSamlSemantics accepts it.",
+      "why": "Positive-path coverage for the SAML validator. Not tied to a numbered finding: it asserts that a correct response is accepted, not that a previously-missing check was added."
+    },
+    {
+      "test": "src/tests/security/saml/sso-endpoint.test.ts",
+      "covers": "isPrivateAddress classifies loopback, private, link-local, carrier-grade NAT, benchmarking and both spellings of IPv4-mapped IPv6 as non-public.",
+      "why": "Coverage for the endpoint address policy in src/services/ssoEndpointPolicy.ts, which keeps operator-supplied SSO endpoint URLs from pointing at internal addresses. No defect was evidenced behind it, so it is not a numbered finding."
     }
   ]
 }

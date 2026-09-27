@@ -42,6 +42,14 @@ Or run the server directly with `npx keystone serve`.
 The migration guides and security documentation are included in the package, so
 they are available without a network round trip to the repository.
 
+## What's new in v3.0.0
+
+- **The re-audit matrix is generated, not written.** `docs/RE-AUDIT.md` covers all 18 findings the plan names. Every cell is verified against the repository when the file is produced: `Fixed` only if the fix site exists, `Regression test` only if the named file exists *and* contains a test. Deleting a test turns the cell red on the next run rather than leaving a stale assurance in a release document. **`npm run reaudit:check` fails the release gate if any claim cannot be verified.**
+- **Zero unresolved Critical findings**, and that is checked rather than asserted.
+- **Two registry entries withdrawn.** I added `SEC-043` and `SEC-044` in 2.9.0 with fixes at paths that do not exist and issue descriptions the tests do not cover — they were not findings. They are now recorded as withdrawn with the reason, and their suites as coverage.
+- **The registry validator now checks the `fix` field**, which it never did. It verified the named *test* existed and contained a test; nothing confirmed the claim about where the fix lives. That is how two invented entries passed. Four entries named paths that do not exist; all corrected.
+- **Multi-tenant isolation re-audited** across every organization-scoped admin route. No cross-tenant path found — see the CHANGELOG for the specific traces.
+
 ## What's new in v2.9.0
 
 - **The published package is importable.** It shipped `dist/index.js` and `dist/index.d.ts` with **no `main` and no `types`**, so `import "@hilbras/keystone"` did not resolve for anyone installing from npm. The `bin` worked, so the CLI was usable and the library surface was not — nothing failed, the package simply could not be imported.

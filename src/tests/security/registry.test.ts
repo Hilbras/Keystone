@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -42,5 +43,43 @@ describe("Security regression registry", () => {
     }
     assert.match(stdout, /Security registry OK \(\d+ entries, \d+ suites\)/);
     assert.match(stdout, /mandatory attack classes covered/);
+  });
+
+  it("the re-audit matrix is regenerated and every claim in it verifies", () => {
+    // The v3.0.0 matrix is generated, not written, and `--check` fails if any cell
+    // cannot be verified against the repository. Run as part of the suite so a
+    // matrix that has drifted from the code is caught here rather than by whoever
+    // next reads the document and believes it.
+    execFileSync(
+      process.execPath,
+      [path.join(projectRoot, "scripts", "render-reaudit-matrix.mjs"), "--check"],
+      { cwd: projectRoot, stdio: "pipe" }
+    );
+
+    const matrix = readFileSync(
+      path.join(projectRoot, "docs", "RE-AUDIT.md"),
+      "utf8"
+    );
+    assert.match(matrix, /\| Finding \| Original severity \|/);
+    assert.doesNotMatch(
+      matrix,
+      /\| \*\*No\*\* \|/,
+      "a cell that cannot be verified must not read Yes; the generator marks it **No**"
+    );
+  });
+
+  it("records every withdrawn id with a reason, and every coverage suite", () => {
+    // A registry gap is only honest if it is explained. An id that is neither an
+    // entry nor a withdrawal is an oversight that reads as coverage.
+    const registry = JSON.parse(
+      readFileSync(path.join(projectRoot, "docs", "security", "registry.json"), "utf8")
+    );
+    for (const w of registry.withdrawn ?? []) {
+      assert.ok(w.reason && w.reason.length > 40, `${w.id} needs a substantive reason`);
+      assert.ok(w.replacedBy, `${w.id} should say what replaced it`);
+    }
+    for (const c of registry.coverage ?? []) {
+      assert.ok(c.covers && c.why, `${c.test} must say what it covers and why it is not a finding`);
+    }
   });
 });
