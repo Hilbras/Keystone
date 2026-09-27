@@ -100,6 +100,8 @@ export default async function organizationsRoutes(app: FastifyInstance) {
           keyPrefix: "create-org",
           maxAttempts: 5,
           windowSeconds: 3600,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
         }),
       ],
     },

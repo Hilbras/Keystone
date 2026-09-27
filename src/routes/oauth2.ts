@@ -99,7 +99,13 @@ export default async function oauth2Routes(app: FastifyInstance) {
     {
       preHandler: [
         app.authenticate,
-        rateLimit({ keyPrefix: "oauth2_authorize", maxAttempts: 10, windowSeconds: 60 }),
+        rateLimit({
+        keyPrefix: "oauth2_authorize",
+        maxAttempts: 10,
+        windowSeconds: 60,
+        // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+        emergencyLocalLimit: true,
+      }),
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -219,7 +225,15 @@ export default async function oauth2Routes(app: FastifyInstance) {
   app.post(
     "/token",
     {
-      preHandler: [rateLimit({ keyPrefix: "oauth2_token", maxAttempts: 20, windowSeconds: 60 })],
+      preHandler: [
+        rateLimit({
+          keyPrefix: "oauth2_token",
+          maxAttempts: 20,
+          windowSeconds: 60,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
+        }),
+      ],
     },
     async (request, reply) => {
       const parsedBody = TokenBodySchema.parse(request.body);

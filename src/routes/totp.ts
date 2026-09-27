@@ -31,8 +31,25 @@ const BackupCodeSchema = z.object({
 });
 
 /** Sensitive factor operations get their own budget, separate from login. */
+/**
+ * Limit second-factor operations per user, not per address.
+ *
+ * These routes are authenticated, so the meaningful principal is the user doing
+ * the enrolment. Keying on the address alone meant everyone behind one NAT shared
+ * a single budget of 10, so an office or a mobile carrier's CGNAT range could
+ * exhaust it and lock legitimate users out of managing their own second factor.
+ * Brute-forcing a TOTP code is also per-account: the code is checked against one
+ * user's secret, so a per-user budget is exactly the right unit.
+ */
 const factorRateLimit = (keyPrefix: string) =>
-  rateLimit({ keyPrefix, maxAttempts: 10, windowSeconds: 300 });
+  rateLimit({
+    keyPrefix,
+    maxAttempts: 10,
+    windowSeconds: 300,
+    // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+    emergencyLocalLimit: true,
+    keyFrom: (request) => request.user?.id ?? request.ip,
+  });
 
 export default async function totpRoutes(app: FastifyInstance) {
   app.post(

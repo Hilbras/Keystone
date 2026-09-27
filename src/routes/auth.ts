@@ -7,6 +7,7 @@ import {
   getRefreshToken,
 } from "../plugins/auth.js";
 import { rateLimit } from "../plugins/rateLimit.js";
+import { revokeAllUserCredentials } from "../services/sessionRevocation.js";
 import { checkImpossibleTravel } from "../services/anomalyDetection.js";
 import { sendSuspiciousLoginAlert } from "../services/email.js";
 import { checkIpAllowed } from "../services/ipControls.js";
@@ -60,6 +61,25 @@ const RefreshSchema = z.object({
   client_id: z.string().optional(),
 });
 
+/**
+ * Whether a refresh token was already spent.
+ *
+ * Rotation consumes the token, so a live token presented twice means the first
+ * use was someone else. A token that does not exist at all is a different
+ * problem — a guess, or a stale client — and does not warrant revoking the
+ * account's sessions.
+ */
+async function wasRefreshTokenAlreadyUsed(token: string): Promise<boolean> {
+  const { findRefreshTokenState } = await import("../services/refreshTokenState.js");
+  return findRefreshTokenState(token);
+}
+
+/** The user a spent refresh token belonged to, if it is still resolvable. */
+async function refreshTokenUserId(token: string): Promise<string | null> {
+  const { refreshTokenOwner } = await import("../services/refreshTokenState.js");
+  return refreshTokenOwner(token);
+}
+
 export default async function authRoutes(app: FastifyInstance) {
   const sdk = getSdk();
 
@@ -71,6 +91,8 @@ export default async function authRoutes(app: FastifyInstance) {
           keyPrefix: "register",
           maxAttempts: 5,
           windowSeconds: 900,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
         }),
       ],
     },
@@ -108,6 +130,22 @@ export default async function authRoutes(app: FastifyInstance) {
           keyPrefix: "login",
           maxAttempts: 5,
           windowSeconds: 900,
+          // A Redis outage must not remove the limit on an endpoint worth
+          // brute-forcing.
+          emergencyLocalLimit: true,
+        }),
+        // The budget above is keyed on address *and* submitted address, so it
+        // stops repeated guesses at one account. That is exactly the wrong shape
+        // for spraying: an attacker who varies the address on every request gets a
+        // fresh budget per attempt and can enumerate or guess across a thousand
+        // accounts from one host. This second budget is keyed on the address
+        // alone, so spraying is capped no matter how many addresses are tried.
+        rateLimit({
+          keyPrefix: "login-per-address",
+          maxAttempts: 30,
+          windowSeconds: 900,
+          emergencyLocalLimit: true,
+          keyFrom: (request) => request.ip,
         }),
       ],
     },
@@ -126,7 +164,18 @@ export default async function authRoutes(app: FastifyInstance) {
         flow: "login",
       });
 
-      if (!result.success) return sendResultError(reply, result);
+      if (!result.success) {
+        // Previously unaudited: a wrong password produced a 401 and nothing
+        // else, so credential guessing was invisible except through the limiter.
+        // Deliberately records no user id, because the submitted address may not
+        // correspond to any account.
+        await request.audit("user_login_failed", {
+          email: body.email,
+          ip: request.ip,
+          reason: result.error.code,
+        });
+        return sendResultError(reply, result);
+      }
 
       if (result.data.status === "requires_mfa") {
         const pending = result.data.data;
@@ -160,6 +209,22 @@ export default async function authRoutes(app: FastifyInstance) {
           keyPrefix: "login",
           maxAttempts: 5,
           windowSeconds: 900,
+          // A Redis outage must not remove the limit on an endpoint worth
+          // brute-forcing.
+          emergencyLocalLimit: true,
+        }),
+        // The budget above is keyed on address *and* submitted address, so it
+        // stops repeated guesses at one account. That is exactly the wrong shape
+        // for spraying: an attacker who varies the address on every request gets a
+        // fresh budget per attempt and can enumerate or guess across a thousand
+        // accounts from one host. This second budget is keyed on the address
+        // alone, so spraying is capped no matter how many addresses are tried.
+        rateLimit({
+          keyPrefix: "login-per-address",
+          maxAttempts: 30,
+          windowSeconds: 900,
+          emergencyLocalLimit: true,
+          keyFrom: (request) => request.ip,
         }),
       ],
     },
@@ -178,7 +243,17 @@ export default async function authRoutes(app: FastifyInstance) {
         flow: "token_login",
       });
 
-      if (!result.success) return sendResultError(reply, result);
+      if (!result.success) {
+        // Same reasoning as /login: a failed token login is a guessing attempt
+        // and should be visible as one.
+        await request.audit("user_login_failed", {
+          email: body.email,
+          ip: request.ip,
+          reason: result.error.code,
+          flow: "token_login",
+        });
+        return sendResultError(reply, result);
+      }
 
       if (result.data.status === "requires_mfa") {
         const pending = result.data.data;
@@ -221,6 +296,19 @@ export default async function authRoutes(app: FastifyInstance) {
           keyPrefix: "mfa-verify",
           maxAttempts: 20,
           windowSeconds: 300,
+          // A Redis outage must not remove the limit on an endpoint worth
+          // brute-forcing.
+          emergencyLocalLimit: true,
+          // Keyed on the challenge as well as the address. The default key
+          // includes `body.email`, which this endpoint does not carry, so every
+          // verification from one address shared a single budget: 20 attempts
+          // across *all* users. An attacker got 20 guesses, but so did an office
+          // behind one NAT — one busy office could lock out every legitimate
+          // second-factor login. The challenge is a single opaque login attempt,
+          // so this gives an attacker 20 guesses at the code they are actually
+          // attacking, without spending anyone else's budget.
+          keyFrom: (request) =>
+            `${request.ip}:${(request.body as { challenge?: string } | undefined)?.challenge ?? "none"}`,
         }),
       ],
     },
@@ -279,7 +367,26 @@ export default async function authRoutes(app: FastifyInstance) {
     }
 
     const result = await sdk.authentication.refresh(refreshToken, clientId);
-    if (!result.success) return sendResultError(reply, result);
+    if (!result.success) {
+      // Distinguish a replayed token from one that was never issued. Rotation
+      // consumes a refresh token, so a second presentation of the same token is
+      // either an attacker racing the legitimate client or a stolen token being
+      // used twice — and it means the token has leaked.
+      const replayed = await wasRefreshTokenAlreadyUsed(refreshToken);
+      await request.audit("refresh_token_replayed", {
+        replayed,
+        ip: request.ip,
+      });
+      if (replayed) {
+        // A replay means the token is known to someone else, so everything it
+        // could mint should stop working rather than just this one request.
+        const ownerId = await refreshTokenUserId(refreshToken);
+        if (ownerId) {
+          await revokeAllUserCredentials(ownerId);
+        }
+      }
+      return sendResultError(reply, result);
+    }
 
     if (result.data.userId) request.state.auditUserId = result.data.userId;
     if (clientId) {

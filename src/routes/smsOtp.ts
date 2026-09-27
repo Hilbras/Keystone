@@ -25,6 +25,8 @@ export default async function smsOtpRoutes(app: FastifyInstance) {
           keyPrefix: "sms-otp-send",
           maxAttempts: 3,
           windowSeconds: 300,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
         }),
       ],
     },
@@ -51,6 +53,8 @@ export default async function smsOtpRoutes(app: FastifyInstance) {
           keyPrefix: "sms-otp-verify",
           maxAttempts: 5,
           windowSeconds: 300,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
         }),
       ],
     },

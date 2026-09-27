@@ -106,6 +106,19 @@ before(async () => {
   await loadSigningKeys();
   app = await buildApp();
   userRepository = app.container.userRepository;
+
+  // Connect Redis explicitly. The shared client is created with
+  // `lazyConnect`, and this suite previously never connected it — so every
+  // rate limit here was evaluated against a limiter that was not running. It
+  // passed only because the limiter failed open, which is precisely the
+  // behaviour v2.8.0 removes. Running against the real distributed limiter is
+  // both more faithful and the thing this suite was silently not testing.
+  const { redis, isRedisReady } = await import("../../services/redis.js");
+  if (redis.status === "wait") await redis.connect();
+  for (let attempt = 0; attempt < 50 && !isRedisReady(); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(isRedisReady(), "Redis must be connected for the rate limiter to be exercised");
 });
 
 after(async () => {

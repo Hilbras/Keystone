@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { generateApiKey, hashApiKey } from "../services/tokens.js";
 import { toPublicApiKey, toPublicUser } from "../types.js";
 import { knownScopes, validateScopes } from "../services/scopes.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 
 const CreateKeySchema = z.object({
   name: z.string().min(1).max(100),
@@ -15,7 +16,20 @@ export default async function apiKeyRoutes(app: FastifyInstance) {
   // revoking one is the operation an operator most needs when a key escapes.
   app.post(
     "/api-keys",
-    { preHandler: [app.authenticate, app.requireScopes("api_keys:read")] },
+    {
+      preHandler: [
+        app.authenticate,
+        app.requireScopes("api_keys:read"),
+        // Minting a credential is limited like any other authentication event:
+        // a leaked session should not be able to enumerate a batch of keys.
+        rateLimit({
+          keyPrefix: "api-key-create",
+          maxAttempts: 10,
+          windowSeconds: 300,
+          emergencyLocalLimit: true,
+        }),
+      ],
+    },
     async (request, reply) => {
       const body = CreateKeySchema.parse(request.body);
       const user = request.user!;

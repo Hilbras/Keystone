@@ -32,6 +32,8 @@ export default async function passwordRoutes(app: FastifyInstance) {
         keyPrefix: "forgot-password",
         maxAttempts: 5,
         windowSeconds: 900,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
       }),
     ],
   }, async (request, reply) => {
