@@ -77,6 +77,14 @@ jobs:
       - name: Gate — security regression registry is consistent
         run: npm run registry:check
 
+      - name: Gate — the built image carries no credential material
+        # The npm tarball has had this check since 2.1.0. The container path did
+        # not, and that asymmetry was a finding: `COPY . .` with no .dockerignore
+        # sent a developer's .env, the 15 MB .git/ and 240 MB of node_modules/ to
+        # the Docker daemon. The published image was verified clean, so this is
+        # about the context and the build cache, not a secret in the artefact.
+        run: node scripts/verify-image-hygiene.mjs --build
+
       - name: Gate — documentation links resolve
         # Documentation rots quietly: a file is renamed, a heading reworded, and
         # the link still looks right in the source while 404ing for the reader.

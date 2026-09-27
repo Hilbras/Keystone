@@ -177,6 +177,19 @@ class ScimForbidden extends Error {
   }
 }
 
+
+/**
+ * SCIM paging bounds.
+ *
+ * The SCIM spec makes `count` optional and expects the server to choose. Choosing
+ * "everything" is a denial-of-service surface on a provisioning endpoint, so a
+ * request that omits it gets the default, and a request that asks for more than
+ * the maximum is clamped rather than honoured. The Users list already did this;
+ * the Groups list did not.
+ */
+const DEFAULT_PAGE_SIZE = 100;
+const MAX_PAGE_SIZE = 500;
+
 export default async function scimRoutes(app: FastifyInstance) {
   // SCIM clients expect a SCIM `Error` object for every failure. Without this
   // scoped handler a ZodError or a driver error would escape as a generic
@@ -722,14 +735,28 @@ export default async function scimRoutes(app: FastifyInstance) {
       }
 
       const start = (query.startIndex ?? 1) - 1;
-      const count = query.count ?? groups.length;
+      // A page is bounded even when the IdP does not ask for one.
+      //
+      // `count` defaulted to the full result set, so a bare GET /scim/v2/Groups
+      // returned every group — and then queried each one. The Users list clamps
+      // with Math.min (line 369); this did not, which is why the two endpoints
+      // behaved so differently at scale.
+      const count = Math.min(query.count ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
       const page = groups.slice(start, start + count);
 
-      const Resources = await Promise.all(
-        page.map(async (group) => {
-          const members = await app.container.scimGroupRepository.listMembers(orgId, group.id);
-          return scimGroupResponse(group, members.map((m) => ({ value: m.userId, display: m.email })));
-        })
+      // One query for the whole page, not one per group. See
+      // `listMembersForGroups` for the measurement: 1,098 groups took 2,615 ms
+      // this way against 24 ms batched, against a pool of 10 connections.
+      const membersByGroup = await app.container.scimGroupRepository.listMembersForGroups(
+        orgId,
+        page.map((group) => group.id)
+      );
+
+      const Resources = page.map((group) =>
+        scimGroupResponse(
+          group,
+          (membersByGroup.get(group.id) ?? []).map((m) => ({ value: m.userId, display: m.email }))
+        )
       );
 
       return {

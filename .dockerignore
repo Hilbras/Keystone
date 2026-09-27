@@ -1,0 +1,85 @@
+# Build context exclusions.
+#
+# Without this file, `COPY . .` (Dockerfile:12) sends the entire working tree to
+# the Docker daemon. Measured before this file existed:
+#
+#     .env            present   ← a developer's real credentials
+#     .git/           15 MB
+#     node_modules/   240 MB
+#     total context   ~268 MB
+#
+# `.gitignore` does not help here. `.gitignore` and `.dockerignore` are
+# independent files, and Docker reads only the latter — so gitignoring `.env`
+# does nothing for `docker build`.
+#
+# The published image was verified NOT to contain `.env` (the runtime stage
+# copies only `dist/`), so this is not a secret-in-the-shipped-artefact problem.
+# It is that the context is uploaded, and that `COPY . .` writes these paths into
+# a builder layer that persists in the build cache — readable by anyone with
+# access to the builder or the cache.
+#
+# Verified with a canary: with this file absent, a planted `.env`,
+# `.git/` and `node_modules/` were all present in the build context.
+
+# Dependencies — installed inside the image, and huge.
+node_modules
+**/node_modules
+.pnpm-store
+
+# Secrets and local configuration. The single most important entry here.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets/
+!src/db/migrations/
+
+# Version control and CI
+.git
+.github
+.gitignore
+.gitattributes
+
+# Build output — rebuilt inside the image, and `dist` can be large
+dist
+build
+coverage
+*.tsbuildinfo
+.npm
+.cache
+
+# Local scratch
+*.log
+*.tmp
+.DS_Store
+.vscode
+.idea
+
+# Agent and planning material — not part of the product
+plan.md
+tasks/
+docs/
+!docs/SECURITY.md
+
+# Documentation is not needed to run the server
+*.md
+!README.md
+!SECURITY.md
+!LICENSE
+
+# Tests — not shipped, and they carry test-only credentials.
+#
+# `packages/*/src` is deliberately NOT excluded: the builder stage runs
+# `npm run build:sdk`, which compiles packages/keystone-sdk/src. Excluding it was
+# tried and the image stopped building — a .dockerignore that breaks the build is
+# worse than a large context.
+src/tests
+**/*.test.ts
+**/*.test.js
+frontend/src
+frontend/e2e
