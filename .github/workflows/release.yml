@@ -77,6 +77,13 @@ jobs:
       - name: Gate — security regression registry is consistent
         run: npm run registry:check
 
+      - name: Gate — the re-audit matrix regenerates and every claim verifies
+        # The matrix is generated from the registry and checked against the
+        # repository. A cell that cannot be verified is a claim nobody has
+        # checked, and shipping one in a release document is the failure this
+        # gate exists to prevent.
+        run: npm run reaudit:check
+
       - name: Gate — no secrets in the repository or its history
         uses: gitleaks/gitleaks-action@v2
         with:

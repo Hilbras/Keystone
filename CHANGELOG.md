@@ -5,6 +5,69 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-09-27
+
+### Security
+
+- **Two registry entries withdrawn, because they were not real.** `SEC-043` and
+  `SEC-044` were added during the 2.9.0 release with fixes at
+  `src/services/saml/validator.ts` and `src/routes/sso.ts` — a directory that does
+  not exist and a file that does not exist — and with issue descriptions the tests
+  do not cover. `saml-validator.test.ts` exercises the *valid* signed-response
+  path; it does not test a missing audience or issuer requirement.
+  `sso-endpoint.test.ts` tests `isPrivateAddress`, a guard on operator-supplied
+  endpoint addresses; it does not test an unregistered host alias. Neither had an
+  evidenced defect behind it, so neither was a finding. Both are now recorded
+  under `withdrawn` with the reason, and their suites under a new `coverage`
+  section — a suite that asserts a property is coverage, not a vulnerability.
+- **The registry validator never checked the `fix` field**, which is how the two
+  above passed. It verified that the named *test* existed and that the *test* had
+  a test in it; nothing confirmed the entry's claim about where the fix lives. It
+  now resolves the fix site against the repository. Four entries named paths that
+  do not exist; two were the invented ones, and the other two named
+  `src/services/saml/*` for SAML logic that lives in `src/routes/saml.ts`. All
+  four corrected.
+- **Contiguity was the wrong rule for ids.** Renumbering after a withdrawal would
+  change every id other documents already cite, and a registry whose ids shift is
+  one nobody can reference. Ids may now gap, and a gap must be explained by a
+  withdrawal carrying a reason. Set-based, not positional, so withdrawing one id
+  does not invalidate the rest of the tail.
+
+### Added
+
+- `docs/RE-AUDIT.md` — the v3.0.0 re-audit matrix, **generated and verified**
+  rather than written. Every cell is checked against the repository when the file
+  is produced: `Fixed` only if the fix site exists, `Regression Test` only if the
+  named file exists *and contains a test*. Deleting a test turns the cell red on
+  the next run instead of leaving a stale assurance in a release document.
+- `scripts/render-reaudit-matrix.mjs`, wired into `npm run reaudit:check`, the
+  test suite, and the release gate. `npm run reaudit:render` regenerates it.
+- `coverage` and `withdrawn` sections in the registry, so a suite with no finding
+  behind it is recorded honestly and a removed finding is explained.
+
+### Verified
+
+- **Multi-tenant isolation, re-audited.** Every organization-scoped admin route
+  was checked for a membership guard in the requested organization rather than
+  the caller's own. `requireOrganizationRole` resolves `orgId` from
+  `request.params.id` and checks membership in *that* organization, so the pattern
+  is sound. Routes using only `app.authenticate` were traced into the
+  application layer: `GET /organizations/:id` calls `getOrganization`, which
+  enforces `requireOrganizationPermission` before returning. SAML and OIDC
+  connection routes use org-scoped repository methods (`listByOrgId`,
+  `findByIdAndOrgId`) rather than bare id lookups. No cross-tenant path found.
+
+### Gate results
+
+| Gate | Result |
+| --- | --- |
+| `npm run lint` | 0 warnings, 0 errors |
+| `npm run typecheck` | pass |
+| `npm run registry:check` | 44 entries, 18 suites, 12 of 12 attack classes |
+| `npm run reaudit:check` | 18 plan findings, every claim verified |
+| `npm test` | 450 pass, 1 skipped, 0 fail |
+| `npm run test:security` | 402/402 |
+
 ## [2.9.0] - 2026-09-27
 
 ### Security

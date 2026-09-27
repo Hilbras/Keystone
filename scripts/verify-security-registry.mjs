@@ -51,6 +51,24 @@ function securitySuites() {
 
 const entries = registry.entries ?? [];
 const ids = entries.map((e) => e.id);
+const withdrawn = registry.withdrawn ?? [];
+
+/**
+ * Resolve the file a `fix` field points at.
+ *
+ * This check was missing, and that is how two entries came to name
+ * `src/services/saml/validator.ts` — a file that does not exist, in a directory
+ * that does not exist — while the registry reported itself healthy. The entry
+ * names a test, the test existed, and the test was unrelated to the claim. A
+ * registry that says "fixed" should have to name somewhere real.
+ */
+function resolveFixPath(fix) {
+  const source = String(fix).match(/(src\/[^\s:,—)]+\.ts)/)?.[1];
+  if (source) return fs.existsSync(path.join(root, source)) ? source : null;
+  // Not a TypeScript source file — a workflow, a config, a Dockerfile.
+  const leading = String(fix).trim().split(/\s+—|\s+-\s/)[0].trim();
+  return fs.existsSync(path.join(root, leading)) ? leading : null;
+}
 
 for (const entry of entries) {
   for (const field of REQUIRED) {
@@ -65,21 +83,65 @@ for (const entry of entries) {
   if (entry.documentation && !fs.existsSync(path.join(root, entry.documentation))) {
     errors.push(`${entry.id}: documentation does not exist — ${entry.documentation}`);
   }
+  if (entry.fix) {
+    const resolved = resolveFixPath(entry.fix);
+    if (!resolved) {
+      errors.push(
+        `${entry.id}: fix site does not resolve to a file in the repository — ${entry.fix}. ` +
+          `An entry must name somewhere real; a plausible path that does not exist is worse than none.`
+      );
+    }
+  }
 }
 
 for (const id of new Set(ids)) {
   if (ids.filter((x) => x === id).length > 1) errors.push(`duplicate id ${id}`);
 }
-entries.forEach((_, i) => {
-  const expected = `SEC-${String(i + 1).padStart(3, "0")}`;
-  if (ids[i] !== expected) errors.push(`entry ${i} is ${ids[i]}, expected ${expected} (the sequence must stay contiguous)`);
-});
+for (const w of withdrawn) {
+  if (ids.includes(w.id)) errors.push(`${w.id} is both an entry and withdrawn.`);
+  if (!w.reason) errors.push(`${w.id}: withdrawn without a reason.`);
+}
+
+// Ids must be unique, and every id between SEC-001 and the highest must be
+// accounted for by either an entry or a withdrawal. A positional comparison is
+// wrong here: withdrawing one id in the middle leaves the rest of the tail
+// shifted, and the ids after the gap are still perfectly accounted for.
+//
+// Renumbering to keep the sequence contiguous would change every id other
+// documents already cite, and a registry whose ids shift is one nobody can
+// reference.
+const known = new Set([...ids, ...withdrawn.map((w) => w.id)]);
+const highest = Math.max(...[...known].map((id) => Number(id.slice(4))));
+const missing = [];
+for (let n = 1; n <= highest; n++) {
+  const id = `SEC-${String(n).padStart(3, "0")}`;
+  if (!known.has(id)) missing.push(id);
+}
+if (missing.length) {
+  errors.push(
+    `ids absent from both entries and withdrawals: ${missing.join(", ")}. ` +
+      `Either add the entry or record a withdrawal with a reason; a silent gap reads as ` +
+      `an oversight.`
+  );
+}
+
+const coverage = registry.coverage ?? [];
+for (const c of coverage) {
+  if (!c.test || !fs.existsSync(path.join(root, c.test))) {
+    errors.push(`coverage entry names a missing file — ${c.test}`);
+  }
+}
 
 const claimed = new Set(entries.map((e) => e.test).filter((t) => t?.startsWith("src/tests/")));
+for (const c of coverage) if (c.test?.startsWith("src/tests/")) claimed.add(c.test);
 const suites = securitySuites();
 for (const suite of suites) {
   if (!claimed.has(suite)) {
-    errors.push(`security suite is not registered — ${suite}. Add a registry entry so it cannot be dropped without a decision.`);
+    errors.push(
+      `security suite is unaccounted for — ${suite}. Add a registry entry if it covers a ` +
+        `finding, or a \`coverage\` entry if it asserts a property without one. ` +
+        `Do not invent a finding to satisfy this check.`
+    );
   }
 }
 
