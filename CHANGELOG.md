@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **The security regression registry is now machine-enforced.** All 44 findings
+- **The security regression registry is now machine-enforced.** All 45 findings
   from the hardening programme are recorded in `docs/security/registry.json` with
   the issue, the fix, the test that fails without it, the documentation and the
   release. `npm run registry:check` fails when an entry names a test that does not
@@ -80,6 +80,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `npm test` and `npm run test:security` are unchanged in count where the change was
 organisational, which is the point: 430 tests before the restructure, 430 after,
 381 security tests before, 381 after. The 7 new authentication tests are on top.
+
+### Fixed
+
+- **The audit log export did not neutralise spreadsheet formula injection.** The
+  CSV export quoted a value containing a delimiter or a quote, but a value whose
+  first character is `=`, `+`, `-` or `@` is evaluated as a formula by Excel,
+  LibreOffice and Google Sheets when the file is opened. Several exported columns
+  are attacker-supplied — the user agent above all — and an audit export is
+  precisely the file an operator opens in a spreadsheet, so that is the expected
+  consumer rather than an edge case. A `User-Agent` of `=cmd|'/c calc'!A1`
+  reached the export intact. A leading apostrophe is now applied before quoting,
+  and a value with no formula prefix is left untouched. (SEC-045)
+
+  It came out of triaging Semgrep's advisory findings. The rule that pointed at
+  the code, `direct-response-write`, is a false positive — the content type is set
+  explicitly and every field is escaped — but the code it flagged was not sound.
 
 ### Known limitations
 
