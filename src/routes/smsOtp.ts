@@ -18,6 +18,9 @@ export default async function smsOtpRoutes(app: FastifyInstance) {
     {
       preHandler: [
         app.authenticate,
+      // a machine has no phone. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal(),
         rateLimit({
           keyPrefix: "sms-otp-send",
           maxAttempts: 3,
@@ -41,6 +44,9 @@ export default async function smsOtpRoutes(app: FastifyInstance) {
     {
       preHandler: [
         app.authenticate,
+      // a machine has no phone. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal(),
         rateLimit({
           keyPrefix: "sms-otp-verify",
           maxAttempts: 5,

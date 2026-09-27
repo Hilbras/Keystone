@@ -7,6 +7,7 @@ import { apiKeys, users, serviceAccounts, type User } from "../db/schema.js";
 import { verifyAccessToken, hashApiKey } from "../services/tokens.js";
 import type { TokenClaims } from "../types.js";
 import { emit } from "../services/events/bus.js";
+import { SERVICE_ACCOUNT_DEFAULT_SCOPES, hasScopes } from "../services/scopes.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -18,6 +19,8 @@ declare module "fastify" {
   interface FastifyRequest {
     serviceAccount?: typeof serviceAccounts.$inferSelect;
     apiKeyScopes?: string[];
+    /** Set when a machine credential authenticated the request. */
+    apiKeyId?: string;
   }
 }
 
@@ -95,7 +98,7 @@ async function resolveApiKeyRecord(key: string) {
 async function resolveUserFromApiKey(
   key: string,
   request: FastifyRequest
-): Promise<{ user: User; scopes: string[] } | undefined> {
+): Promise<{ user: User; scopes: string[]; keyId: string } | undefined> {
   const keyRecord = await resolveApiKeyRecord(key);
   if (!keyRecord) return undefined;
   if (keyRecord.expiresAt && keyRecord.expiresAt < new Date()) return undefined;
@@ -116,7 +119,7 @@ async function resolveUserFromApiKey(
         metadata: { keyId: keyRecord.id, scopes: keyRecord.scopes ?? [] },
       },
     });
-    return { user, scopes: keyRecord.scopes ?? [] };
+    return { user, scopes: keyRecord.scopes ?? [], keyId: keyRecord.id };
   }
 
   return undefined;
@@ -177,6 +180,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
     if (apiKeyUser) {
       request.user = apiKeyUser.user;
       request.apiKeyScopes = apiKeyUser.scopes;
+      request.apiKeyId = apiKeyUser.keyId;
       return;
     }
 
@@ -184,7 +188,11 @@ export default fp(async function authPlugin(app: FastifyInstance) {
     if (serviceAccountResult) {
       const { serviceAccount, keyId, scopes } = serviceAccountResult;
       request.serviceAccount = serviceAccount;
-      request.apiKeyScopes = ["api:read", "api:write", "service_account"];
+      // An explicit set from the registry, not a wildcard string. Service
+      // accounts are granted scopes explicitly and the grant is stored on the
+      // key, so revoking it is a data change rather than a code change.
+      request.apiKeyScopes = scopes.length > 0 ? scopes : SERVICE_ACCOUNT_DEFAULT_SCOPES;
+      request.apiKeyId = keyId;
       await emit({
         type: "api_key_used",
         payload: {
@@ -225,11 +233,20 @@ export default fp(async function authPlugin(app: FastifyInstance) {
 
   app.decorate("requireScopes", function requireScopes(...required: string[]) {
     return async function scopeCheck(request: FastifyRequest, reply: FastifyReply) {
-      // Session-based authentication has full scope access.
-      if (!request.apiKeyScopes) return;
-      const scopes = request.apiKeyScopes;
-      const hasAll = required.every((scope) => scopes.includes(scope) || scopes.includes("service_account"));
-      if (!hasAll) {
+      // A session or bearer token carries the authority of a human and is
+      // governed by the permission system instead. Only machine credentials are
+      // scope-limited.
+      if (!request.apiKeyId) return;
+
+      // Fail closed. Previously the guard returned early whenever
+      // `apiKeyScopes` was absent, which is indistinguishable from "this is a
+      // session" — so a key that resolved without a scope list skipped the check
+      // entirely. Keying off `apiKeyId` removes the ambiguity.
+      if (!hasScopes(request.apiKeyScopes, required)) {
+        await request.audit("unauthorized_access", {
+          action: "insufficient_api_key_scope",
+          requiredScope: required.join(" "),
+        });
         return reply.status(403).send({ error: "Insufficient API key scope", required });
       }
     };

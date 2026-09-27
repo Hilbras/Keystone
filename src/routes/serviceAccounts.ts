@@ -10,6 +10,7 @@ import {
   listServiceAccountApiKeys,
 } from "../services/serviceAccounts.js";
 import { canonicalFingerprint, isValidFingerprint } from "../services/trustedProxies.js";
+import { knownScopes, validateScopes } from "../services/scopes.js";
 import { generateApiKey, hashApiKey } from "../services/tokens.js";
 import { toPublicApiKey } from "../types.js";
 
@@ -183,6 +184,21 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Service account not found" });
       }
 
+      // A machine credential cannot be issued an interactive scope. TOTP
+      // enrolment in particular would let a caller attempt to enrol a factor
+      // against the synthesized principal, which has no user row to attach it to.
+      const scopeCheck = validateScopes(body.scopes, { principal: "service_account" });
+      if (!scopeCheck.ok) {
+        return reply.status(400).send({
+          error: scopeCheck.forbiddenForServiceAccount.length
+            ? "Scope not available to a service account"
+            : "Unknown API key scope",
+          unknown: scopeCheck.unknown,
+          forbidden: scopeCheck.forbiddenForServiceAccount,
+          known: knownScopes(),
+        });
+      }
+
       const { key, prefix } = generateApiKey();
       const record = await app.container.apiKeyRepository.create({
         serviceAccountId: account.id,
@@ -190,7 +206,7 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
         name: body.name,
         prefix,
         keyHash: hashApiKey(key),
-        scopes: body.scopes?.length ? body.scopes : ["api:read"],
+        scopes: scopeCheck.scopes,
         expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
       });
 
@@ -198,6 +214,7 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
         orgId: id,
         serviceAccountId: account.id,
         keyId: record.id,
+        scopes: scopeCheck.scopes,
       });
 
       return { key, apiKey: toPublicApiKey(record) };

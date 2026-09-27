@@ -151,7 +151,10 @@ export default async function federationRoutes(app: FastifyInstance) {
 
   app.post(
     "/link",
-    { preHandler: [app.authenticate] },
+    { preHandler: [app.authenticate,
+      // linking an external identity is a human account action. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal()] },
     async (request: FastifyRequest, reply) => {
       const body = LinkIdentitySchema.parse(request.body);
       const result = await sdk.identity.linkUserIdentity(
@@ -168,7 +171,10 @@ export default async function federationRoutes(app: FastifyInstance) {
     }
   );
 
-  app.get("/identities", { preHandler: [app.authenticate] }, async (request: FastifyRequest) => {
+  app.get("/identities", { preHandler: [app.authenticate,
+      // identity linkage is a human account action. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal()] }, async (request: FastifyRequest) => {
     const rows = await app.container.identityRepository.listByUserId(request.user!.id);
     return { identities: rows };
   });

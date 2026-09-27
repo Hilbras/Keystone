@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.5.0`**
+**Current version: `2.6.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,19 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.6.0
+
+- **API key scopes are now a real registry** — a single list of scope names with descriptions. A scope not in the registry cannot be granted, so there is no string a caller can invent, and a route that needs a scope names it from the list so enforcement cannot quietly drift out of date again.
+- **Unknown scopes are refused, not dropped** — key creation previously stored whatever strings it was given. Silently discarding an unrecognised one hides a typo and leaves the caller believing they hold something they do not, so it now returns `400` listing what was rejected and what is allowed.
+- **The `service_account` wildcard is gone** — the scope guard treated a key as holding *every* scope if its scope list merely contained the string `"service_account"`, and that string was client-suppliable at key creation. It is no longer a scope, and a key holding only it satisfies nothing.
+- **The scope guard fails closed** — it previously returned early whenever `apiKeyScopes` was absent, which is indistinguishable from "this is a session", so a key that resolved without a scope list skipped the check entirely. It now keys off `apiKeyId`, which is set only when a machine credential authenticated.
+- **Scopes are enforced** on key, session, and profile routes, so a key is limited to the operations its grant covers.
+- **Profile and MFA scopes cannot be granted to a service account** — a machine's "profile" is a synthesized object with an id of `sa:<uuid>` that matches no user row, and it has no authenticator to enrol a second factor with.
+- **A stated boundary for machine principals** — `requireHumanPrincipal` refuses a service account on TOTP, WebAuthn, SMS OTP, identity linking, consent, and userinfo routes, with an explicit `403` and an audit record, rather than relying on the synthetic principal happening to match no row.
+- **Personal keys default to read-only** on the caller's own resources. The previous default, `api:read`, was not in any registry — a fair sign that nothing was checking it.
+
+> **Note on reachability.** `app.authenticate` is JWT-only, so almost every route still refuses an API key outright. `GET /auth/validate` is the one route that accepts one, and it is where scope enforcement is observable end to end. What this release fixes is the enforcement machinery, so the next route to adopt key authentication inherits a real check.
 
 ## What's new in v2.5.0
 

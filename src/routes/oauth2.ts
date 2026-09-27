@@ -419,7 +419,10 @@ export default async function oauth2Routes(app: FastifyInstance) {
 
   app.get(
     "/userinfo",
-    { preHandler: [app.authenticate] },
+    { preHandler: [app.authenticate,
+      // the userinfo claims describe a person. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal()] },
     async (request: FastifyRequest) => {
       const user = request.user!;
       return {
@@ -442,7 +445,10 @@ export default async function oauth2Routes(app: FastifyInstance) {
 
   app.post(
     "/consent",
-    { preHandler: [app.authenticate] },
+    { preHandler: [app.authenticate,
+      // consent is a human authorization decision. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal()] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = ConsentBodySchema.parse(request.body);
       const application = await findApplicationByClientId(body.client_id);
