@@ -24,6 +24,7 @@ const { loadSigningKeys } = await import("../../services/tokens.js");
 const { auditLog, users } = await import("../../db/schema.js");
 const { hashPassword } = await import("../../services/secrets/index.js");
 const { migrationsFolder } = await import("../helpers/paths.js");
+const { auditLogSubscriber } = await import("../../services/events/subscribers/auditLog.js");
 
 const RUN_ID = crypto.randomBytes(6).toString("hex");
 const PASSWORD = "Audit-Export-Passw0rd!";
@@ -76,22 +77,29 @@ after(async () => {
 });
 
 /**
- * Produce an audit row carrying `userAgent`, then export the log.
+ * Write an audit row carrying `userAgent`, then export the log.
  *
  * The export reflects rows written *before* the request, so a row created by the
- * export call itself cannot appear in its own output. The row has to be seeded
- * first, which is why this makes a real request rather than only calling the
- * endpoint.
+ * export call itself cannot appear in its own output. The row has to exist first.
+ *
+ * It is written through the audit subscriber rather than by making a request,
+ * because this suite is about escaping in the export and has no business
+ * depending on the login rate limiter. It originally seeded with a failed login
+ * and asserted only that the status was `>= 400`; once the per-address login
+ * budget was exhausted by the rest of the suite, the seed started returning 429,
+ * a 429 is not audited, and the assertion passed on a row that was never written.
+ * That is the same failure mode as everything else this phase found: a test that
+ * does not exercise the real path.
  */
+let seedCount = 0;
+
 async function exportCsv(userAgent: string): Promise<{ body: string; type: string }> {
-  // A failed login is audited, and its row records the submitting user agent.
-  const seed = await app.inject({
-    method: "POST",
-    url: "/auth/login",
-    headers: { "user-agent": userAgent },
-    payload: { email: `nobody-${RUN_ID}@example.test`, password: "wrong" },
-  });
-  assert.ok(seed.statusCode >= 400, "the seeding request must be a rejection");
+  seedCount += 1;
+  await auditLogSubscriber({
+    type: "user_login_failed",
+    version: 1,
+    payload: { userAgent, ip: "127.0.0.1", metadata: { marker: `seed-${RUN_ID}-${seedCount}` } },
+  } as never);
 
   // Filtered to the event this test seeds, and with the maximum limit.
   //
@@ -194,9 +202,17 @@ describe("Audit log CSV export", () => {
   });
 
   it("leaves an ordinary user agent untouched", async () => {
-    const { body } = await exportCsv("Mozilla/5.0 audit-export");
-    assert.ok(
-      !body.includes("'Mozilla"),
+    const agent = "Mozilla/5.0 audit-export";
+    const { body } = await exportCsv(agent);
+    const cell = body
+      .split("\n")
+      .filter((line) => line.includes(agent))
+      .flatMap(cells)
+      .find((c) => c.includes(agent));
+    assert.ok(cell, `precondition: the seeded row should be in the export:\n${body.slice(0, 400)}`);
+    assert.equal(
+      cell,
+      agent,
       "a value that is not a formula must not be prefixed; that would corrupt ordinary data"
     );
   });
