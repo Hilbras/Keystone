@@ -11,7 +11,7 @@ import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { initializeContainer } from "./di.js";
 import { getContainer } from "./container.js";
-import { fastifyTrustProxySetting } from "./services/trustedProxies.js";
+import { fastifyTrustProxySetting, isOriginAllowed } from "./services/trustedProxies.js";
 import { redis } from "./services/redis.js";
 import { loadSigningKeys, getPublicJwks } from "./services/tokens.js";
 
@@ -109,7 +109,7 @@ export async function buildApp() {
       info: {
         title: "Hilbras Keystone API",
         description: "Identity platform API for Hilbras products and third-party apps.",
-        version: "2.6.0",
+        version: "2.7.0",
       },
       servers: [{ url: config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}` }],
       tags: [
@@ -123,14 +123,24 @@ export async function buildApp() {
     routePrefix: "/documentation",
   });
 
+  // Logged once at boot so a misconfiguration is visible before it matters,
+  // rather than only when a browser is refused.
+  if (config.ALLOWED_ORIGINS.length === 0) {
+    app.log.warn(
+      config.NODE_ENV === "production"
+        ? "ALLOWED_ORIGINS is empty in production: every cross-origin request will be refused. " +
+            "Set it to the exact origins that serve your frontend."
+        : "ALLOWED_ORIGINS is empty: any localhost origin is allowed in development."
+    );
+  }
+
   await app.register(cors, {
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (config.ALLOWED_ORIGINS.length === 0) return cb(null, true);
-      if (config.ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-      // In development, allow any localhost origin so external test projects
-      // can connect without pre-registering them in ALLOWED_ORIGINS.
-      if (config.NODE_ENV !== "production" && origin?.startsWith("http://localhost:")) {
+      // Previously an empty ALLOWED_ORIGINS returned true here, which made an
+      // unset variable equivalent to "allow every origin" on a server that sends
+      // credentialed cookies. Failing closed is the whole point: an unset variable
+      // in production should refuse browsers, not hand them the session.
+      if (isOriginAllowed(origin, { allowedOrigins: config.ALLOWED_ORIGINS, nodeEnv: config.NODE_ENV })) {
         return cb(null, true);
       }
       cb(new Error("Origin not allowed"), false);

@@ -5,6 +5,67 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-09-27
+
+### Security
+
+- **The admin configuration endpoint leaked secrets it did not recognise.**
+  Redaction was a denylist: a set of known-sensitive names plus a regex. Run
+  against 24 secret-looking key names it missed 12, among them `SIGNING_KEY`,
+  `JWT_SIGNING_KEY`, `SENDGRID_KEY`, `PROVIDER_APIKEY`, `SAML_CERT`, `TLS_KEY`,
+  `CERT_PRIVATE`, `HMAC_KEY`, `KMS_KEY` and `DB_URL`. The endpoint returned their
+  values in the clear to an owner-authenticated caller. A denylist is a losing
+  game here: the next person to add a secret-bearing variable leaks it and
+  nothing fails. Redaction is now an **allowlist**, so a key is private until
+  someone deliberately decides otherwise.
+- **CORS allowed every origin when `ALLOWED_ORIGINS` was empty.** The origin
+  callback returned true for an empty allowlist, so an unset variable was
+  equivalent to "permit every origin" on a server that sends credentialed
+  cookies. It now fails closed and logs a warning at boot, so a misconfiguration
+  is visible before a browser is turned away rather than after.
+- **The setup server reflected any origin with credentials.** It creates the owner
+  account and writes configuration, and was registered with `origin: true`. Any
+  page a browser visited could attempt a credentialed request against the
+  bootstrap surface. Origins must now be listed, defaulting to its own loopback
+  addresses.
+- **The setup token was written to stdout in cleartext.** It appeared in
+  container logs, in journald, and in whatever ships logs off the host, where it
+  remains readable long after the bootstrap it was for. It is a full
+  account-initialisation credential. It is now printed only on an explicit
+  `KEYSTONE_PRINT_SETUP_TOKEN=true`, and never in production. The rejection path
+  also no longer logs the presented and expected token lengths, which disclosed
+  the length of the expected token.
+- **Webhook signing secrets were stored in plaintext.** A database dump yielded a
+  working signing key for every endpoint, letting an attacker forge deliveries
+  that the receiving service would accept as genuine. They are now encrypted with
+  AES-256-GCM under the existing key. **Encrypted rather than hashed**, because
+  Keystone signs outbound payloads with the secret and therefore has to be able
+  to recover it; hashing would make signing impossible. Rows written before this
+  change are read unchanged, and re-saving or rotating an endpoint upgrades them.
+- **Session cookies were not `Secure` by default in production.** The default was
+  `false`, so an operator who did not set `COOKIE_SECURE` received cookies that
+  would be sent over plain HTTP. Production now defaults to `true`; development
+  still defaults to `false` and either can be set explicitly.
+- **The setup server bound to all interfaces.** It inherited `HOST`, which
+  defaults to `0.0.0.0` — correct for the main server and wrong for the one that
+  creates the owner account. It now defaults to loopback, honours a private
+  interface, and warns if explicitly told to bind to everything.
+
+### Changed
+
+- CORS policy extracted to `isOriginAllowed` in `src/services/trustedProxies.ts`,
+  shared by the main and setup servers.
+- `EXPOSABLE_CONFIG_KEYS` is the allowlist. `isSensitiveConfigurationKey` is
+  retained for the write path, where a client may legitimately send a value that
+  must be recognised as "preserve this, do not overwrite it".
+
+### Added
+
+- 27 tests: configuration redaction against the 12 previously-leaked names, the
+  setup token's logging behaviour in all three modes, webhook secret encryption
+  including the legacy plaintext read path and signature stability, the CORS
+  policy, and the production deployment defaults.
+
 ## [2.6.0] - 2026-09-27
 
 ### Security
