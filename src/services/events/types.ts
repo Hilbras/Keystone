@@ -56,6 +56,11 @@ export type AuditEventType =
   | "api_key_used"
   | "service_account_created"
   | "service_account_updated"
+  /** A request refused by a rate limiter. Carries which limiter decided it. */
+  | "rate_limit_triggered"
+  | "authentication_brute_force"
+  | "mfa_brute_force"
+  | "refresh_token_replayed"
   | "magic_link_replayed"
   | "sms_otp_replayed"
   | "password_reset_token_replayed"

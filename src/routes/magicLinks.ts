@@ -37,6 +37,8 @@ export default async function magicLinkRoutes(app: FastifyInstance) {
         keyPrefix: "magic-link",
         maxAttempts: 3,
         windowSeconds: 900,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
       }),
     ],
   }, async (request, reply) => {

@@ -7,7 +7,7 @@ export interface EventValidationResult {
   errors: string[];
 }
 
-const VALID_EVENT_TYPES = new Set([
+export const VALID_EVENT_TYPES = new Set([
   "user_registered",
   "user_login",
   "user_login_failed",
@@ -29,6 +29,10 @@ const VALID_EVENT_TYPES = new Set([
   "api_key_used",
   "service_account_created",
   "service_account_updated",
+  "rate_limit_triggered",
+  "authentication_brute_force",
+  "mfa_brute_force",
+  "refresh_token_replayed",
   "magic_link_replayed",
   "sms_otp_replayed",
   "password_reset_token_replayed",

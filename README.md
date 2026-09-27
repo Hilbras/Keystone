@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.7.0`**
+**Current version: `2.8.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,18 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.8.0
+
+- **A Redis outage no longer removes rate limiting.** When Redis was unavailable every limiter returned "allowed" — so during an outage, `login`, `mfa/verify`, `sms-otp/verify`, and the OAuth token exchange had **no limit at all**. An outage is precisely when unlimited attempts are worth having. Sensitive endpoints now fall back to a bounded in-process budget.
+- **MFA verification is limited per login attempt, not per address.** The budget key included the submitted email, which that endpoint does not carry, so *every* second-factor verification from one address shared a single budget of 20. An attacker got 20 guesses, but so did an office behind one NAT — one busy office could lock out every legitimate MFA login. The key now includes the challenge.
+- **Second-factor management is limited per user, not per address.** Same problem on the TOTP routes: 10 attempts shared across everyone behind an address. Brute-forcing a code is per-account, so a per-user budget is the right unit.
+- **Credential spraying is capped.** The login budget was keyed on address *and* submitted address, so it stopped repeated guesses at one account but did nothing against an attacker varying the address across a thousand accounts from one host. A second, address-keyed budget bounds that.
+- **A refused request is now recorded.** A rate-limit trip previously left no trace — a 429 and nothing else — so sustained guessing at `login` or `mfa/verify` was invisible except in aggregate. `rate_limit_triggered` records the endpoint, the client address, and **which limiter decided**, so a degraded local control is distinguishable from a healthy distributed one.
+- **Failed logins are audited.** `user_login_failed` existed in the event vocabulary and was never emitted, so password guessing left no record. Now emitted for both `/login` and `/token-login`, without a user id, since the submitted address may match no account.
+- **A replayed refresh token is detected and answered.** A second presentation of a consumed refresh token was indistinguishable from an unknown one. It now emits `refresh_token_replayed` and revokes the account's remaining credentials, because a replay means the token leaked.
+- **API key creation is rate limited** like any other authentication event.
+- **16 tests** covering the emergency limiter, proxy spoofing, and the abuse events.
 
 ## What's new in v2.7.0
 

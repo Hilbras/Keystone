@@ -276,6 +276,8 @@ export default async function scimRoutes(app: FastifyInstance) {
     maxAttempts: config.SCIM_RATE_LIMIT_MAX,
     windowSeconds: config.SCIM_RATE_LIMIT_WINDOW_SECONDS,
     keyFrom: (request) => request.state.scimConnectionId ?? request.ip,
+          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+          emergencyLocalLimit: true,
   });
 
   /**

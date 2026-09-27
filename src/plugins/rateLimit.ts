@@ -3,6 +3,8 @@ import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { redis, isRedisReady } from "../services/redis.js";
 import { clientAddress } from "../services/trustedProxies.js";
+import { localRateLimit } from "../services/localRateLimit.js";
+import { emit } from "../services/events/bus.js";
 
 interface RateLimitPluginOptions {
   keyPrefix: string;
@@ -14,6 +16,14 @@ interface RateLimitPluginOptions {
    * one noisy identity provider cannot exhaust the budget of every other tenant.
    */
   keyFrom?: (request: FastifyRequest) => string;
+  /**
+   * Hold a local in-process budget while Redis is unavailable.
+   *
+   * Set this on endpoints where unlimited attempts are dangerous — anything that
+   * authenticates. It is weaker than the distributed limiter, because a client
+   * gets one budget per instance, but it is bounded, whereas failing open is not.
+   */
+  emergencyLocalLimit?: boolean;
 }
 
 export interface GlobalRateLimitOptions {
@@ -48,16 +58,37 @@ redis.call("pexpire", key, windowMs)
 return count
 `;
 
-async function isAllowed(key: string, maxAttempts: number, windowSeconds: number): Promise<boolean> {
+/**
+ * Result of a limit check, including which limiter decided it.
+ *
+ * The distinction matters to an operator reading a rate-limit event: "we limited
+ * this in Redis" and "we limited this in one process because Redis was down" call
+ * for different responses.
+ */
+type LimitDecision = { allowed: boolean; limiter: "redis" | "local" | "none"; retryAfterSeconds?: number };
+
+async function checkLimit(
+  key: string,
+  maxAttempts: number,
+  windowSeconds: number,
+  useEmergencyLocal: boolean
+): Promise<LimitDecision> {
   if (!isRedisReady()) {
-    // Fail open when Redis is not connected; the endpoint remains functional.
-    return true;
+    // Redis is the primary control and is unavailable. Failing open removes the
+    // control exactly when an attacker would most like it gone, so sensitive
+    // endpoints fall back to a bounded in-process budget instead.
+    if (!useEmergencyLocal) {
+      return { allowed: true, limiter: "none" };
+    }
+    const result = localRateLimit(key, maxAttempts, windowSeconds);
+    return result.allowed
+      ? { allowed: true, limiter: "local" }
+      : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
   }
 
-  const now = Date.now();
-  const member = `${now}:${cryptoRandom()}`;
-
   try {
+    const now = Date.now();
+    const member = `${now}:${cryptoRandom()}`;
     const count = (await redis.eval(
       slidingWindowLua,
       1,
@@ -67,12 +98,27 @@ async function isAllowed(key: string, maxAttempts: number, windowSeconds: number
       member,
       maxAttempts
     )) as number;
-    return count < maxAttempts;
-  } catch (err) {
-    // Fail open on transient Redis errors so a network blip cannot lock users out.
-    console.error("[rateLimit] Redis error:", err);
-    return true;
+    return {
+      allowed: count < maxAttempts,
+      limiter: "redis",
+      retryAfterSeconds: windowSeconds,
+    };
+  } catch {
+    // A Redis error mid-request is the same situation as Redis being down.
+    if (!useEmergencyLocal) {
+      return { allowed: true, limiter: "none" };
+    }
+    const result = localRateLimit(key, maxAttempts, windowSeconds);
+    return result.allowed
+      ? { allowed: true, limiter: "local" }
+      : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
   }
+}
+
+/** Kept for callers that only need a yes/no, such as a pre-authentication budget. */
+async function isAllowed(key: string, maxAttempts: number, windowSeconds: number): Promise<boolean> {
+  const decision = await checkLimit(key, maxAttempts, windowSeconds, false);
+  return decision.allowed;
 }
 
 function cryptoRandom(): string {
@@ -98,14 +144,57 @@ export { clientAddress };
 /** Raw sliding-window check, for the same pre-limiter case. */
 export { isAllowed };
 
+/**
+ * Report a refused request.
+ *
+ * A rate-limit trip used to leave no trace at all: the request was answered with
+ * a 429 and nothing was recorded. An operator therefore could not distinguish
+ * ordinary traffic from a sustained brute-force attempt against `login` or
+ * `mfa-verify` — the requests that most warrant attention were the only ones
+ * invisible in the log.
+ *
+ * `limiter` is included because "limited in Redis" and "limited in one process
+ * because Redis was down" call for different responses, and conflating them would
+ * hide a degraded control.
+ */
+async function reportLimited(
+  request: FastifyRequest,
+  options: { keyPrefix: string; maxAttempts: number; windowSeconds: number },
+  decision: LimitDecision
+): Promise<void> {
+  try {
+    await emit({
+      type: "rate_limit_triggered",
+      payload: {
+        keyPrefix: options.keyPrefix,
+        clientAddress: clientIdentifier(request),
+        maxAttempts: options.maxAttempts,
+        windowSeconds: options.windowSeconds,
+        limiter: decision.limiter,
+        requestId: request.id,
+        method: request.method,
+        path: request.url,
+      },
+    });
+  } catch {
+    // A monitoring failure must not turn a 429 into a 500.
+  }
+}
+
 export function rateLimit(options: RateLimitPluginOptions) {
   return async function preHandler(request: FastifyRequest, reply: FastifyReply) {
     const id = options.keyFrom ? options.keyFrom(request) : clientIdentifier(request);
     const key = `${options.keyPrefix}:${id}:${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
-    const allowed = await isAllowed(key, options.maxAttempts, options.windowSeconds);
-    if (!allowed) {
+    const decision = await checkLimit(
+      key,
+      options.maxAttempts,
+      options.windowSeconds,
+      options.emergencyLocalLimit === true
+    );
+    if (!decision.allowed) {
+      await reportLimited(request, options, decision);
       return reply
-        .header("Retry-After", String(options.windowSeconds))
+        .header("Retry-After", String(decision.retryAfterSeconds ?? options.windowSeconds))
         .status(429)
         .send({ error: "Too many attempts. Please try again later." });
     }
@@ -120,33 +209,13 @@ export function globalRateLimit(options: GlobalRateLimitOptions = {}) {
   return async function onRequest(request: FastifyRequest, reply: FastifyReply) {
     const id = clientIdentifier(request);
     const key = `${keyPrefix}:${id}`;
-    const allowed = await isAllowed(key, maxRequests, windowSeconds);
-    if (!allowed) {
+    const decision = await checkLimit(key, maxRequests, windowSeconds, false);
+    if (!decision.allowed) {
+      await reportLimited(request, { keyPrefix, maxAttempts: maxRequests, windowSeconds }, decision);
       return reply
-        .header("Retry-After", String(windowSeconds))
+        .header("Retry-After", String(decision.retryAfterSeconds ?? windowSeconds))
         .status(429)
         .send({ error: "Rate limit exceeded. Please slow down." });
     }
   };
 }
-
-export function appRateLimit(options: { maxAttempts: number; windowSeconds: number }) {
-  return async function preHandler(request: FastifyRequest, reply: FastifyReply) {
-    const clientId = (request.body as Record<string, string> | undefined)?.client_id ?? "anonymous";
-    const id = clientIdentifier(request);
-    const key = `app:${clientId}:${id}`;
-    const allowed = await isAllowed(key, options.maxAttempts, options.windowSeconds);
-    if (!allowed) {
-      return reply
-        .header("Retry-After", String(options.windowSeconds))
-        .status(429)
-        .send({ error: "Too many attempts for this application. Please try again later." });
-    }
-  };
-}
-
-export default fp(async function rateLimitPlugin(app: FastifyInstance) {
-  app.addHook("onClose", async () => {
-    await redis.quit();
-  });
-});

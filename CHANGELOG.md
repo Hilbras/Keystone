@@ -5,6 +5,78 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-09-27
+
+### Security
+
+- **A Redis outage removed rate limiting entirely.** Every limiter checked
+  `isRedisReady()` and returned `true` when Redis was down. During an outage
+  `login`, `mfa/verify`, `sms-otp/verify` and the OAuth token exchange had no limit
+  at all — and an outage is exactly when unlimited attempts are worth having,
+  because it is the moment an attacker cannot be traced to a single event stream.
+  Sensitive endpoints now fall back to a bounded in-process budget. The fallback
+  is strictly weaker: a client gets one budget per instance. That is a
+  degradation worth having; unbounded is not. The store is capped, because an
+  unbounded map keyed by client address is itself a denial-of-service vector.
+- **MFA verification shared one budget across all users behind an address.** The
+  key was `mfa-verify:<address>:<body.email>`, and that endpoint does not carry
+  an email, so every second-factor verification from one address drew on the same
+  budget of 20. An attacker got 20 guesses; so did an office behind a single NAT,
+  where one busy office could lock out every legitimate second-factor login. The
+  key now includes the challenge, which identifies one login attempt, giving an
+  attacker 20 guesses at the code they are actually attacking without spending
+  anyone else's budget.
+- **Second-factor management shared one budget per address.** The TOTP routes
+  allowed 10 attempts keyed on the address alone, with the same consequence.
+  Brute-forcing a TOTP code is per-account, since the code is checked against one
+  user's secret, so the budget is now keyed on the user.
+- **Credential spraying was unbounded.** The login budget was keyed on address
+  *and* submitted address, so it stopped repeated guesses at one account and did
+  nothing about an attacker who varied the address on every request and guessed
+  across a thousand accounts from one host. A second, address-keyed budget bounds
+  that independently.
+- **A refused request left no record.** A rate-limit trip produced a `429` and
+  nothing else, so sustained guessing at `login` or `mfa/verify` was invisible
+  except in aggregate. `rate_limit_triggered` now records the endpoint, the client
+  address, and **which limiter decided** — a degraded in-process control is a
+  different operational situation from a healthy distributed one, and conflating
+  them would hide it.
+- **Failed logins were never audited.** `user_login_failed` existed in the event
+  vocabulary and was never emitted, on either `/login` or `/token-login`.
+- **A replayed refresh token was indistinguishable from an unknown one.** It is now
+  detected, emits `refresh_token_replayed`, and revokes the account's remaining
+  credentials — a replay means the token is known to somebody else, so answering
+  only that one request leaves the rest of what it could mint intact.
+- **API key creation had no rate limit.** Minting a credential is an
+  authentication event and is now bounded.
+
+### Already sound, verified rather than assumed
+
+`X-Forwarded-For` handling, the trusted-proxy model, and the address-based rate
+limit keys were delivered in v2.0.0. Item 3 of this phase is therefore
+verification rather than new work: a spoofed header from an untrusted peer, a
+multi-entry header, `x-real-ip`, `Forwarded`, IPv4, IPv6, and both spellings of
+IPv4-mapped IPv6 are now covered by tests.
+
+### Added
+
+- `src/services/localRateLimit.ts` — the in-process fallback, bounded and swept.
+- `refresh_token_state` inspection, distinguishing a spent token from an unknown
+  one.
+- 16 tests: the emergency limiter's accounting, bounding and eviction behaviour;
+  proxy spoofing across IPv4, IPv6, mapped IPv6, and multi-entry headers; an
+  enumeration check that every sensitive limiter carries the emergency flag,
+  including the ones built by a factory; and the abuse event payloads.
+
+### A test suite that was not testing what it appeared to
+
+`mfa.test.ts` never connected Redis. The shared client is created with
+`lazyConnect`, so every rate limit in that suite was evaluated against a limiter
+that was not running, and the suite passed **only because the limiter failed
+open** — the behaviour this phase removes. It now connects Redis explicitly, and
+surfaced two real keying defects that had been hidden by fail-open. Fixing those
+took the suite from 12 failures to 55/55.
+
 ## [2.7.0] - 2026-09-27
 
 ### Security
