@@ -25,6 +25,21 @@ Each cell is verified against the repository when this file is generated, not as
 | Supply chain | High | 1 | Yes | Yes | Yes | SEC-011 |
 | Test integrity | High | 3 | Yes | Yes | Yes | SEC-040, SEC-041, SEC-042 |
 
+## API security review
+
+Every route enumerated from source and checked for a guard. Result in
+[`docs/API-REVIEW.md`](./API-REVIEW.md).
+
+**69 routes. Zero with no authentication guard.** 27 carry no route-level
+authorization and each was traced: SCIM’s bearer token *is* the authorization,
+`GET /me` returns the caller’s own profile, the OAuth authorize endpoint
+authenticates in the request, and `workflows.ts` checks membership in the handler.
+
+One structural weakness found: `workflows.ts` does its organization check inside
+each of five handlers rather than in a guard, so a sixth route added later would
+have no reason to include it. Not a live vulnerability — the checks are correct —
+but the only module in the codebase that does it this way.
+
 ## Unresolved Critical findings
 
 None. Every finding the plan classifies as Critical is fixed, has a regression test, and is documented.
