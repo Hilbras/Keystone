@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { TOTP, Secret } from "otpauth";
 import type { FastifyInstance } from "fastify";
-import type { User } from "../../db/schema.js";
-import type { UserRepository } from "../../repositories/types.js";
+import type { User } from "../../../db/schema.js";
+import type { UserRepository } from "../../../repositories/types.js";
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbras";
@@ -27,18 +27,18 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
+const { db } = await import("../../../db/index.js");
 const {
   users,
   refreshTokens,
   userSessions,
   mfaChallenges,
   totpBackupCodes,
-} = await import("../../db/schema.js");
-const { buildApp } = await import("../../index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
-const { config } = await import("../../config.js");
-const { getSdk } = await import("../../sdk/index.js");
+} = await import("../../../db/schema.js");
+const { buildApp } = await import("../../../index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
+const { config } = await import("../../../config.js");
+const { getSdk } = await import("../../../sdk/index.js");
 const {
   encryptSecret,
   decryptSecret,
@@ -49,8 +49,8 @@ const {
   verifyBackupCode,
   verifyUserTotpCode,
   hashBackupCode,
-} = await import("../../services/totp.js");
-const { hashMfaChallenge, isMfaChallengeUsable } = await import("../../services/mfa.js");
+} = await import("../../../services/totp.js");
+const { hashMfaChallenge, isMfaChallengeUsable } = await import("../../../services/mfa.js");
 
 let app: FastifyInstance;
 let userRepository: UserRepository;
@@ -69,7 +69,7 @@ function totpFor(secret: string, at = Date.now()): string {
 /** Create a user with a password and optionally an enrolled, enabled TOTP factor. */
 async function createMfaUser(options: { totp?: boolean } = {}): Promise<{ user: User; secret?: string; backupCodes: string[] }> {
   const id = crypto.randomUUID().slice(0, 8);
-  const { hashPassword } = await import("../../services/secrets/index.js");
+  const { hashPassword } = await import("../../../services/secrets/index.js");
   const user = await userRepository.create({
     email: `mfa-${id}@example.com`,
     username: `mfa-${id}`,
@@ -102,7 +102,7 @@ function countSessions(userId: string) {
 }
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
   app = await buildApp();
   userRepository = app.container.userRepository;
@@ -113,7 +113,7 @@ before(async () => {
   // passed only because the limiter failed open, which is precisely the
   // behaviour v2.8.0 removes. Running against the real distributed limiter is
   // both more faithful and the thing this suite was silently not testing.
-  const { redis, isRedisReady } = await import("../../services/redis.js");
+  const { redis, isRedisReady } = await import("../../../services/redis.js");
   if (redis.status === "wait") await redis.connect();
   for (let attempt = 0; attempt < 50 && !isRedisReady(); attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -123,9 +123,9 @@ before(async () => {
 
 after(async () => {
   await app?.close();
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -597,7 +597,7 @@ describe("MFA challenge completion", () => {
 describe("MFA and refresh sessions", () => {
   it("refuses to rotate a session that was created before MFA was enabled", async () => {
     const { user } = await createMfaUser();
-    const { createTokenSet, rotateRefreshToken } = await import("../../services/tokens.js");
+    const { createTokenSet, rotateRefreshToken } = await import("../../../services/tokens.js");
 
     const legacy = await createTokenSet(user, "127.0.0.1", "mfa-test");
     assert.ok(legacy.refreshToken);
@@ -638,7 +638,7 @@ describe("MFA and refresh sessions", () => {
     });
     assert.equal(res.statusCode, 200);
 
-    const { rotateRefreshToken } = await import("../../services/tokens.js");
+    const { rotateRefreshToken } = await import("../../../services/tokens.js");
     const rotated = await rotateRefreshToken(res.json().refreshToken, "127.0.0.1", "mfa-test");
     assert.ok(rotated, "an MFA-verified session must keep working");
     assert.equal(rotated!.userId, user.id);
@@ -648,7 +648,7 @@ describe("MFA and refresh sessions", () => {
 describe("Token issuance chokepoint", () => {
   it("refuses to mint a token for an MFA user without a factor", async () => {
     const { user } = await createMfaUser({ totp: true });
-    const { createAccessToken, createTokenSet, MfaRequiredError } = await import("../../services/tokens.js");
+    const { createAccessToken, createTokenSet, MfaRequiredError } = await import("../../../services/tokens.js");
 
     assert.throws(() => createAccessToken(user), MfaRequiredError);
     await assert.rejects(
@@ -659,7 +659,7 @@ describe("Token issuance chokepoint", () => {
 
   it("allows issuance once a factor is asserted", async () => {
     const { user } = await createMfaUser({ totp: true });
-    const { createAccessToken } = await import("../../services/tokens.js");
+    const { createAccessToken } = await import("../../../services/tokens.js");
     assert.ok(await createAccessToken(user, { mfaFactor: "totp" }));
   });
 
@@ -933,8 +933,8 @@ describe("MFA completion sets correctly scoped session cookies", () => {
 
   it("scopes cookies to the client the challenge was created for", async () => {
     const label = `mfa-cookie-${crypto.randomUUID().slice(0, 8)}`;
-    const { DrizzleOrganizationRepository } = await import("../../repositories/organization.js");
-    const { createApplication } = await import("../../services/applications.js");
+    const { DrizzleOrganizationRepository } = await import("../../../repositories/organization.js");
+    const { createApplication } = await import("../../../services/applications.js");
 
     const { user, secret } = await createMfaUser({ totp: true });
     const { user: owner } = await createMfaUser();
@@ -1032,9 +1032,9 @@ describe("OAuth2 authorization codes carry the MFA assertion", () => {
    * authorization-code exchange has a valid tenant context to work with.
    */
   async function fixture(member: User) {
-    const { DrizzleOrganizationRepository } = await import("../../repositories/organization.js");
-    const { createApplication } = await import("../../services/applications.js");
-    const { storeAuthorizationCode } = await import("../../services/oauth2.js");
+    const { DrizzleOrganizationRepository } = await import("../../../repositories/organization.js");
+    const { createApplication } = await import("../../../services/applications.js");
+    const { storeAuthorizationCode } = await import("../../../services/oauth2.js");
 
     const label = `mfa-app-${crypto.randomUUID().slice(0, 8)}`;
     const { user: owner } = await createMfaUser();
@@ -1072,8 +1072,8 @@ describe("OAuth2 authorization codes carry the MFA assertion", () => {
   it("refuses to exchange a code for an MFA user when no factor was recorded", async () => {
     const { user } = await createMfaUser({ totp: true });
     const { application, storeAuthorizationCode } = await fixture(user);
-    const { createTokenResponse } = await import("../../services/oauth2.js");
-    const { MfaRequiredError } = await import("../../services/tokens.js");
+    const { createTokenResponse } = await import("../../../services/oauth2.js");
+    const { MfaRequiredError } = await import("../../../services/tokens.js");
 
     // Simulates a session approved before MFA was enabled, or one whose factor
     // was stripped: the exchange must not silently upgrade it.
@@ -1089,7 +1089,7 @@ describe("OAuth2 authorization codes carry the MFA assertion", () => {
   it("exchanges a code that carries a verified factor", async () => {
     const { user } = await createMfaUser({ totp: true });
     const { application, storeAuthorizationCode } = await fixture(user);
-    const { createTokenResponse } = await import("../../services/oauth2.js");
+    const { createTokenResponse } = await import("../../../services/oauth2.js");
 
     const code = await storeAuthorizationCode({
       appId: application.id,

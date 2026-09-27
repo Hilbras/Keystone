@@ -1,0 +1,25 @@
+# Gitleaks configuration.
+#
+# Gitleaks' `generic-api-key` rule matches any `password: "literal"` pair, which
+# is the shape of a test fixture as much as the shape of a leaked credential.
+# Without an allowlist the scan fails on the repository's own test passwords.
+#
+# The allowlist is narrow on purpose. It requires all three of: a test file path,
+# a `password:` key, and one of three exact literal values. A real credential in a
+# test file does not match any of those strings, so every other rule — private
+# keys, provider tokens, connection strings, real key formats — still applies
+# everywhere, including under `src/tests/`.
+
+title = "Keystone gitleaks policy"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Literal test passwords used as request fixtures"
+paths = [
+  '''^src/tests/.*\.test\.ts$''',
+]
+regexes = [
+  '''password:\s*"(Correct-Horse-Battery-Staple-42|Recovered-Passw0rd!|SmokeTest123!)"''',
+]

@@ -5,6 +5,140 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-09-27
+
+### Security
+
+- **The security regression registry is now machine-enforced.** All 46 findings
+  from the hardening programme are recorded in `docs/security/registry.json` with
+  the issue, the fix, the test that fails without it, the documentation and the
+  release. `npm run registry:check` fails when an entry names a test that does not
+  exist, when a security suite is claimed by no entry, or when a mandatory attack
+  class is uncovered. The registry is generated into
+  `docs/security/registry.md` so the prose cannot drift from the data.
+
+  This matters because a registry that is allowed to become false is worse than no
+  registry: it converts "I don't know whether this is covered" into "yes,
+  covered". Four of the 44 entries exist because an event, a test or a rule was
+  present but never actually exercised.
+
+- **48 security tests were not running, and the run reported success.**
+  `node --test` expands `**` as a single directory level rather than as globstar,
+  so the discovery patterns stopped matching as soon as the security suites gained
+  a directory level. The entire authorization suite dropped out; everything that
+  remained passed, so the job went green. There is now one pattern per directory
+  depth, spelled out, with no overlap between them.
+
+- **A deleted security test would have kept running.** `tsc` does not remove
+  output for sources that are renamed or deleted, so a moved suite ran twice under
+  two paths and a deleted suite continued to pass in CI. The build now cleans
+  `dist` first.
+
+- **Secret scanning added over the full history.** Gitleaks, on push and pull
+  request, scanning every commit rather than the tip. The repository history is
+  clean — no npm token, no signing key, no private key. A deliberately planted
+  private key under `src/tests/` is still caught, so the test-fixture allowlist
+  does not become a hole.
+
+- **CodeQL added** for JavaScript/TypeScript and Actions, on push, pull request
+  and weekly, failing on `error` severity.
+
+- **8 project-specific Semgrep rules**, each mapped to a registry entry. They
+  encode defects this codebase actually shipped, including two that are ordering
+  and completeness problems no general rule can see: `requireHumanPrincipal`
+  placed before `app.authenticate` sees no service account and permits everything,
+  and a secret-denylist where an allowlist is the only correct shape. Each rule
+  was verified to fire on a deliberately vulnerable fixture and to stay silent on
+  the real backend.
+
+### Added
+
+- `docs/security/registry.json` — 44 findings, machine-readable and enforced.
+- `docs/security/registry.md` — generated from the above.
+- `docs/security/registry-exceptions.md` — the only place a release gate may be
+  waived, and an entry without an expiry does not count.
+- `docs/security/{rate-limiting,scopes,configuration,audit,supply-chain}.md`.
+- `scripts/verify-security-registry.mjs` and `scripts/render-security-registry.mjs`.
+- `src/tests/helpers/paths.ts` — resolves paths from the nearest `package.json`,
+  so a suite can be moved without its paths silently breaking.
+- `src/tests/security/registry.test.ts` — the registry check runs as part of
+  `npm test`, not only at release time.
+- `src/tests/security/authentication/login-abuse.test.ts` — 7 tests for 2.8.0
+  behaviour that shipped untested.
+- `src/tests/security/audit-export.test.ts` — 5 tests for the CSV export.
+- `src/tests/security/service-accounts/audit-attribution.test.ts` — 5 tests for
+  audit attribution of a machine principal.
+- `.github/workflows/{codeql,sast}.yml`, `.semgrep.yml`, `.gitleaks.toml`.
+- 7 release-gate steps in `release.yml`, replacing a single audit call.
+
+### Fixed
+
+- `mfa.test.ts` now connects Redis, so it exercises the rate limiter rather than
+  passing because the limiter failed open. (Shipped in 2.8.0; the connection is
+  what makes the suite meaningful.)
+
+### Testing
+
+`npm test` and `npm run test:security` are unchanged in count where the change was
+organisational, which is the point: 430 tests before the restructure, 430 after,
+381 security tests before, 381 after. The 7 new authentication tests are on top.
+
+### Fixed
+
+- **The audit log export did not neutralise spreadsheet formula injection.** The
+  CSV export quoted a value containing a delimiter or a quote, but a value whose
+  first character is `=`, `+`, `-` or `@` is evaluated as a formula by Excel,
+  LibreOffice and Google Sheets when the file is opened. Several exported columns
+  are attacker-supplied — the user agent above all — and an audit export is
+  precisely the file an operator opens in a spreadsheet, so that is the expected
+  consumer rather than an edge case. A `User-Agent` of `=cmd|'/c calc'!A1`
+  reached the export intact. A leading apostrophe is now applied before quoting,
+  and a value with no formula prefix is left untouched. (SEC-045)
+
+  It came out of triaging Semgrep's advisory findings. The rule that pointed at
+  the code, `direct-response-write`, is a false positive — the content type is set
+  explicitly and every field is escaped — but the code it flagged was not sound.
+- **Every service-account request produced no audit record at all.** A machine
+  principal carries a sentinel id of `sa:<uuid>` so that routes expecting
+  `request.user` keep working without a matching user row. The audit subscriber
+  passed that sentinel into `audit_log.user_id`, which is a uuid column. Postgres
+  rejected the insert, the subscriber's `catch` logged `failed to write event`, and
+  the record was lost. The request succeeded, so nothing failed visibly, and a
+  missing audit record is indistinguishable from a request that never happened.
+
+  So every request authenticated by an API key or an mTLS service account left no
+  audit trail. The privileged, non-human path was the one that was invisible,
+  which is the wrong direction for that gap to point. The sentinel is now stripped,
+  `user_id` is left null, and the service account is recorded in
+  `metadata.serviceAccountId`. (SEC-046)
+
+  It surfaced in CI and not locally: a new test's fixture passed on this machine
+  and failed in CI, and the reason was visible in the log above the failure.
+
+### Known limitations
+
+- The Semgrep scan covers the backend. Semgrep's TypeScript support fails on a
+  `.tsx` file in the frontend dashboard (TSX generics versus JSX ambiguity) and
+  aborts the whole scan rather than skipping one file, so the frontend is not
+  scanned. This is a tool limitation, recorded rather than papered over.
+- The `keystone-cookie-without-secure` rule stays silent when a cookie's options
+  are spread from another variable, because the rule cannot substantiate a finding
+  there. `auth.ts` builds its options in a helper and spreads them.
+- The Semgrep community rulesets (`p/default`, `p/security-audit`,
+  `p/owasp-top-ten`) run **advisory**, not blocking. Their 15 findings against
+  `src/` have been triaged: four are `escapeXml` output the rule cannot see
+  through, six are `console.*` log-forging at worst, four are AES-GCM where Node
+  enforces the tag length through `setAuthTag`, and one was the `direct-response-write`
+  false positive that led to SEC-045. Gating on a community ruleset nobody has
+  worked through means either a permanently red build or a gate that gets switched
+  off, so they report and the triage is recorded here instead. The project ruleset
+  in `.semgrep.yml` is the blocking gate.
+- Two suites span two domains rather than being split: `proxy/trust-boundary.test.ts`
+  also covers mTLS certificate binding, and `oauth/oauth2-hardening.test.ts` also
+  covers OIDC ID token verification. Splitting them is mechanical but every split
+  copies the whole import header into each partition, and the resulting churn
+  risks removing a live import. The registry records the mapping instead.
+
 ## [2.8.0] - 2026-09-27
 
 ### Security

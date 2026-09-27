@@ -23,21 +23,21 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { buildApp } = await import("../../index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
+const { db } = await import("../../../db/index.js");
+const { buildApp } = await import("../../../index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
 const { hashPassword, hashClientSecret, generateClientSecret } = await import(
-  "../../services/secrets/index.js"
+  "../../../services/secrets/index.js"
 );
 const { applications, organizations, orgMemberships, users } = await import(
-  "../../db/schema.js"
+  "../../../db/schema.js"
 );
 const { validateRedirectUri, validateRedirectUris, isRedirectUriRegistered } = await import(
-  "../../services/redirectUri.js"
+  "../../../services/redirectUri.js"
 );
 const { verifyPKCE, requiresPkce, resolveEffectiveScopes, grantConsent, storeAuthorizationCode } =
-  await import("../../services/oauth2.js");
-const { OidcConnector } = await import("../../services/connectors/oidc.js");
+  await import("../../../services/oauth2.js");
+const { OidcConnector } = await import("../../../services/connectors/oidc.js");
 
 /** Local signing material, so ID token verification runs for real. */
 const { privateKey: signingKey, publicKey } = await generateKeyPair("RS256", { extractable: true });
@@ -54,7 +54,7 @@ let app: FastifyInstance;
 let userRepository: { create: Function; findById: Function };
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
   app = await buildApp();
   userRepository = app.container.userRepository as never;
@@ -65,9 +65,9 @@ after(async () => {
   for (const id of createdUserIds) await db.delete(users).where(eq(users.id, id)).catch(() => {});
   for (const id of createdOrgIds) await db.delete(organizations).where(eq(organizations.id, id)).catch(() => {});
   await app?.close();
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -498,7 +498,7 @@ describe("Authorization codes are consumed atomically", () => {
     });
     assert.ok(clientSecret);
 
-    const { consumeAuthorizationCode } = await import("../../services/oauth2.js");
+    const { consumeAuthorizationCode } = await import("../../../services/oauth2.js");
     const results = await Promise.all(
       Array.from({ length: 20 }, () =>
         consumeAuthorizationCode(code, application.id, REDIRECT)
@@ -683,8 +683,8 @@ describe("OIDC connector: ID token verification", () => {
 // ---------------------------------------------------------------------------
 describe("Refresh tokens carry the authorization context", () => {
   it("preserves the granted scopes across a rotation", async () => {
-    const { createTokenSet, rotateRefreshToken } = await import("../../services/tokens.js");
-    const { refreshTokens } = await import("../../db/schema.js");
+    const { createTokenSet, rotateRefreshToken } = await import("../../../services/tokens.js");
+    const { refreshTokens } = await import("../../../db/schema.js");
     const user = await createUserWithMembership(await createOrg());
 
     const issued = await createTokenSet(user, "127.0.0.1", "phase8-test", { scopes: ["read", "write"] });
@@ -701,8 +701,8 @@ describe("Refresh tokens carry the authorization context", () => {
   });
 
   it("keeps a token issued without scopes empty rather than inventing any", async () => {
-    const { createTokenSet } = await import("../../services/tokens.js");
-    const { refreshTokens } = await import("../../db/schema.js");
+    const { createTokenSet } = await import("../../../services/tokens.js");
+    const { refreshTokens } = await import("../../../db/schema.js");
     const user = await createUserWithMembership(await createOrg());
 
     await createTokenSet(user, "127.0.0.1", "phase8-test", {});

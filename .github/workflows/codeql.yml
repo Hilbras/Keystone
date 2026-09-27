@@ -1,0 +1,55 @@
+name: CodeQL
+
+# Static analysis for the security defects that a test suite cannot catch:
+# injection, deserialisation, missing authorisation on a path, and the rest of
+# the query-injection family. Runs on every push and pull request, and weekly, so
+# a dependency that pulls in a vulnerable pattern is noticed even on a quiet
+# week.
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          # A finding fails the job. An alert nobody has to deal with is not a
+          # control, and this repository's history is one of a finding being
+          # defined but never acted on.
+          fail-on-severity: error

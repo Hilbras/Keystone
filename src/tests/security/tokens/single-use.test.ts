@@ -20,16 +20,16 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
+const { db } = await import("../../../db/index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
 const { users, magicLinks, passwordResetTokens, smsOtpCodes } = await import(
-  "../../db/schema.js"
+  "../../../db/schema.js"
 );
 const {
   consumeMagicLinkRow,
   consumePasswordResetTokenRow,
   consumeSmsOtpCodeRow,
-} = await import("../../services/singleUse.js");
+} = await import("../../../services/singleUse.js");
 
 const RUN_ID = crypto.randomBytes(6).toString("hex");
 const EMAIL_DOMAIN = `single-use-${RUN_ID}.example.test`;
@@ -49,11 +49,11 @@ const FUTURE = () => new Date(Date.now() + 3_600_000);
 const PAST = () => new Date(Date.now() - 3_600_000);
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
   // The password-reset test drives the SDK, which resolves services through the
   // DI container that the application bootstrap normally initializes.
-  const { initializeContainer } = await import("../../di.js");
+  const { initializeContainer } = await import("../../../di.js");
   initializeContainer();
 });
 
@@ -65,9 +65,9 @@ after(async () => {
     await db.delete(smsOtpCodes).where(eq(smsOtpCodes.userId, id)).catch(() => {});
     await db.delete(users).where(eq(users.id, id)).catch(() => {});
   }
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -310,7 +310,7 @@ describe("Service entry points under concurrency", () => {
   const LEVEL = 50;
 
   it(`${LEVEL} concurrent magic link redemptions yield exactly one login`, async () => {
-    const { consumeMagicLink } = await import("../../services/magicLinks.js");
+    const { consumeMagicLink } = await import("../../../services/magicLinks.js");
     const user = await createUser();
     const { value } = token();
     await db.insert(magicLinks).values({ userId: user.id, tokenHash: sha256(value), expiresAt: FUTURE() });
@@ -323,7 +323,7 @@ describe("Service entry points under concurrency", () => {
   });
 
   it(`${LEVEL} concurrent SMS OTP verifications yield exactly one success`, async () => {
-    const { verifySmsOtp } = await import("../../services/smsOtp.js");
+    const { verifySmsOtp } = await import("../../../services/smsOtp.js");
     const user = await createUser();
     const code = String(crypto.randomInt(100000, 999999));
     await db
@@ -338,7 +338,7 @@ describe("Service entry points under concurrency", () => {
   });
 
   it(`${LEVEL} concurrent password resets yield exactly one success`, async () => {
-    const { getSdk } = await import("../../sdk/index.js");
+    const { getSdk } = await import("../../../sdk/index.js");
     const user = await createUser();
     const { value } = token();
     await db
@@ -364,7 +364,7 @@ describe("Service entry points under concurrency", () => {
 describe("Replay is detected and reported", () => {
   /** Collect events emitted while `fn` runs. */
   async function captureEvents<T>(fn: () => Promise<T>): Promise<{ value: T; types: string[] }> {
-    const { subscribeAll } = await import("../../services/events/bus.js");
+    const { subscribeAll } = await import("../../../services/events/bus.js");
     const types: string[] = [];
     const unsubscribe = subscribeAll((event) => {
       types.push(event.type as string);
@@ -380,7 +380,7 @@ describe("Replay is detected and reported", () => {
   }
 
   it("emits magic_link_replayed when a spent link is presented again", async () => {
-    const { consumeMagicLink } = await import("../../services/magicLinks.js");
+    const { consumeMagicLink } = await import("../../../services/magicLinks.js");
     const user = await createUser();
     const { value } = token();
     await db.insert(magicLinks).values({ userId: user.id, tokenHash: sha256(value), expiresAt: FUTURE() });
@@ -402,7 +402,7 @@ describe("Replay is detected and reported", () => {
   });
 
   it("emits sms_otp_replayed when a spent code is presented again", async () => {
-    const { verifySmsOtp } = await import("../../services/smsOtp.js");
+    const { verifySmsOtp } = await import("../../../services/smsOtp.js");
     const user = await createUser();
     const code = String(crypto.randomInt(100000, 999999));
     await db
@@ -419,7 +419,7 @@ describe("Replay is detected and reported", () => {
   });
 
   it("emits password_reset_token_replayed when a spent reset token is presented again", async () => {
-    const { getSdk } = await import("../../sdk/index.js");
+    const { getSdk } = await import("../../../sdk/index.js");
     const user = await createUser();
     const { value } = token();
     await db
@@ -439,7 +439,7 @@ describe("Replay is detected and reported", () => {
   });
 
   it("does not report an expiry as a replay", async () => {
-    const { consumeMagicLink } = await import("../../services/magicLinks.js");
+    const { consumeMagicLink } = await import("../../../services/magicLinks.js");
     const user = await createUser();
     const { value } = token();
     await db.insert(magicLinks).values({ userId: user.id, tokenHash: sha256(value), expiresAt: PAST() });

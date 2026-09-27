@@ -6,8 +6,9 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import type { Organization, User } from "../../db/schema.js";
-import type { UserRepository, OrganizationRepository } from "../../repositories/types.js";
+import type { Organization, User } from "../../../db/schema.js";
+import { fixture, migrationsFolder } from "../../helpers/paths.js";
+import type { UserRepository, OrganizationRepository } from "../../../repositories/types.js";
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbras";
@@ -24,18 +25,18 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const samlTestCertificate = fs.readFileSync(
-  path.resolve(__dirname, "../../../src/tests/fixtures/saml-idp-test-cert.pem"),
+  fixture("saml-idp-test-cert.pem"),
   "utf8"
 );
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { users, workflows, workflowRuns, auditLog, oidcConnections, apiKeys, refreshTokens, orgMemberships } = await import("../../db/schema.js");
-const { buildApp } = await import("../../index.js");
-const { createAccessToken, createTokenSet, generateApiKey, hashApiKey, loadSigningKeys, rotateRefreshToken } = await import("../../services/tokens.js");
-const { triggerWorkflowRun, executeRunById } = await import("../../services/workflows/engine.js");
-const { getSdk } = await import("../../sdk/index.js");
-const { provisionEnterpriseUser } = await import("../../services/enterpriseSso.js");
-const { upsertOAuthUser } = await import("../../services/users.js");
+const { db } = await import("../../../db/index.js");
+const { users, workflows, workflowRuns, auditLog, oidcConnections, apiKeys, refreshTokens, orgMemberships } = await import("../../../db/schema.js");
+const { buildApp } = await import("../../../index.js");
+const { createAccessToken, createTokenSet, generateApiKey, hashApiKey, loadSigningKeys, rotateRefreshToken } = await import("../../../services/tokens.js");
+const { triggerWorkflowRun, executeRunById } = await import("../../../services/workflows/engine.js");
+const { getSdk } = await import("../../../sdk/index.js");
+const { provisionEnterpriseUser } = await import("../../../services/enterpriseSso.js");
+const { upsertOAuthUser } = await import("../../../services/users.js");
 
 let app: FastifyInstance;
 let userRepository: UserRepository;
@@ -47,7 +48,7 @@ interface Actor {
 }
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: migrationsFolder() });
   await loadSigningKeys();
   app = await buildApp();
   userRepository = app.container.userRepository;
@@ -57,9 +58,9 @@ before(async () => {
 
 after(async () => {
   await app?.close();
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -72,7 +73,7 @@ after(async () => {
  * so tests provision a real credential instead of setting the legacy env vars.
  */
 async function scimHeaders(orgId: string, name: string): Promise<{ authorization: string }> {
-  const { ScimConnectionService } = await import("../../services/scimCredentials.js");
+  const { ScimConnectionService } = await import("../../../services/scimCredentials.js");
   const service = new ScimConnectionService(app.container.scimConnectionRepository);
   const created = await service.create({ orgId, name });
   assert.ok(created.success, "SCIM connection should be created");

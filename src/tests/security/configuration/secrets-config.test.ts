@@ -12,32 +12,31 @@ process.env.KEYSTONE_ENCRYPTION_KEY ||= "0123456789abcdef0123456789abcdef";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
+const { db } = await import("../../../db/index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
 const {
   REDACTED_CONFIG_VALUE,
   EXPOSABLE_CONFIG_KEYS,
   isExposableConfigurationKey,
-  isSensitiveConfigurationKey,
   redactConfigurationValues,
   mergeConfigurationUpdates,
-} = await import("../../services/configuration/profiles.js");
-const { encryptSecret } = await import("../../services/totp.js");
-const { readWebhookSecret, createEndpoint, rotateEndpointSecret } = await import(
-  "../../services/webhooks.js"
+} = await import("../../../services/configuration/profiles.js");
+const { encryptSecret } = await import("../../../services/totp.js");
+const { readWebhookSecret, rotateEndpointSecret } = await import(
+  "../../../services/webhooks.js"
 );
-const { signWebhookPayload } = await import("../../lib/webhookSignature.js");
-const { isOriginAllowed } = await import("../../services/trustedProxies.js");
-const { webhookEndpoints } = await import("../../db/schema.js");
+const { signWebhookPayload } = await import("../../../lib/webhookSignature.js");
+const { isOriginAllowed } = await import("../../../services/trustedProxies.js");
+const { webhookEndpoints } = await import("../../../db/schema.js");
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
 });
 
 after(async () => {
   await db.delete(webhookEndpoints).catch(() => {});
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
 });
 
@@ -194,7 +193,7 @@ describe("Setup token is never logged", () => {
     delete process.env.KEYSTONE_PRINT_SETUP_TOKEN;
     process.env.KEYSTONE_SETUP_TOKEN = "deadbeef-secret-token";
     try {
-      const { printSetupToken } = await import("../../services/setup/token.js");
+      const { printSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => printSetupToken());
       assert.ok(!output.includes("deadbeef-secret-token"), "the token must not appear in output");
       assert.match(output, /KEYSTONE_SETUP_TOKEN/, "the operator should be told where to find it");
@@ -208,7 +207,7 @@ describe("Setup token is never logged", () => {
     process.env.KEYSTONE_PRINT_SETUP_TOKEN = "true";
     process.env.KEYSTONE_SETUP_TOKEN = "deadbeef-secret-token";
     try {
-      const { printSetupToken } = await import("../../services/setup/token.js");
+      const { printSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => printSetupToken());
       assert.ok(!output.includes("deadbeef-secret-token"), "production must never print it");
     } finally {
@@ -221,7 +220,7 @@ describe("Setup token is never logged", () => {
     process.env.KEYSTONE_PRINT_SETUP_TOKEN = "true";
     process.env.KEYSTONE_SETUP_TOKEN = "deadbeef-secret-token";
     try {
-      const { printSetupToken } = await import("../../services/setup/token.js");
+      const { printSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => printSetupToken());
       assert.match(output, /deadbeef-secret-token/, "an explicit opt-in outside production should work");
     } finally {
@@ -237,7 +236,7 @@ describe("Setup token is never logged", () => {
     process.env.KEYSTONE_SETUP_TOKEN = "expected-token-value";
     delete process.env.KEYSTONE_PRINT_SETUP_TOKEN;
     try {
-      const { validateSetupToken } = await import("../../services/setup/token.js");
+      const { validateSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => {
         assert.equal(validateSetupToken("short"), false, "a wrong-length token must be rejected");
         assert.equal(validateSetupToken(undefined), false);
@@ -255,7 +254,7 @@ describe("Setup token is never logged", () => {
     const secret = "correct-token-value";
     process.env.KEYSTONE_SETUP_TOKEN = secret;
     try {
-      const { validateSetupToken } = await import("../../services/setup/token.js");
+      const { validateSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => {
         assert.equal(validateSetupToken(secret), true);
         assert.equal(validateSetupToken(`  ${secret.toUpperCase()}  `), true, "whitespace and case are forgiven");
@@ -280,7 +279,7 @@ describe("Webhook secrets are encrypted at rest", () => {
   });
 
   it("stores ciphertext, not the secret", async () => {
-    const { createEndpoint: create } = await import("../../services/webhooks.js");
+    const { createEndpoint: create } = await import("../../../services/webhooks.js");
     const created = await create({ url: "https://hook.example.test/a", events: ["user_login"] });
     createdEndpointIds.push(created.id);
 
@@ -291,7 +290,7 @@ describe("Webhook secrets are encrypted at rest", () => {
   });
 
   it("returns the plaintext exactly once, at creation", async () => {
-    const { createEndpoint: create } = await import("../../services/webhooks.js");
+    const { createEndpoint: create } = await import("../../../services/webhooks.js");
     const created = await create({ url: "https://hook.example.test/b" });
     createdEndpointIds.push(created.id);
     assert.match(created.signingSecret, /^whsec_/);
@@ -316,7 +315,7 @@ describe("Webhook secrets are encrypted at rest", () => {
   });
 
   it("encrypts on rotation too", async () => {
-    const { createEndpoint: create } = await import("../../services/webhooks.js");
+    const { createEndpoint: create } = await import("../../../services/webhooks.js");
     const created = await create({ url: "https://hook.example.test/c" });
     createdEndpointIds.push(created.id);
 

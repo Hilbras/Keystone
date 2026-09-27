@@ -1,0 +1,115 @@
+name: Static analysis
+
+# Semgrep and Gitleaks, the two remaining tools from the plan's static-analysis
+# list.
+#
+# They are split into a blocking job and an advisory job on purpose.
+#
+#   Blocking  — the project ruleset in `.semgrep.yml`, which encodes defects this
+#               codebase actually shipped. Every rule was verified to fire on a
+#               deliberately vulnerable fixture and to stay silent on the real
+#               backend, so a finding is actionable.
+#   Advisory  — the community rulesets. They produce findings this repository has
+#               triaged and judged either false positives or already handled, and
+#               gating on a community ruleset nobody has worked through means
+#               either a permanently red build or a gate that gets switched off.
+#               They still run and still report, so the signal is not lost: the
+#               triage that produced this split is recorded in
+#               `docs/security/registry.md`, and one real finding came out of it
+#               (SEC-045).
+#
+# Gitleaks runs as the CLI in a container rather than through
+# `gitleaks/gitleaks-action`, which requires a paid licence for organisations and
+# fails immediately without one.
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep-project-rules:
+    name: Semgrep (project rules)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run project rules
+        # Scoped to the backend. The security-relevant logic is all in `src/`,
+        # and the frontend dashboard trips a parser error in Semgrep's TypeScript
+        # support (TSX generics versus JSX ambiguity) that aborts the whole scan
+        # rather than skipping one file.
+        run: >
+          semgrep scan
+          --config .semgrep.yml
+          --error
+          --metrics off
+          --sarif --output semgrep-project.sarif
+          src
+
+  semgrep-community-rules:
+    name: Semgrep (community rules, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run community rules
+        # No --error. This job reports; it does not gate. See the header.
+        run: >
+          semgrep scan
+          --config p/default
+          --config p/security-audit
+          --config p/owasp-top-ten
+          --metrics off
+          --sarif --output semgrep-community.sarif
+          src
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-community.sarif
+          category: semgrep-community
+
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history, not just the tip. A secret introduced and removed
+          # within a branch is still in the history and still in every clone.
+          fetch-depth: 0
+
+      - name: Scan for committed secrets
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            zricethezav/gitleaks:latest \
+            detect \
+              --source /repo \
+              --config /repo/.gitleaks.toml \
+              --redact \
+              --no-banner \
+              --log-opts="--all"

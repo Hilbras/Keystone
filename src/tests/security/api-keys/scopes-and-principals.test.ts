@@ -21,12 +21,12 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { buildApp } = await import("../../index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
-const { hashPassword } = await import("../../services/secrets/index.js");
+const { db } = await import("../../../db/index.js");
+const { buildApp } = await import("../../../index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
+const { hashPassword } = await import("../../../services/secrets/index.js");
 const { apiKeys, serviceAccounts, users, organizations, orgMemberships } = await import(
-  "../../db/schema.js"
+  "../../../db/schema.js"
 );
 const {
   API_KEY_SCOPES,
@@ -39,7 +39,7 @@ const {
   PERSONAL_KEY_DEFAULT_SCOPES,
   SERVICE_ACCOUNT_DEFAULT_SCOPES,
   HUMAN_ONLY_SCOPES,
-} = await import("../../services/scopes.js");
+} = await import("../../../services/scopes.js");
 
 const RUN_ID = crypto.randomBytes(6).toString("hex");
 const DOMAIN = `m2m-${RUN_ID}.example.test`;
@@ -51,7 +51,7 @@ let app: FastifyInstance;
 let userRepository: { create: Function; findById: Function };
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
   app = await buildApp();
   userRepository = app.container.userRepository as never;
@@ -61,9 +61,9 @@ after(async () => {
   for (const id of createdKeyIds) await db.delete(apiKeys).where(eq(apiKeys.id, id)).catch(() => {});
   for (const id of createdUserIds) await db.delete(users).where(eq(users.id, id)).catch(() => {});
   await app?.close();
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -103,7 +103,7 @@ async function login(email: string): Promise<string> {
  * that is what the auth path recomputes and looks up.
  */
 async function seedKey(userId: string, scopes: string[]) {
-  const { hashApiKey } = await import("../../services/tokens.js");
+  const { hashApiKey } = await import("../../../services/tokens.js");
   const plaintext = `sk_test_${crypto.randomBytes(32).toString("base64url")}`;
   const [record] = await db
     .insert(apiKeys)
@@ -363,7 +363,7 @@ describe("Key creation refuses unknown scopes over HTTP", () => {
  */
 describe("Machine-principal boundary", () => {
   async function invokeGuard(serviceAccount: unknown) {
-    const { default: plugin } = await import("../../plugins/machinePrincipal.js");
+    const { default: plugin } = await import("../../../plugins/machinePrincipal.js");
     const decorated: Record<string, () => unknown> = {};
     // Exercise the real guard without booting a second application.
     const instance = {
@@ -422,7 +422,7 @@ describe("Machine-principal boundary", () => {
     // Confirms the scope boundary applies to machine credentials too, rather
     // than the synthetic principal simply being waved through.
     const handle = crypto.randomBytes(8).toString("hex");
-    const { hashApiKey } = await import("../../services/tokens.js");
+    const { hashApiKey } = await import("../../../services/tokens.js");
     const [org] = await db
       .insert(organizations)
       .values({ name: `SA Org ${handle.slice(0, 4)}`, slug: `sa-${handle}` })

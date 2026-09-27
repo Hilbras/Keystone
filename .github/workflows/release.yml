@@ -54,8 +54,33 @@ jobs:
       - name: Install backend dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      # ---------------------------------------------------------------------
+      # Security gate. Every step below must pass for a release to proceed.
+      # The order is deliberate: cheap checks first, so an obvious problem does
+      # not cost a full test run to discover.
+      # ---------------------------------------------------------------------
+
+      - name: Gate — no critical or high advisory without a documented exception
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm audit --omit=dev --audit-level=high --json > audit.json || true
+          critical=$(node -p "Object.values(require('./audit.json').vulnerabilities||{}).filter(v=>v.severity==='critical').length")
+          high=$(node -p "Object.values(require('./audit.json').vulnerabilities||{}).filter(v=>v.severity==='high').length")
+          echo "critical=$critical high=$high"
+          if [ "$critical" != "0" ] || [ "$high" != "0" ]; then
+            echo "::error::Release blocked: $critical critical and $high high advisories."
+            echo "Each must be recorded in docs/security/registry-exceptions.md with a reason and an expiry."
+            exit 1
+          fi
+
+      - name: Gate — security regression registry is consistent
+        run: npm run registry:check
+
+      - name: Gate — no secrets in the repository or its history
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --config .gitleaks.toml --redact --no-banner --log-opts="--all"
 
       - name: Lint
         run: npm run lint
@@ -75,7 +100,7 @@ jobs:
           KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
         run: npm test -- --test-timeout=60000
 
-      - name: Run authorization security regression suite
+      - name: Run security regression suite
         env:
           DATABASE_URL: postgresql://hilbras:hilbras@localhost:5432/hilbras
           REDIS_URL: redis://localhost:6379

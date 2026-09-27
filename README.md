@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.8.0`**
+**Current version: `2.9.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,22 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.9.0
+
+- **A permanent regression registry for every finding.** `docs/security/registry.json` records all **46** vulnerabilities found across the hardening programme — the issue, the fix, the test that fails without it, the documentation, and the release. It is machine-readable, so `npm run registry:check` **fails** if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered. A registry that can quietly become false is worse than none.
+- **A security test suite per domain.** Tests moved from 14 flat files into 16 suites grouped by area — authentication, authorization, mfa, oauth, oidc, saml, scim, mtls, sessions, tokens, api-keys, configuration, proxy, rate-limiting. Verified lossless: 381 security tests before and after.
+- **Two test harnesses that were reporting on less than the repository contained.**
+  - **`tsc` never cleaned `dist`.** Output for a renamed or deleted source file survived, so a moved suite ran twice and a *deleted* suite kept running. Test discovery did not reflect the source tree.
+  - **`node --test` expands `**` as a single directory level, not globstar.** When the suites gained a directory level, the discovery patterns stopped matching — **48 security tests, the entire authorization suite, silently stopped running, and the run still reported success** because everything that remained passed. A green run was reporting on less than the repository contained. One pattern per depth now, with no overlap.
+- **A stale fixture path that was correct at only one directory depth.** A suite reached its fixture by counting parent directories, which resolved from `src` and not from `dist`. Paths are now anchored on the nearest `package.json`.
+- **CI now runs CodeQL, Semgrep and Gitleaks.** CodeQL on push, pull request and weekly. Gitleaks over the **full history** — verified clean, and verified to still catch a planted private key under `src/tests/`.
+- **8 project-specific Semgrep rules**, each mapped to a registry entry. They encode what actually went wrong *here*, which no general ruleset can know — including the ordering trap that silently disabled `requireHumanPrincipal` (a guard placed before `app.authenticate` sees nothing and permits everything). Verified in both directions: **8 of 8 fire** on a deliberately vulnerable fixture, **0 findings** on the real backend.
+- **The release gate is now explicit.** A release fails on a critical or high advisory without a documented, time-bounded exception; on secret scanning; on a registry that does not validate; or on any of lint, typecheck, build, tests, security tests and the audit.
+- **A failed login is audited on both login routes**, and **a replayed refresh token is detected** and revokes the account's remaining credentials — while an unknown token revokes nothing. Both shipped in 2.8.0 with no test.
+- **The audit log export no longer evaluates as a spreadsheet formula.** It quoted values containing a delimiter, but a value beginning with `=`, `+`, `-` or `@` is evaluated as a formula when the file is opened — and the exported user agent is attacker-supplied. An audit export is exactly the file an operator opens in a spreadsheet. Found while triaging Semgrep's advisory findings; the rule that pointed at it was a false positive, but the code was not.
+- **Service-account requests are no longer invisible in the audit log.** A machine principal carries a sentinel id of `sa:<uuid>`, which the audit subscriber was writing into a **uuid** column. Postgres rejected the insert, the subscriber logged a failure, and the record was lost — so **every request authenticated by an API key or an mTLS service account left no audit trail at all.** The request succeeded, so nothing failed visibly, and a missing record looks exactly like a request that never happened. The privileged machine path was the one that left no trace. (SEC-046)
+- **17 new tests** covering the above, each verified by reverting the fix.
 
 ## What's new in v2.8.0
 

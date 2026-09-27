@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "license": "MIT",
   "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
@@ -28,7 +28,7 @@
     "dev": "tsx watch src/index.ts",
     "dev:setup": "KEYSTONE_SETUP_MODE=true tsx watch src/setup-server.ts",
     "dev:all": "./start.sh",
-    "build": "tsc && npm run copy:migrations",
+    "build": "npm run clean && tsc && npm run copy:migrations",
     "build:sdk": "cd packages/keystone-sdk && npm run build",
     "build:all": "npm run build:sdk && npm run build && cd frontend && npm run build",
     "copy:migrations": "mkdir -p dist/db/migrations && cp -r src/db/migrations/* dist/db/migrations/",
@@ -43,11 +43,14 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed.ts",
     "db:reencrypt-oidc-secrets": "node dist/db/reencryptOidcSecrets.js",
-    "test": "node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/*.test.js dist/tests/**/*.test.js dist/tests/**/**/*.test.js",
-    "test:security": "node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/security/*.test.js dist/tests/security/**/*.test.js",
+    "test": "node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/*.test.js dist/tests/*/*.test.js dist/tests/*/*/*.test.js dist/tests/*/*/*/*.test.js",
+    "test:security": "node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/security/*.test.js dist/tests/security/*/*.test.js dist/tests/security/*/*/*.test.js dist/tests/security/*/*/*/*.test.js",
     "test:all": "npm test && cd frontend && npm run test:e2e",
     "setup": "./install.sh",
-    "start:all": "./start.sh"
+    "start:all": "./start.sh",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\"",
+    "registry:check": "node scripts/verify-security-registry.mjs",
+    "registry:render": "node scripts/render-security-registry.mjs"
   },
   "dependencies": {
     "@authenio/samlify-node-xmllint": "^2.0.0",

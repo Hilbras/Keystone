@@ -1,0 +1,131 @@
+# Project-specific Semgrep rules.
+#
+# Each rule here corresponds to a defect this codebase has actually shipped, or
+# to an ordering trap that silently disabled a control. A ruleset of only generic
+# patterns would be redundant with the `p/security-audit` ruleset already in the
+# workflow; the value of a project ruleset is that it encodes what went wrong
+# *here*, which no general rule can know.
+#
+# Run locally:  npx semgrep scan --config .semgrep.yml
+# Every rule is mapped to its registry entry so a finding can be traced back.
+
+rules:
+  # SEC-008 — trustProxy: true accepts x-forwarded-for from any peer, which
+  # defeats every address-based rate limit and every IP allowlist.
+  - id: keystone-no-unconditional-trust-proxy
+    patterns:
+      - pattern-either:
+          - pattern: "fastify({..., trustProxy: true, ...})"
+          - pattern: "$FASTIFY.set({..., trustProxy: true, ...})"
+    message: >-
+      trustProxy: true trusts x-forwarded-for from any peer, so a client can
+      present a fresh address per request. Use the configured trusted networks in
+      src/services/trustedProxies.ts instead. (SEC-008)
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  # SEC-007 — a client-supplied header treated as an authenticated identity.
+  - id: keystone-no-client-supplied-identity-header
+    patterns:
+      - pattern-either:
+          - pattern: request.headers["x-service-account-id"]
+          - pattern: request.headers["x-user-id"]
+          - pattern: request.headers["x-org-id"]
+          - pattern: req.headers["x-service-account-id"]
+          - pattern: req.headers["x-user-id"]
+    message: >-
+      This header is client-supplied. Identity must be derived from a verified
+      credential, not asserted by the caller. (SEC-007, SEC-009)
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  # SEC-033 — a limiter that fails open when its backing store is unavailable.
+  - id: keystone-rate-limit-fails-open
+    patterns:
+      - pattern-inside: |
+          if (!$IS_READY) {
+            ...
+            return true;
+          }
+      - pattern: return true;
+    message: >-
+      A limiter that returns true when its store is unavailable removes the
+      control entirely during an outage, which is when unlimited attempts are
+      worth having. Use the bounded local fallback. (SEC-033)
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  # SEC-027, SEC-028 — a credentialed wildcard CORS policy.
+  - id: keystone-credentialed-wildcard-cors
+    patterns:
+      - pattern-either:
+          - pattern: "{ ..., origin: true, credentials: true, ... }"
+          - pattern: "{ ..., origin: '*', credentials: true, ... }"
+    message: >-
+      Credentialed requests with an unrestricted origin produce a wildcard CORS
+      policy that browsers enforce. Resolve the origin explicitly and fail
+      closed. (SEC-027, SEC-028)
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  # SEC-026 — a denylist for secret-shaped configuration keys. The denylist
+  # missed half the real surface, so the allowlist is the only correct shape.
+  - id: keystone-secret-denylist
+    patterns:
+      - pattern-regex: '(?i)(SENSITIVE|SECRET)_?(KEYS?|NAMES?)\s*[:=]\s*(\[|new Set)'
+    message: >-
+      A denylist of secret-looking key names has to predict every name a secret
+      might take, and a new secret is unredacted until someone remembers to add
+      it. Use an allowlist of exposable keys. (SEC-026)
+    severity: WARNING
+    languages: [javascript, typescript]
+
+  # A session cookie without `secure`, which is the whole point of the flag.
+  - id: keystone-cookie-without-secure
+    patterns:
+      - pattern: "reply.setCookie($NAME, $VALUE, $OPTIONS)"
+      - pattern-not: "reply.setCookie($NAME, $VALUE, {..., secure: $SECURE, ...})"
+      # Options spread from elsewhere are not analysable here, so the rule stays
+      # silent rather than reporting a finding it cannot substantiate. `auth.ts`
+      # builds its options once and spreads them, and `secure` is derived from
+      # NODE_ENV in that helper.
+      - pattern-not: "reply.setCookie($NAME, $VALUE, {..., ...$SPREAD, ...})"
+    message: >-
+      This cookie is set without `secure`, so it will be sent over plaintext.
+      Derive it from NODE_ENV rather than leaving it to configuration. (SEC-031)
+    severity: WARNING
+    languages: [javascript, typescript]
+
+  # SEC-025 — the human-principal guard is inert before authentication runs.
+  # This is an ordering trap, not a missing call, and no type checker or linter
+  # reports it: the function is present, exported and called, and simply sees
+  # nothing.
+  - id: keystone-human-principal-guard-before-authenticate
+    patterns:
+      - pattern-inside: |
+          {
+            ..., preHandler: [$GUARD, $AUTH, ...], ...
+          }
+      - metavariable-pattern:
+          metavariable: $GUARD
+          patterns:
+            - pattern: app.requireHumanPrincipal(...)
+    message: >-
+      requireHumanPrincipal runs before app.authenticate, so request.serviceAccount
+      is not populated yet and the guard permits every machine principal. It must
+      come after authentication. (SEC-025)
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  # Not a vulnerability on its own, but it is how several of the findings above
+  # were made invisible: a secret generated from a predictable source.
+  - id: keystone-math-random-for-secret
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash("md5")
+          - pattern: $X = Math.random().toString(36)
+    message: >-
+      Not a cryptographically secure source. Use `crypto.randomBytes` for
+      tokens, codes and nonces.
+    severity: WARNING
+    languages: [javascript, typescript]
