@@ -18,6 +18,7 @@
   "files": [
     "dist",
     "!dist/tests",
+    "docs",
     "CHANGELOG.md",
     "README.md"
   ],
@@ -90,5 +91,7 @@
     "reflect-metadata": "^0.2.2",
     "tsx": "^4.15.0",
     "typescript": "^7.0.2"
-  }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts"
 }

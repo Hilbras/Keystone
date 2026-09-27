@@ -22,8 +22,31 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 
 ---
 
+## Using the published package
+
+```bash
+npm install @hilbras/keystone
+```
+
+```ts
+import { buildApp } from "@hilbras/keystone";
+
+const app = await buildApp();
+await app.listen({ port: 3000 });
+// Close it when done: importing the package opens the database pool.
+await app.close();
+```
+
+Or run the server directly with `npx keystone serve`.
+
+The migration guides and security documentation are included in the package, so
+they are available without a network round trip to the repository.
+
 ## What's new in v2.9.0
 
+- **The published package is importable.** It shipped `dist/index.js` and `dist/index.d.ts` with **no `main` and no `types`**, so `import "@hilbras/keystone"` did not resolve for anyone installing from npm. The `bin` worked, so the CLI was usable and the library surface was not — nothing failed, the package simply could not be imported.
+- **The migration guides now ship.** `docs/` was never in the tarball, so the instructions for the breaking changes in 2.4.0, 2.6.0 and 2.7.0 were reachable only on GitHub. Someone upgrading via npm got the changelog but not what it referred to.
+- **`npm run verify:release` now checks both.** It verified version, license and repository, and let a package with no entry point and no documentation pass. It now also requires `main`/`types` to exist, requires the migration docs to be in `files`, and refuses to ship credential material. Verified by reverting: all three defects are caught.
 - **A permanent regression registry for every finding.** `docs/security/registry.json` records all **46** vulnerabilities found across the hardening programme — the issue, the fix, the test that fails without it, the documentation, and the release. It is machine-readable, so `npm run registry:check` **fails** if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered. A registry that can quietly become false is worse than none.
 - **A security test suite per domain.** Tests moved from 14 flat files into 16 suites grouped by area — authentication, authorization, mfa, oauth, oidc, saml, scim, mtls, sessions, tokens, api-keys, configuration, proxy, rate-limiting. Verified lossless: 381 security tests before and after.
 - **Two test harnesses that were reporting on less than the repository contained.**
