@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull, or } from "drizzle-orm";
+import { eq, and, gt, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   oauth2AuthorizationCodes,

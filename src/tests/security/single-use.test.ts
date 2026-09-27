@@ -22,7 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
 const { db } = await import("../../db/index.js");
 const { loadSigningKeys } = await import("../../services/tokens.js");
-const { organizations, users, magicLinks, passwordResetTokens, smsOtpCodes } = await import(
+const { users, magicLinks, passwordResetTokens, smsOtpCodes } = await import(
   "../../db/schema.js"
 );
 const {

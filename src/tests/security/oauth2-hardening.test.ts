@@ -29,7 +29,7 @@ const { loadSigningKeys } = await import("../../services/tokens.js");
 const { hashPassword, hashClientSecret, generateClientSecret } = await import(
   "../../services/secrets/index.js"
 );
-const { applications, organizations, orgMemberships, users, oauth2Consents } = await import(
+const { applications, organizations, orgMemberships, users } = await import(
   "../../db/schema.js"
 );
 const { validateRedirectUri, validateRedirectUris, isRedirectUriRegistered } = await import(
