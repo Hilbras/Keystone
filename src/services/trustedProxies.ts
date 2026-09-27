@@ -278,3 +278,37 @@ export function isValidFingerprint(value: string | undefined): value is string {
 export function canonicalFingerprint(value: string): string {
   return value.trim().replace(/:/g, "").toLowerCase();
 }
+
+/**
+ * CORS origin policy.
+ *
+ * Extracted so the server and the tests share one implementation. An earlier
+ * version of this policy lived inline in `index.ts`, which meant a test could only
+ * assert against a *copy* of it — a copy that would have kept passing while the
+ * real code was reverted.
+ */
+export interface CorsPolicy {
+  allowedOrigins: string[];
+  nodeEnv: string;
+  /**
+   * Origins permitted in addition to the allowlist. The setup server uses this to
+   * default to its own loopback addresses; the main server leaves it empty.
+   */
+  additionallyAllowed?: string[];
+}
+
+/**
+ * Whether a request's `Origin` may be used for a credentialed cross-origin call.
+ *
+ * A request with no `Origin` is not a cross-origin request — it is curl, a
+ * server-to-server call, or a same-origin navigation — so it is allowed.
+ */
+export function isOriginAllowed(origin: string | undefined, policy: CorsPolicy): boolean {
+  if (!origin) return true;
+  if (policy.allowedOrigins.includes(origin)) return true;
+  if (policy.additionallyAllowed?.includes(origin)) return true;
+  // Development convenience so an external test project can connect without
+  // being registered first. Scoped to localhost, and never active in production.
+  if (policy.nodeEnv !== "production" && origin.startsWith("http://localhost:")) return true;
+  return false;
+}

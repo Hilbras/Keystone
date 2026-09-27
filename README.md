@@ -1,6 +1,6 @@
 # Hilbras Keystone
 
-**Current version: `2.6.0`**
+**Current version: `2.7.0`**
 
 > A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
 
@@ -21,6 +21,18 @@ Keystone is a **standalone identity platform**, not a wrapper around another ide
 - **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
 
 ---
+
+## What's new in v2.7.0
+
+> **Behavioural.** CORS now fails closed: with no `ALLOWED_ORIGINS` configured, browser origins are **refused** in production rather than allowed. Session cookies also default to `Secure` in production. If you relied on either default, set them explicitly before upgrading.
+
+- **The admin config endpoint no longer leaks secrets** — redaction was a *denylist*, and it missed 12 of 24 secret-looking keys, including `SIGNING_KEY`, `JWT_SIGNING_KEY`, `SENDGRID_KEY`, `SAML_CERT`, `HMAC_KEY`, `KMS_KEY` and `DB_URL`. It is now an allowlist, so a key nobody has thought about is private by default rather than public.
+- **CORS fails closed in production** — an empty `ALLOWED_ORIGINS` previously returned "allow", making an unset variable equivalent to permitting every origin on a server that sends credentialed cookies. It now refuses, and logs a warning at boot so a misconfiguration is visible before a browser is turned away.
+- **The setup server no longer reflects any origin** — it creates the owner account and writes configuration, and was registered with `origin: true` plus credentials. Origins must now be listed, defaulting to its own loopback addresses.
+- **The setup token is no longer printed to stdout** — it landed in container logs, journald, and whatever ships logs off the host, permanently, and is a full account-initialisation credential. It is now printed only on explicit `KEYSTONE_PRINT_SETUP_TOKEN=true`, and never in production.
+- **Webhook signing secrets are encrypted at rest** — stored in plaintext, a database dump yielded a working signing key for every endpoint, letting an attacker forge deliveries the receiver would accept. Encrypted rather than hashed, because Keystone *signs* with the secret and so must be able to recover it. Existing plaintext rows keep working and upgrade on rotation.
+- **Session cookies are `Secure` by default in production** — the default was `false`, so an operator who did not set it got cookies that would be sent over plain HTTP.
+- **The setup server binds to loopback by default** — it inherited `0.0.0.0` from the main server, which is right for the main server and wrong for the one that creates the owner account.
 
 ## What's new in v2.6.0
 

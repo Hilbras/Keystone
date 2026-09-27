@@ -87,7 +87,14 @@ export const config = {
 
   COOKIE_NAME: cookieName,
   COOKIE_DOMAIN: isHostCookie ? undefined : getEnv("COOKIE_DOMAIN", ".local.hilbras.ai"),
-  COOKIE_SECURE: isHostCookie || getEnv("COOKIE_SECURE", "false") === "true",
+  // Secure by default in production. The previous default was "false", so an
+  // operator who did not set it explicitly got session cookies without the
+  // Secure attribute, which are then sent over plain HTTP. A __Host- prefixed
+  // cookie name implies Secure and still wins; otherwise production defaults to
+  // true and development to false, with an explicit override either way.
+  COOKIE_SECURE:
+    isHostCookie ||
+    getEnv("COOKIE_SECURE", getEnv("NODE_ENV", "development") === "production" ? "true" : "false") === "true",
   COOKIE_SAME_SITE: getEnv("COOKIE_SAME_SITE", getEnv("NODE_ENV", "development") === "production" ? "strict" : "lax") as "strict" | "lax" | "none",
   ALLOW_PRIVATE_SSO_ENDPOINTS: getEnv("ALLOW_PRIVATE_SSO_ENDPOINTS", "false") === "true",
 
