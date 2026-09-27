@@ -135,6 +135,42 @@ the build.
 
 ---
 
+# v3.1.0 — status
+
+Both items in this release are done, and both shipped with the correction that
+measurement forced.
+
+**§1.3** — the four spans exist, in `src/services/spans.ts`, with the names as
+exported constants. The gate is `src/tests/observability/chokepoints.test.ts`, and
+it is verified by breaking: removing the span from the SCIM route fails exactly
+one test, and reverting the span layer fails all four. A test that asserts the
+source contains `startSpan` would have passed on the pre-3.1.0 codebase, which is
+the whole reason the gate drives the real routes instead.
+
+Two attributes were changed after writing them. `requires_mfa` became two
+attributes, `mfa_enabled` and `mfa_satisfied`, because one flag cannot say both
+whether an account has a second factor and whether this login presented one — and
+a flag that is true for everyone with TOTP reports nothing. And `flow` is a
+TypeScript union rather than a string, threaded through all eleven internal call
+sites, so a misspelling is a compile error instead of a span attribute that says
+`"unknown"` forever.
+
+**§1.4** — the benchmark, the baseline, and a nightly gate. It is
+`src/bench/hotPaths.ts`; the reasoning is in `docs/performance/README.md` and the
+numbers are in `docs/PERFORMANCE.md`.
+
+The plan assumed a harness already existed in `docs/PERFORMANCE.md`. It did not —
+that file is about memory on a developer laptop — so §1.4 built the harness as
+well as running it. The measurement then corrected three things written here in
+advance: the group-list target of "2 queries" (§2.1, above), the description of
+the reconcile as quadratic, and the assumption that an absolute millisecond
+baseline would be a usable gate. It also found that the benchmark was measuring
+the login rate limiter rather than the login, which is written up at the end of
+`docs/performance/README.md` because it is the kind of mistake a gate inherits
+quietly.
+
+---
+
 # v3.2.0 — The database layer
 
 *The three findings from the analysis, measured in 3.1.0.*
@@ -145,11 +181,36 @@ the build.
 `scim.ts:809-817` re-reads the full member list inside a loop over the submitted
 members — quadratic, with a full read per iteration.
 
+### Measured in 3.1.0, and the original diagnosis was half right
+
+§1.4's benchmark instrumented the SQL and the statements came back:
+
+| | §1.2 before | §1.4 measured | original plan's target |
+|---|---|---|---|
+| group list, 50 / 200 groups | 51 / 201 statements | **5 / 5** | 2 |
+| group list, 1000 groups (2 pages) | 1002 | **10** | — |
+| reconcile, 10 / 100 / 1000 members | — | **70 / 610 / ~6000** | 3 |
+
+Two corrections, both of which matter:
+
+- **The read is already fixed, and the target was wrong.** 5 statements per page
+  is constant regardless of page size, which is the property that matters. The
+  plan's "2 queries" was a guess written before anything was measured. The
+  extra statements are SCIM credential resolution, not the member fetch.
+- **The write is not quadratic — it is linear with a 6× constant, and that is
+  worse than it sounds.** `addMember` opens a `db.transaction` per member, and
+  each transaction is `BEGIN`, a group lookup, a membership lookup, an insert,
+  `COMMIT`. Six statements and a commit per member. A 1000-member group push
+  takes **about 65 seconds**. No single query is slow; there are six thousand of
+  them.
+
 **Do:**
-- read: one `WHERE group_id = ANY($1)` for the page, in the repository layer
-  where the rest of the data access already lives
-- write: read once, then set-difference — `toAdd = submitted − current`,
-  `toRemove = current − submitted` — and apply each in one statement
+- read: already done in §1.2. Leave it, and keep the benchmark as the thing that
+  notices if it comes back.
+- write: resolve the group and the membership set **once**, outside the loop, then
+  apply the whole set-difference in a single statement
+  (`INSERT ... SELECT ... ON CONFLICT DO NOTHING` for the additions, one `DELETE
+  ... WHERE user_id = ANY($1)` for the removals), in **one** transaction
 - keep the audit trail per changed membership; the count of audit rows should be
   proportional to the change, not to the group size
 
@@ -158,7 +219,14 @@ regardless of page size, asserted directly in a test (not inferred from timing).
 Plus the existing 55 SCIM isolation tests unchanged — this is a performance
 change, not a behaviour change.
 
-**Done when:** group list is 2 queries at any page size, and reconcile is 3.
+**Done when:** group list is constant at any page size (it is, at 5), and
+reconcile is under 10 statements at **any** member count — not 3, which the
+measurement shows was never achievable with a per-member audit write.
+
+**Gate:** the §1.4 benchmark shows a **constant** query count for group list
+regardless of page size, asserted directly in a test (not inferred from timing).
+Plus the existing 55 SCIM isolation tests unchanged — this is a performance
+change, not a behaviour change.
 
 ## 2.2 Index the authorization path
 

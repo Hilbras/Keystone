@@ -422,7 +422,8 @@ export default async function samlRoutes(app: FastifyInstance) {
         request.ip,
         request.headers["user-agent"],
         { orgId: connection.orgId },
-        fingerprint
+        fingerprint,
+        "saml"
       );
       setSessionCookies(reply, tokens.accessToken, tokens.refreshToken);
 

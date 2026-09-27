@@ -53,6 +53,12 @@ function getList(name: string): string[] {
   return value.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+/** An environment variable that is genuinely optional: unset stays `undefined`. */
+function optionalString(name: string): string | undefined {
+  const value = process.env[name];
+  return value ? value : undefined;
+}
+
 const cookieName = getEnv(
   "COOKIE_NAME",
   getEnv("NODE_ENV", "development") === "production" ? "__Host-keystone-session" : "keystone-session"
@@ -61,6 +67,15 @@ const isHostCookie = cookieName.startsWith("__Host-");
 
 export const config = {
   NODE_ENV: getEnv("NODE_ENV", "development"),
+  /**
+   * Pino log level, when set.
+   *
+   * Exists for `npm run bench:hot`, which injects tens of thousands of requests
+   * and spends more time serialising log lines than serving them — so the
+   * benchmark was partly measuring its own logging. Unset everywhere else, and
+   * the fallback below is unchanged, so this cannot alter any other context.
+   */
+  LOG_LEVEL: optionalString("KEYSTONE_LOG_LEVEL"),
   PORT: Number(getEnv("PORT", "4001")),
   HOST: getEnv("HOST", "0.0.0.0"),
 

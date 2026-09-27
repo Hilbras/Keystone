@@ -18,6 +18,8 @@ import {
   type Application,
 } from "../db/schema.js";
 import { config } from "../config.js";
+import type { Span } from "@opentelemetry/api";
+import { ATTR, SPAN, recordSpan, withSpan } from "./spans.js";
 import type { TokenClaims } from "../types.js";
 import {
   getActiveSigningKey,
@@ -203,12 +205,66 @@ export interface TokenSet {
   userId: string;
 }
 
+/**
+ * Which door a token came through.
+ *
+ * A union rather than a string so a misspelled flow is a compile error at the
+ * call site instead of a span attribute that quietly says "unknown" forever. The
+ * parameter stays optional because `createTokenSet` is exported and an SDK
+ * consumer calling it should not be forced to learn a new argument to keep
+ * working; the eleven internal call sites all name their flow.
+ */
+export type TokenFlow =
+  | "password"
+  | "mfa"
+  | "magic-link"
+  | "webauthn"
+  | "refresh"
+  | "oauth-authorize"
+  | "oauth-token"
+  | "federation"
+  | "saml"
+  | "oidc"
+  | "registration";
+
 export async function createTokenSet(
   user: User,
   ip?: string,
   userAgent?: string,
   opts: AccessTokenOptions = {},
-  deviceFingerprint?: string
+  deviceFingerprint?: string,
+  flow?: TokenFlow
+): Promise<TokenSet> {
+  // Every token in the system is minted here: password login, refresh, OAuth
+  // token exchange, federation, SAML and OIDC callbacks. That is the point —
+  // MFA enforcement works because there is one door, and this span is placed at
+  // the same door so a slow or failing issuance is visible wherever it started.
+  return withSpan(
+    SPAN.tokenIssuance,
+    {
+      [ATTR.flow]: flow ?? "unknown",
+      // Two separate facts, because they answer different questions. `mfaEnabled`
+      // is a property of the account; `mfaSatisfied` is a property of this login.
+      // Collapsing them into one "requiresMfa" flag produces a value that is true
+      // for a TOTP user who just authenticated with a password and already
+      // satisfied their second factor — which is to say, true always, for anyone
+      // who has TOTP on. A flag that is always true is a flag that reports nothing.
+      [ATTR.mfaEnabled]: user.totpEnabled,
+      [ATTR.mfaSatisfied]: Boolean(opts.mfaFactor),
+      [ATTR.mfaFactor]: (opts.mfaFactor as string | undefined) ?? "none",
+      [ATTR.clientId]: opts.clientId ?? "none",
+    },
+    (span) => mintTokenSet(user, ip, userAgent, opts, deviceFingerprint, span)
+  );
+}
+
+async function mintTokenSet(
+  user: User,
+  ip: string | undefined,
+  userAgent: string | undefined,
+  opts: AccessTokenOptions,
+  deviceFingerprint: string | undefined,
+  span: Span
 ): Promise<TokenSet> {
   const accessToken = await createAccessToken(user, opts);
   const refreshToken = crypto.randomBytes(48).toString("base64url");
@@ -241,6 +297,7 @@ export async function createTokenSet(
     // Session tracking is best-effort; token creation must not fail because of it.
   }
 
+  span.setAttribute(ATTR.outcome, "issued");
   return { accessToken, refreshToken, refreshTokenHash, expiresAt, userId: user.id };
 }
 
@@ -283,7 +340,18 @@ export async function rotateRefreshToken(
       )
     )
     .limit(1);
-  if (!existing) return null;
+  if (!existing) {
+    // Not a rotation. Whether it was a replay is decided by the caller, which
+    // does the state lookup; this records the refusal so a spike is visible.
+    // The span represents the *decision*, not the query — the query is already
+    // covered by the postgres auto-instrumentation.
+    recordSpan(SPAN.tokenRotation, {
+      [ATTR.flow]: "refresh",
+      [ATTR.rotated]: false,
+      [ATTR.outcome]: "not-rotated",
+    });
+    return null;
+  }
 
   const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
   if (!user?.isActive || user.accountReviewRequired) return null;
@@ -330,7 +398,21 @@ export async function rotateRefreshToken(
       )
     )
     .returning();
-  if (!claimed) return null;
+  if (!claimed) {
+    recordSpan(SPAN.tokenRotation, {
+      [ATTR.flow]: "refresh",
+      [ATTR.rotated]: false,
+      [ATTR.outcome]: "claim-lost",
+    });
+    return null;
+  }
+
+  recordSpan(SPAN.tokenRotation, {
+    [ATTR.flow]: "refresh",
+    [ATTR.rotated]: true,
+    [ATTR.outcome]: "rotated",
+    [ATTR.clientId]: clientId ?? "none",
+  });
 
   return createTokenSet(
     user,
@@ -349,7 +431,8 @@ export async function rotateRefreshToken(
         ? { mfaFactor: claimed.mfaFactor as MfaAssertion }
         : {}),
     },
-    claimed.deviceFingerprint ?? undefined
+    claimed.deviceFingerprint ?? undefined,
+    "refresh"
   );
 }
 

@@ -174,7 +174,8 @@ export default async function webauthnRoutes(app: FastifyInstance) {
         request.headers["user-agent"],
         // A verified WebAuthn assertion is itself a possession factor.
         { mfaFactor: "webauthn" },
-        fingerprint
+        fingerprint,
+        "webauthn"
       );
       setSessionCookies(reply, tokens.accessToken, tokens.refreshToken);
 

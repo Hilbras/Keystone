@@ -1,0 +1,137 @@
+name: Benchmark
+
+# A hot path regressed against the recorded baseline.
+#
+# On a schedule rather than on every push, deliberately. A benchmark that runs on
+# every push is a benchmark that runs on a machine someone else is using, on a
+# commit that was never going to be measured, and a red mark on it teaches people
+# to ignore the job. Nightly means the number is real, and a regression has a full
+# release cycle to be caught in.
+#
+# The comparison is in `src/bench/hotPaths.ts`, against
+# `docs/performance/hot-paths.baseline.json`. Two things are compared: the number
+# of SQL statements each path sends, which is exact and machine-independent, and
+# wall-clock divided by a control measured in the same run, which is the only way
+# to compare a laptop against a hosted runner.
+
+on:
+  schedule:
+    # 03:17 UTC. Not on the hour: every scheduled workflow in the world is queued
+    # for :00, and the runners are busiest at the top of the hour.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      record:
+        description: "Overwrite the baseline with this run's numbers"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+jobs:
+  hot-paths:
+    name: Hot-path benchmark
+    runs-on: ubuntu-latest
+    # Generous on purpose. The 1,000-member reconcile is 6,010 statements and a
+    # transaction each; on a two-core runner that is minutes per sample, not
+    # seconds, and the four iterations of it dominate the run. Timing the job out
+    # halfway through would discard the query counts, which are the part of the
+    # output that is actually trustworthy.
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hilbras
+          POSTGRES_PASSWORD: hilbras
+          POSTGRES_DB: hilbras
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hilbras"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://hilbras:hilbras@localhost:5432/hilbras
+      REDIS_URL: redis://localhost:6379
+      KEYSTONE_INTERNAL_API_KEY: benchmark-internal-key
+      KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+      # The benchmark makes about 40 SCIM requests; the default limit is 600 a
+      # minute, which is enough. Raised anyway so that lowering the rate limit for
+      # a security test cannot quietly turn the reconcile scenarios into 429s —
+      # and a 429 is a fast response, so the benchmark would report it as a
+      # spectacular improvement rather than a failure.
+      SCIM_RATE_LIMIT_MAX: "100000"
+      NO_COLOR: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Benchmark
+        run: |
+          if [ "${{ inputs.record }}" = "true" ]; then
+            node dist/bench/hotPaths.js --record
+          else
+            node dist/bench/hotPaths.js
+          fi
+
+      - name: Upload the numbers
+        # Uploaded whatever the outcome. A run that fails on a regression is the
+        # run whose numbers someone will actually want to look at.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hot-path-numbers
+          path: |
+            dist/bench-output.json
+            docs/performance/hot-paths.baseline.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Explain the comparison
+        if: failure()
+        run: |
+          echo "::error::A hot path regressed against the recorded baseline."
+          echo ""
+          echo "What to check, in order:"
+          echo "  1. Did a query count go up? That is the number that matters — it is"
+          echo "     exact, and it is how an N+1 comes back. Nothing else in this file"
+          echo "     is as trustworthy."
+          echo "  2. Was it a timing regression, and did the output say 'within the noise"
+          echo "     floor' anywhere? If the failures are all timing, compare the control"
+          echo "     readings in dist/bench-output.json against the baseline. A control that"
+          echo "     moved means the machine was busy."
+          echo "  3. Did a scenario stop being measured? 'SCENARIOS THAT STOPPED BEING"
+          echo "     MEASURED' means a scenario was renamed or skipped, and a gate that"
+          echo "     quietly measures less is worse than a gate that is red."
+          echo "  4. If a change was intended, re-record:"
+          echo "       gh workflow run benchmark --ref <branch> -f record=true"
+          echo "     and open a PR with docs/performance/hot-paths.baseline.json."
+          echo "     Read docs/performance/README.md first — four of the bugs found while"
+          echo "     building this produced plausible numbers rather than obvious failures."

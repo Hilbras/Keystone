@@ -101,7 +101,8 @@ export default async function magicLinkRoutes(app: FastifyInstance) {
       request.ip,
       request.headers["user-agent"],
       {},
-      fingerprint
+      fingerprint,
+      "magic-link"
     );
     setSessionCookies(reply, tokens.accessToken, tokens.refreshToken);
 
