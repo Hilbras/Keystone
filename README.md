@@ -16,6 +16,10 @@ control.
 request flows through Keystone, and the five ways to connect a program to it, with
 working code in every language.
 
+Evaluating the codebase? See the
+[analysis](docs/ANALYSIS-v3.0.1.md) and the
+[roadmap to v3.5.0](docs/ROADMAP-v3.1.0-v3.5.0.md).
+
 ---
 
 ## Contents
