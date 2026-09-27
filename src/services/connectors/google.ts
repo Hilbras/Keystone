@@ -22,8 +22,18 @@ export class GoogleConnector extends OidcConnector {
     return super.getAuthorizeUrl(opts);
   }
 
-  async exchangeCode(code: string, redirectUri: string): Promise<ExternalIdentity> {
-    const identity = await super.exchangeCode(code, redirectUri);
+  /**
+   * `opts` must be forwarded. Overriding this method without it silently
+   * discarded the OIDC nonce, so nonce validation added in 2.4.0 applied to every
+   * OIDC provider except this one -- which is the default, and therefore the
+   * most likely to be in use.
+   */
+  async exchangeCode(
+    code: string,
+    redirectUri: string,
+    opts: { nonce?: string } = {}
+  ): Promise<ExternalIdentity> {
+    const identity = await super.exchangeCode(code, redirectUri, opts);
 
     // Google usually returns picture, email_verified, etc. in the id_token.
     // If something is missing, enrich from the userinfo endpoint.
@@ -43,6 +53,19 @@ export class GoogleConnector extends OidcConnector {
     }
 
     return identity;
+  }
+
+  /**
+   * The userinfo endpoint to enrich from.
+   *
+   * Discovery supplies it for Google, but a hand-configured provider may not
+   * have one. Returning undefined rather than passing `undefined!` into the
+   * fetcher means the caller can skip enrichment, instead of surfacing a
+   * misleading "must be a valid URL" for a URL that was never configured.
+   */
+  private resolveUserinfoEndpoint(): string | undefined {
+    const configured = this.config.userinfoEndpoint ?? (this as { userinfoEndpoint?: string }).userinfoEndpoint;
+    return typeof configured === "string" && configured.trim() !== "" ? configured : undefined;
   }
 
   private async fetchUserinfo(code: string, redirectUri: string): Promise<ExternalIdentity> {
@@ -72,7 +95,12 @@ export class GoogleConnector extends OidcConnector {
       throw new Error("Google did not return an access_token for userinfo");
     }
 
-    const userinfoRes = await fetchSsoEndpoint(this.config.userinfoEndpoint!, "userinfoEndpoint", {
+    const userinfoEndpoint = this.resolveUserinfoEndpoint();
+    if (!userinfoEndpoint) {
+      throw new Error("No userinfo endpoint is configured for this provider");
+    }
+
+    const userinfoRes = await fetchSsoEndpoint(userinfoEndpoint, "userinfoEndpoint", {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
 

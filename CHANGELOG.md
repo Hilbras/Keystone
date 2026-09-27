@@ -5,6 +5,58 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-09-27
+
+### Security
+
+- **The OIDC nonce never reached the Google connector.**
+  `GoogleConnector.exchangeCode` overrode the base method and called
+  `super.exchangeCode(code, redirectUri)` without forwarding its options, so the
+  nonce added in 2.4.0 was discarded. Every other OIDC provider validated the
+  nonce; Google — the default, and therefore the most likely to be deployed — did
+  not. An ID token minted for a different user or session would have been
+  accepted on that path.
+- **The unsigned SAML `Issuer` was never validated.** The response-level
+  `<saml:Issuer>` sits outside both signed regions, so rewriting it does not
+  invalidate the signature, and neither samlify nor Keystone compared it to the
+  registered IdP. SAML 2.0 §2.5.1.5 requires a relying party to verify an
+  unsigned issuer against trusted metadata. An assertion could claim to have been
+  issued by a different identity provider. The assertion's own issuer is inside
+  the signed region and was always covered; this closes the element the signature
+  cannot.
+
+### Fixed
+
+- `verifyRelayState` returned by throwing on a missing or non-string signature,
+  turning a malformed RelayState — a bad request an attacker fully controls —
+  into a 500 rather than a 400. It now returns false for anything malformed.
+- A missing `userinfoEndpoint` was passed to the fetcher behind a non-null
+  assertion, producing `userinfoEndpoint must be a valid URL` for a URL that was
+  never configured. It is now reported as unconfigured so enrichment is skipped.
+
+### Added
+
+- 24 adversarial SAML tests covering tampered signatures, untrusted signing keys,
+  rotated-out certificates, unsigned assertions, XML signature wrapping, issuer
+  and audience substitution, destination and recipient prefix / superstring / case
+  variants, expired assertions, `NotBefore` violations, `InResponseTo` mismatch,
+  transaction replay, and five RelayState tampering scenarios.
+- 10 tests for OIDC userinfo endpoint resolution, Google nonce forwarding, and
+  organization-scoped membership.
+- `docs/security/enterprise-sso.md` — SAML and OIDC setup, every check applied to
+  an assertion or ID token, certificate rotation, endpoint SSRF policy,
+  organization scoping, and recommendations.
+
+### Already sound, verified rather than assumed
+
+Membership is keyed on `(orgId, userId)` throughout, with a unique constraint on
+that pair and provisioning via `ON CONFLICT DO NOTHING` — so two simultaneous
+logins cannot create duplicate memberships. SAML connections are resolved by
+`(connectionId, orgId)`, the transaction is consumed atomically for replay
+protection, RelayState is HMAC-signed and bound to a browser nonce compared in
+constant time, and assertions and messages are both required to be signed. A test
+now pins the membership behaviour rather than leaving it to inspection.
+
 ## [2.4.0] - 2026-09-27
 
 ### Security

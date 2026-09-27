@@ -94,6 +94,15 @@ Exactly one transaction can match that predicate, so concurrency cannot redeem a
 
 Presenting an already-spent credential is reported as a **replay** and emits an audit event (`magic_link_replayed`, `sms_otp_replayed`, `password_reset_token_replayed`). An expired credential is not a replay and is not reported as one. A token that never existed is reported only as invalid, so the endpoint does not become an oracle for which tokens once existed.
 
+## Enterprise federation
+
+SAML assertions and OIDC ID tokens are both validated in full: signature, issuer, audience, algorithm, lifetime, subject, and — for OIDC — a nonce binding the token to the authorization request that started it. See [enterprise-sso.md](security/enterprise-sso.md) for every check, the certificate-rotation procedure, and the endpoint SSRF policy.
+
+Two properties are worth stating here because they are easy to get wrong:
+
+- **The response-level SAML `Issuer` is unsigned**, so it is compared to the registered IdP entity ID directly. The assertion's own issuer is inside the signed region and is covered by the signature.
+- **A connector that overrides `exchangeCode` must forward its options.** Doing otherwise silently disabled nonce validation for that provider, which is what happened to Google until 2.5.0.
+
 ## Trust boundaries
 
 Keystone trusts exactly two things: the socket peer address, and credentials it can verify cryptographically. Everything arriving in a header is attacker-controlled unless the peer is a configured trusted proxy.
