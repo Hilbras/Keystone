@@ -8,6 +8,8 @@ Complete documentation for the Hilbras Keystone identity platform.
 | --- | --- |
 | [**How Keystone works, and how to connect it to your program**](HOW-KEYSTONE-WORKS.md) | The request lifecycle, and the five ways to integrate — with working code |
 | [README](../README.md) | Feature overview, installation, quick start, configuration |
+| [**Codebase analysis**](ANALYSIS-v3.0.1.md) | Measured engineering assessment at v3.0.1: scale, findings, what is strong |
+| [**Roadmap v3.1.0 → v3.5.0**](ROADMAP-v3.1.0-v3.5.0.md) | The next five releases, each gated on a measurement |
 
 ## Getting started
 
@@ -15,6 +17,8 @@ Complete documentation for the Hilbras Keystone identity platform.
 | --- | --- |
 | [Installation & deployment](DEPLOYMENT.md) | Docker Compose, Kubernetes, systemd, production hardening |
 | [Performance tuning](PERFORMANCE.md) | Connection pools, caching, indexes, load-testing results |
+| [Codebase analysis](ANALYSIS-v3.0.1.md) | Measured assessment: layering, error handling, data layer, test shape |
+| [Roadmap v3.1.0 → v3.5.0](ROADMAP-v3.1.0-v3.5.0.md) | Five releases of measurement, correction and operability |
 
 ## Integrating
 
