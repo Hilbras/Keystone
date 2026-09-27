@@ -16,7 +16,6 @@ import {
   consumeAuthorizationCode,
   verifyPKCE,
   requiresPkce,
-  hasConsent,
   findConsent,
   resolveEffectiveScopes,
   grantConsent,
