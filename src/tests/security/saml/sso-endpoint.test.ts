@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 // config, which requires a database URL. Set it before the dynamic import
 // because static imports are hoisted above any assignment.
 process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbras";
-const { isPrivateAddress } = await import("../../services/ssoEndpointPolicy.js");
+const { isPrivateAddress } = await import("../../../services/ssoEndpointPolicy.js");
 
 describe("SSO endpoint address policy", () => {
   it("blocks private, loopback, carrier-grade, benchmarking, and mapped IPv4 ranges", () => {

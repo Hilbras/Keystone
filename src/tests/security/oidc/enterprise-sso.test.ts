@@ -5,8 +5,8 @@ import { describe, it } from "node:test";
 
 process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbras";
 
-const { GoogleConnector } = await import("../../services/connectors/google.js");
-const { OidcConnector } = await import("../../services/connectors/oidc.js");
+const { GoogleConnector } = await import("../../../services/connectors/google.js");
+const { OidcConnector } = await import("../../../services/connectors/oidc.js");
 
 /**
  * Plan item 3: the userinfo endpoint.
@@ -69,7 +69,7 @@ describe("OIDC userinfo endpoint resolution", () => {
   });
 
   it("refuses a malformed endpoint through the shared policy validator", async () => {
-    const { validateSsoEndpoint } = await import("../../services/ssoEndpointPolicy.js");
+    const { validateSsoEndpoint } = await import("../../../services/ssoEndpointPolicy.js");
     for (const bad of ["not-a-url", "", "   "]) {
       assert.throws(
         () => validateSsoEndpoint(bad, "userinfoEndpoint"),
@@ -80,8 +80,8 @@ describe("OIDC userinfo endpoint resolution", () => {
   });
 
   it("enforces the HTTPS requirement according to the loaded configuration", async () => {
-    const { validateSsoEndpoint } = await import("../../services/ssoEndpointPolicy.js");
-    const { config } = await import("../../config.js");
+    const { validateSsoEndpoint } = await import("../../../services/ssoEndpointPolicy.js");
+    const { config } = await import("../../../config.js");
 
     // `config` is a load-time snapshot, so NODE_ENV cannot be flipped mid-process.
     // Assert against the value this process actually booted with, and say which
@@ -116,7 +116,7 @@ describe("OIDC userinfo endpoint resolution", () => {
   });
 
   it("refuses a userinfo endpoint aimed at a private address", async () => {
-    const { validateSsoEndpoint } = await import("../../services/ssoEndpointPolicy.js");
+    const { validateSsoEndpoint } = await import("../../../services/ssoEndpointPolicy.js");
     assert.throws(
       () => validateSsoEndpoint("https://127.0.0.1/userinfo", "userinfoEndpoint"),
       /private or local address/
@@ -185,9 +185,9 @@ describe("Enterprise SSO membership is organization-scoped", () => {
     // Proves the composite key the plan requires: the same user in two
     // organizations is two memberships, and neither lookup can see the other.
     const { and, eq } = await import("drizzle-orm");
-    const { db } = await import("../../db/index.js");
-    const { orgMemberships, users, organizations } = await import("../../db/schema.js");
-    const { DrizzleOrganizationRepository } = await import("../../repositories/organization.js");
+    const { db } = await import("../../../db/index.js");
+    const { orgMemberships, users, organizations } = await import("../../../db/schema.js");
+    const { DrizzleOrganizationRepository } = await import("../../../repositories/organization.js");
 
     const run = crypto.randomBytes(6).toString("hex");
     const [orgA] = await db

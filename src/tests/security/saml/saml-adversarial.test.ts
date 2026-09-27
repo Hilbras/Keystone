@@ -4,7 +4,7 @@ import { webcrypto } from "node:crypto";
 import { describe, it } from "node:test";
 import { X509CertificateGenerator } from "@peculiar/x509";
 import { IdentityProvider, ServiceProvider } from "samlify";
-import type { SamlConnection } from "../../db/schema.js";
+import type { SamlConnection } from "../../../db/schema.js";
 
 // The validators are pure, but their module graph loads application config,
 // which requires a database URL. Set it before the dynamic import because static
@@ -12,7 +12,7 @@ import type { SamlConnection } from "../../db/schema.js";
 process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbras";
 process.env.KEYSTONE_INTERNAL_API_KEY ||= "saml-adversarial-relay-secret-0123456789";
 
-const { validateSamlSemantics, signRelayState, verifyRelayState } = await import("../../routes/saml.js");
+const { validateSamlSemantics, signRelayState, verifyRelayState } = await import("../../../routes/saml.js");
 
 const ACS = "https://keystone.example.test/sso/saml/acs";
 const SP_ENTITY_ID = "https://saml-test-sp.example/metadata";

@@ -20,10 +20,10 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
+const { db } = await import("../../../db/index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
 const { users, refreshTokens, userSessions, passwordResetTokens, magicLinks } = await import(
-  "../../db/schema.js"
+  "../../../db/schema.js"
 );
 const {
   revokeRefreshTokens,
@@ -31,16 +31,16 @@ const {
   revokeRecoveryCredentials,
   revokeUserSessions,
   revokeAllUserCredentials,
-} = await import("../../services/sessionRevocation.js");
+} = await import("../../../services/sessionRevocation.js");
 
 const RUN_ID = crypto.randomBytes(6).toString("hex");
 const DOMAIN = `session-revocation-${RUN_ID}.example.test`;
 const createdUserIds: string[] = [];
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
-  const { initializeContainer } = await import("../../di.js");
+  const { initializeContainer } = await import("../../../di.js");
   initializeContainer();
 });
 
@@ -52,9 +52,9 @@ after(async () => {
     await db.delete(magicLinks).where(eq(magicLinks.userId, id)).catch(() => {});
     await db.delete(users).where(eq(users.id, id)).catch(() => {});
   }
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -226,7 +226,7 @@ describe("Password reset evicts existing access", () => {
     const user = await createUser();
     await seedLiveCredentials(user.id, 3);
 
-    const { getSdk } = await import("../../sdk/index.js");
+    const { getSdk } = await import("../../../sdk/index.js");
     const sdk = getSdk();
     // The SDK never hands the token back to a caller, so mint one directly to
     // drive the completion path.
@@ -249,7 +249,7 @@ describe("Password reset evicts existing access", () => {
   it("leaves the recovered account able to log in again", async () => {
     const user = await createUser();
     await seedLiveCredentials(user.id, 1);
-    const { getSdk } = await import("../../sdk/index.js");
+    const { getSdk } = await import("../../../sdk/index.js");
     const sdk = getSdk();
 
     const value = crypto.randomBytes(32).toString("base64url");
@@ -270,7 +270,7 @@ describe("Password reset evicts existing access", () => {
 
   it("does not let a token issued before the reset be used afterwards", async () => {
     const user = await createUser();
-    const { getSdk } = await import("../../sdk/index.js");
+    const { getSdk } = await import("../../../sdk/index.js");
     const sdk = getSdk();
 
     // Two reset emails: an earlier one intercepted by an attacker, and the one

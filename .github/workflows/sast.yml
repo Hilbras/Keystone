@@ -1,0 +1,81 @@
+name: Static analysis
+
+# Semgrep and Gitleaks, the two remaining tools from the plan's static-analysis
+# list. They fail the build rather than reporting, for the same reason CodeQL
+# does: a scanner whose findings are routinely ignored is indistinguishable from
+# no scanner at all.
+#
+# Each tool earns its place by catching something the others do not:
+#   Semgrep  — project-specific patterns, including the ones this codebase has
+#              already been bitten by
+#   Gitleaks — committed secrets, which no dependency or SAST scanner inspects
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        # Scoped to the backend. The security-relevant logic is all in `src/`, and
+        # the frontend dashboard trips a parser error in Semgrep's TypeScript
+        # support (TSX generics versus JSX ambiguity) that fails the whole scan
+        # rather than skipping one file.
+        #
+        # `p/default` plus the two rule sets that correspond to the classes of
+        # defect this project has actually shipped: untrusted input reaching a
+        # sink, and authorisation checks that are present but wrong.
+        run: >
+          semgrep scan
+          --config p/default
+          --config p/security-audit
+          --config p/owasp-top-ten
+          --config .semgrep.yml
+          --error
+          --metrics off
+          --sarif --output semgrep.sarif
+          src
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history, not just the tip. A secret introduced and removed
+          # within a branch is still in the history and still in every clone.
+          fetch-depth: 0
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+          GITLEAKS_NOTIFY_USER_LIST: ""
+        with:
+          # Fails the job on any finding.
+          args: detect --redact --no-banner --verbose

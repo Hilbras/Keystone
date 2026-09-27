@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
-import fp from "fastify-plugin";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { redis, isRedisReady } from "../services/redis.js";
 import { clientAddress } from "../services/trustedProxies.js";
 import { localRateLimit } from "../services/localRateLimit.js";

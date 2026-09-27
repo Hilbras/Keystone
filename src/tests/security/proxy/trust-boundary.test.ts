@@ -25,10 +25,10 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { buildApp } = await import("../../index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
-const { organizations, serviceAccounts } = await import("../../db/schema.js");
+const { db } = await import("../../../db/index.js");
+const { buildApp } = await import("../../../index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
+const { organizations, serviceAccounts } = await import("../../../db/schema.js");
 const {
   addressInCidr,
   canonicalFingerprint,
@@ -43,12 +43,12 @@ const {
   peerAddress,
   resetTrustedProxyCache,
   stripUntrustedHeaders,
-} = await import("../../services/trustedProxies.js");
+} = await import("../../../services/trustedProxies.js");
 const {
   setServiceAccountCertificate,
   revokeServiceAccount,
   findServiceAccountById,
-} = await import("../../services/serviceAccounts.js");
+} = await import("../../../services/serviceAccounts.js");
 
 let app: FastifyInstance;
 
@@ -100,14 +100,14 @@ const RATE_LIMIT_MAX = 3;
 let orgId: string;
 
 before(async () => {
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
   app = await buildApp();
   await app.container.permissionRepository.ensureRolePermissionsSeeded();
 
   // Probe routes must be registered before the first ready(): Fastify rejects
   // routes added to an already-booted instance.
-  const { rateLimit } = await import("../../plugins/rateLimit.js");
+  const { rateLimit } = await import("../../../plugins/rateLimit.js");
   app.get(HEADER_PROBE_PATH, async (request) => {
     observedHeaders.fingerprint = request.headers["x-client-cert-fingerprint"];
     observedHeaders.serviceAccount = request.headers["x-service-account-id"];
@@ -130,7 +130,7 @@ before(async () => {
   // The shared client is created with `lazyConnect`, and the limiter fails open
   // whenever it is not connected. Connect explicitly, or these assertions would
   // pass against a permanently open budget and prove nothing.
-  const { redis, isRedisReady } = await import("../../services/redis.js");
+  const { redis, isRedisReady } = await import("../../../services/redis.js");
   if (redis.status === "wait") await redis.connect();
   for (let attempt = 0; attempt < 50 && !isRedisReady(); attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -151,9 +151,9 @@ after(async () => {
     .catch(() => {});
 
   await app?.close();
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -401,7 +401,7 @@ describe("Service account certificate binding", () => {
       .returning();
     assert.equal(created.certFingerprint, null);
 
-    const { findServiceAccountByFingerprint } = await import("../../plugins/mtls.js");
+    const { findServiceAccountByFingerprint } = await import("../../../plugins/mtls.js");
     assert.equal(await findServiceAccountByFingerprint(nextFingerprint()), undefined);
   });
 
@@ -412,7 +412,7 @@ describe("Service account certificate binding", () => {
       .values({ orgId, name: `${NAME_PREFIX}bound`, certFingerprint: fingerprint, isActive: true })
       .returning();
 
-    const { findServiceAccountByFingerprint } = await import("../../plugins/mtls.js");
+    const { findServiceAccountByFingerprint } = await import("../../../plugins/mtls.js");
     const found = await findServiceAccountByFingerprint(fingerprint);
     assert.equal(found?.id, created.id);
 
@@ -437,7 +437,7 @@ describe("Service account certificate binding", () => {
       isActive: false,
     });
 
-    const { findServiceAccountByFingerprint } = await import("../../plugins/mtls.js");
+    const { findServiceAccountByFingerprint } = await import("../../../plugins/mtls.js");
     assert.equal(
       await findServiceAccountByFingerprint(revokedPrint),
       undefined,
@@ -486,7 +486,7 @@ describe("Service account certificate authentication", () => {
   }
 
   async function probe(peer: string, headers: Record<string, string>) {
-    const { requireMTLS } = await import("../../plugins/mtls.js");
+    const { requireMTLS } = await import("../../../plugins/mtls.js");
     const preHandler = requireMTLS();
     let status = 200;
     const reply = {
@@ -730,7 +730,7 @@ describe("Service account certificate administration", () => {
     const fingerprint = nextFingerprint();
     await setServiceAccountCertificate(account.id, orgId, fingerprint);
 
-    const { findServiceAccountByFingerprint } = await import("../../plugins/mtls.js");
+    const { findServiceAccountByFingerprint } = await import("../../../plugins/mtls.js");
     assert.equal((await findServiceAccountByFingerprint(fingerprint))?.id, account.id);
 
     const revoked = await revokeServiceAccount(account.id, orgId);

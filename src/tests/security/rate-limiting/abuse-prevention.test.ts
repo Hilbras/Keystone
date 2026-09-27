@@ -21,26 +21,26 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { buildApp } = await import("../../index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
-const { isOriginAllowed } = await import("../../services/trustedProxies.js");
+const { buildApp } = await import("../../../index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
+const { isOriginAllowed } = await import("../../../services/trustedProxies.js");
 const {
   localRateLimit,
   resetLocalRateLimits,
   localRateLimitSize,
-} = await import("../../services/localRateLimit.js");
+} = await import("../../../services/localRateLimit.js");
 const {
   isTrustedProxy,
   clientAddress,
   normalizeAddress,
   resetTrustedProxyCache,
-} = await import("../../services/trustedProxies.js");
+} = await import("../../../services/trustedProxies.js");
 
 let app: FastifyInstance;
 
 before(async () => {
-  const { db } = await import("../../db/index.js");
-  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../db/migrations") });
+  const { db } = await import("../../../db/index.js");
+  await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
   await loadSigningKeys();
   app = await buildApp();
   await app.ready();
@@ -48,9 +48,9 @@ before(async () => {
 
 after(async () => {
   await app?.close();
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {
@@ -267,7 +267,7 @@ describe("Sensitive endpoints keep a budget when Redis is down", () => {
 // ---------------------------------------------------------------------------
 describe("Abuse events are recorded", () => {
   it("the vocabulary includes every signal the plan names", async () => {
-    const { VALID_EVENT_TYPES } = await import("../../services/events/validate.js");
+    const { VALID_EVENT_TYPES } = await import("../../../services/events/validate.js");
     for (const event of [
       "rate_limit_triggered",
       "authentication_brute_force",
@@ -280,7 +280,7 @@ describe("Abuse events are recorded", () => {
   });
 
   it("emits rate_limit_triggered when a limiter refuses, naming which limiter", async () => {
-    const { subscribeAll } = await import("../../services/events/bus.js");
+    const { subscribeAll } = await import("../../../services/events/bus.js");
     const seen: Array<Record<string, unknown>> = [];
     const unsubscribe = subscribeAll((event) => {
       if (event.type === "rate_limit_triggered") {
@@ -289,7 +289,7 @@ describe("Abuse events are recorded", () => {
     });
 
     // Exhaust a budget so the limiter actually refuses.
-    const { rateLimit } = await import("../../plugins/rateLimit.js");
+    const { rateLimit } = await import("../../../plugins/rateLimit.js");
     const keyPrefix = `evt-${Date.now()}`;
     const guard = rateLimit({
       keyPrefix,
