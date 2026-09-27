@@ -5,6 +5,79 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-09-27
+
+### Security
+
+- **The API key scope guard had a bypass by construction.** It read
+  `scopes.includes(scope) || scopes.includes("service_account")`, so a key whose
+  scope list contained the literal string `"service_account"` satisfied *every*
+  scope requirement. That string was client-suppliable: `POST /api-keys` stored
+  whatever `scopes` it was given, with no validation against any list.
+- **The same guard also failed open.** It returned early whenever
+  `apiKeyScopes` was absent, which is indistinguishable from "this is a session".
+  A key that resolved without a scope list therefore skipped the check entirely.
+- **The guard was never referenced.** `requireScopes` was defined and decorated
+  onto the Fastify instance, but no route in the repository used it. Scopes were
+  stored, returned to callers, and enforced nowhere.
+
+### How exploitable this actually was
+
+Stated precisely, because it matters for prioritising: `app.authenticate` is
+JWT-only and returns 401 for anything that is not a valid access token.
+`authenticateOrApiKey` is the handler with the API key path, and before this
+release exactly one route used it — `GET /auth/validate`. A leaked API key
+therefore reached one endpoint, which returns the caller's own public profile.
+
+So the exposure was a credential whose stated limits were fiction, on a
+credential that could be used almost nowhere. That is a real defect and worth
+fixing, but it is not an authentication bypass, and describing it as one would
+mislead anyone deciding what to do first.
+
+### Changed
+
+- `src/services/scopes.ts` — a scope registry: the canonical names, their
+  descriptions, per-principal defaults, validation, and the allow-list grant
+  check. A scope that is not defined cannot be granted.
+- Unknown or forbidden scopes are refused at key creation with a `400` naming
+  what was rejected and what is allowed, instead of being stored verbatim.
+- `requireScopes` now fails closed, keyed off a new `request.apiKeyId` that is
+  set only when a machine credential authenticated the request. A session is
+  still exempt, since it carries a person's authority and is governed by the
+  permission system.
+- Applied to the routes where a credential's limits matter most: API key
+  creation, listing and revocation, session listing and revocation, and profile
+  read and write.
+- `profile:read`, `profile:write`, and `mfa:manage` are human-only. A service
+  account's profile is a synthesized object with an id of `sa:<uuid>` that
+  matches no user row, so the scope is meaningless for a machine and misleading
+  in an audit log.
+- A service account's default grant is now `organizations:read` only. A personal
+  key's default is read-only on the caller's own resources; the previous
+  `api:read` default was not in any registry, which is a fair indication that
+  nothing was checking it.
+
+### Added
+
+- `src/plugins/machinePrincipal.ts` — `requireHumanPrincipal`, refusing a service
+  account on TOTP, WebAuthn, SMS OTP, identity linking, OAuth consent, and
+  userinfo routes with an explicit `403` and an audit record. This is a backstop
+  rather than a fix for a live hole: those routes are JWT-only today, so a
+  machine credential is refused with a 401 before the guard is reached. It exists
+  so that switching a route to `authenticateOrApiKey` does not silently make a
+  machine principal acceptable somewhere a person was assumed.
+- 25 tests covering the registry, validation, intersection, the grant check, the
+  fail-closed behaviour, HTTP enforcement on the one key-reachable route, and
+  the machine-principal boundary.
+
+### Fixed
+
+- Scope enforcement is keyed on `apiKeyId` rather than the presence of a scope
+  list, closing the fail-open path.
+- The `service_account` wildcard no longer grants anything.
+- Scope ordering is normalised, so two equivalent requests produce identical
+  rows.
+
 ## [2.5.0] - 2026-09-27
 
 ### Security

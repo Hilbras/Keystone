@@ -37,7 +37,10 @@ const factorRateLimit = (keyPrefix: string) =>
 export default async function totpRoutes(app: FastifyInstance) {
   app.post(
     "/totp/enroll",
-    { preHandler: [app.authenticate, factorRateLimit("totp-enroll")] },
+    { preHandler: [app.authenticate,
+      // second-factor enrolment needs a person present. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal(), factorRateLimit("totp-enroll")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       if (user.totpEnabled) {
@@ -93,7 +96,10 @@ export default async function totpRoutes(app: FastifyInstance) {
    */
   app.post(
     "/totp/backup",
-    { preHandler: [app.authenticate, factorRateLimit("totp-backup")] },
+    { preHandler: [app.authenticate,
+      // backup codes are a human recovery path. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal(), factorRateLimit("totp-backup")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       if (!user.totpSecret || !user.totpEnabled) {
@@ -127,7 +133,10 @@ export default async function totpRoutes(app: FastifyInstance) {
 
   app.post(
     "/totp/verify",
-    { preHandler: [app.authenticate, factorRateLimit("totp-verify")] },
+    { preHandler: [app.authenticate,
+      // a machine cannot present a code from its own authenticator. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal(), factorRateLimit("totp-verify")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       if (!user.totpSecret) {
@@ -171,7 +180,10 @@ export default async function totpRoutes(app: FastifyInstance) {
 
   app.post(
     "/totp/disable",
-    { preHandler: [app.authenticate, factorRateLimit("totp-disable")] },
+    { preHandler: [app.authenticate,
+      // disabling a factor must not be automatable. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal(), factorRateLimit("totp-disable")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       if (!user.totpSecret || !user.totpEnabled) {
@@ -210,7 +222,10 @@ export default async function totpRoutes(app: FastifyInstance) {
    */
   app.post(
     "/totp/backup/verify",
-    { preHandler: [app.authenticate, factorRateLimit("totp-backup-verify")] },
+    { preHandler: [app.authenticate,
+      // a machine cannot present a backup code. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal(), factorRateLimit("totp-backup-verify")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       if (!user.totpSecret || !user.totpEnabled) {

@@ -35,6 +35,7 @@ import appContextPlugin from "./plugins/appContext.js";
 import permissionsPlugin from "./plugins/permissions.js";
 import mtlsPlugin from "./plugins/mtls.js";
 import headerSanitization from "./plugins/headerSanitization.js";
+import machinePrincipal from "./plugins/machinePrincipal.js";
 import metricsPlugin from "./plugins/metrics.js";
 import { globalRateLimit } from "./plugins/rateLimit.js";
 import authRoutes from "./routes/auth.js";
@@ -108,7 +109,7 @@ export async function buildApp() {
       info: {
         title: "Hilbras Keystone API",
         description: "Identity platform API for Hilbras products and third-party apps.",
-        version: "2.5.0",
+        version: "2.6.0",
       },
       servers: [{ url: config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}` }],
       tags: [
@@ -200,6 +201,7 @@ export async function buildApp() {
 
   await app.register(appContextPlugin);
   await app.register(authPlugin);
+  await app.register(machinePrincipal);
   await app.register(permissionsPlugin);
   await app.register(mtlsPlugin);
   await app.register(metricsPlugin);

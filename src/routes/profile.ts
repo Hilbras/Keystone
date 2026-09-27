@@ -10,7 +10,7 @@ const UpdateProfileSchema = z.object({
 });
 
 export default async function profileRoutes(app: FastifyInstance) {
-  app.get("/profile", { preHandler: [app.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get("/profile", { preHandler: [app.authenticate, app.requireScopes("profile:read")] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = request.user?.id;
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
 
@@ -20,7 +20,7 @@ export default async function profileRoutes(app: FastifyInstance) {
     return { user: toSelfUser(user) };
   });
 
-  app.patch("/profile", { preHandler: [app.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.patch("/profile", { preHandler: [app.authenticate, app.requireScopes("profile:write")] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = request.user?.id;
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
 

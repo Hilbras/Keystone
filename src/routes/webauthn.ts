@@ -57,7 +57,10 @@ const AuthenticateVerifySchema = z.object({
 export default async function webauthnRoutes(app: FastifyInstance) {
   app.get(
     "/webauthn/register/options",
-    { preHandler: [app.authenticate] },
+    { preHandler: [app.authenticate,
+      // a machine has no authenticator. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal()] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       const options = await buildRegistrationOptions(user);
@@ -68,7 +71,10 @@ export default async function webauthnRoutes(app: FastifyInstance) {
 
   app.post(
     "/webauthn/register/verify",
-    { preHandler: [app.authenticate] },
+    { preHandler: [app.authenticate,
+      // a machine cannot complete a WebAuthn ceremony. Placed after app.authenticate, which is what
+      // populates request.serviceAccount.
+      app.requireHumanPrincipal()] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       const body = RegisterVerifySchema.parse(request.body);

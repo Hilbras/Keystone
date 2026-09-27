@@ -10,7 +10,7 @@ function hashToken(token: string): string {
 }
 
 export default async function sessionRoutes(app: FastifyInstance) {
-  app.get("/sessions", { preHandler: [app.authenticate] }, async (request: FastifyRequest) => {
+  app.get("/sessions", { preHandler: [app.authenticate, app.requireScopes("sessions:read")] }, async (request: FastifyRequest) => {
     const userId = request.user?.id;
     if (!userId) return { sessions: [] };
     const list = await sessions.listByUser(userId);
@@ -27,7 +27,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
     };
   });
 
-  app.delete("/sessions/:id", { preHandler: [app.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.delete("/sessions/:id", { preHandler: [app.authenticate, app.requireScopes("sessions:revoke")] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = request.user?.id;
     const { id } = request.params as { id: string };
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
@@ -44,7 +44,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.post("/sessions/revoke-all", { preHandler: [app.authenticate] }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/sessions/revoke-all", { preHandler: [app.authenticate, app.requireScopes("sessions:revoke")] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = request.user?.id;
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
 
