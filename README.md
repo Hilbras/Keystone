@@ -1,943 +1,420 @@
 # Hilbras Keystone
 
-**Current version: `2.9.0`**
+**Version: 3.0.1**
 
-> A provider-agnostic, API-first identity platform for Hilbras products and third-party applications.
+An identity and access platform: authentication, authorization, multi-tenancy,
+OAuth 2.0 / OIDC, SAML, SCIM, MFA, WebAuthn, API keys, service accounts, and an
+immutable audit log.
 
-Keystone is a **standalone identity platform**, not a wrapper around another identity system. It authenticates users, issues signed tokens, enforces authorization, audits every security decision, and federates identities from any OIDC provider.
+Keystone is a **server**, not a library you vendor. The security properties that
+are easy to get wrong — password hashing, token rotation, replay detection,
+session revocation, rate limiting — are exactly the ones that go wrong when every
+application reimplements them. One implementation, used by everything, is the
+control.
 
----
-
-## What Keystone becomes
-
-- **Identity Provider (IdP)** — OIDC/OAuth2 provider with JWKS discovery.
-- **Authentication Service** — email/password with mandatory MFA enforcement, social login, magic links, WebAuthn/Passkeys, TOTP, SMS OTP.
-- **Authorization Engine** — RBAC/ABAC permissions with `/v1/authz/check`.
-- **Token Authority** — short-lived JWT access tokens, rotating refresh tokens, opaque API keys.
-- **Machine Identity Manager** — scoped, rotatable, auditable service credentials.
-- **Federation Broker** — delegate login to Google, GitHub, Azure, Okta, Keycloak, Zitadel, or any OIDC provider and issue Keystone tokens.
-- **Enterprise SSO** — SAML 2.0 and OIDC enterprise connectors with SCIM user provisioning.
-- **Audit & Compliance** — immutable audit log, event bus, webhooks, and anomaly detection.
-- **Workflow Platform** — configurable post-auth workflows (organization-scoped notification, email, and webhook steps).
+**Start here → [docs/HOW-KEYSTONE-WORKS.md](docs/HOW-KEYSTONE-WORKS.md)** — how a
+request flows through Keystone, and the five ways to connect a program to it, with
+working code in every language.
 
 ---
 
-## Using the published package
+## Contents
+
+- [Installation](#installation) · [Quick Start](#quick-start) · [Features](#features)
+- [Authentication](#authentication) · [Organizations](#organizations) · [OAuth/OIDC](#oauthoid)
+- [SAML](#saml) · [SCIM](#scim) · [MFA](#mfa) · [WebAuthn](#webauthn)
+- [API Keys](#api-keys) · [Service Accounts](#service-accounts)
+- [Security](#security) · [Configuration](#configuration)
+- [Deployment](#deployment) · [Docker](#docker) · [Development](#development)
+- [Testing](#testing) · [Contributing](#contributing) · [License](#license)
+
+---
+
+## Installation
+
+Requires **Node.js 22+**, **PostgreSQL 16+** and **Redis 7+**.
 
 ```bash
-npm install @hilbras/keystone
+npm install -g @hilbras/keystone
+
+keystone init          # generate keys and a starter .env
+keystone migrate       # create the schema
+keystone config:validate
+keystone user:create --role owner --email you@example.com
+keystone start         # or: keystone serve
+```
+
+The setup wizard does the same thing interactively:
+
+```bash
+keystone setup         # binds loopback only; KEYSTONE_SETUP_HOST to override
+```
+
+Or run it in a container — see [Docker](#docker).
+
+## Quick Start
+
+**Your application is a client.** Let Keystone handle credentials, then ask it who
+the user is.
+
+```bash
+# 1. Register an application
+curl -X POST https://keystone.example.com/v1/admin/organizations \
+  -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"name":"My App","redirectUris":["https://app.example.com/callback"]}'
+```
+
+```
+# 2. Send the user here
+https://keystone.example.com/auth/login?client_id=<id>&redirect_uri=https://app.example.com/callback
+
+# 3. Your callback exchanges the code, then verifies the access token
 ```
 
 ```ts
-import { buildApp } from "@hilbras/keystone";
-
-const app = await buildApp();
-await app.listen({ port: 3000 });
-// Close it when done: importing the package opens the database pool.
-await app.close();
-```
-
-Or run the server directly with `npx keystone serve`.
-
-The migration guides and security documentation are included in the package, so
-they are available without a network round trip to the repository.
-
-## What's new in v3.0.0
-
-- **The re-audit matrix is generated, not written.** `docs/RE-AUDIT.md` covers all 18 findings the plan names. Every cell is verified against the repository when the file is produced: `Fixed` only if the fix site exists, `Regression test` only if the named file exists *and* contains a test. Deleting a test turns the cell red on the next run rather than leaving a stale assurance in a release document. **`npm run reaudit:check` fails the release gate if any claim cannot be verified.**
-- **Zero unresolved Critical findings**, and that is checked rather than asserted.
-- **Two registry entries withdrawn.** I added `SEC-043` and `SEC-044` in 2.9.0 with fixes at paths that do not exist and issue descriptions the tests do not cover — they were not findings. They are now recorded as withdrawn with the reason, and their suites as coverage.
-- **The registry validator now checks the `fix` field**, which it never did. It verified the named *test* existed and contained a test; nothing confirmed the claim about where the fix lives. That is how two invented entries passed. Four entries named paths that do not exist; all corrected.
-- **Multi-tenant isolation re-audited** across every organization-scoped admin route. No cross-tenant path found — see the CHANGELOG for the specific traces.
-
-## What's new in v2.9.0
-
-- **The published package is importable.** It shipped `dist/index.js` and `dist/index.d.ts` with **no `main` and no `types`**, so `import "@hilbras/keystone"` did not resolve for anyone installing from npm. The `bin` worked, so the CLI was usable and the library surface was not — nothing failed, the package simply could not be imported.
-- **The migration guides now ship.** `docs/` was never in the tarball, so the instructions for the breaking changes in 2.4.0, 2.6.0 and 2.7.0 were reachable only on GitHub. Someone upgrading via npm got the changelog but not what it referred to.
-- **`npm run verify:release` now checks both.** It verified version, license and repository, and let a package with no entry point and no documentation pass. It now also requires `main`/`types` to exist, requires the migration docs to be in `files`, and refuses to ship credential material. Verified by reverting: all three defects are caught.
-- **A permanent regression registry for every finding.** `docs/security/registry.json` records all **46** vulnerabilities found across the hardening programme — the issue, the fix, the test that fails without it, the documentation, and the release. It is machine-readable, so `npm run registry:check` **fails** if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered. A registry that can quietly become false is worse than none.
-- **A security test suite per domain.** Tests moved from 14 flat files into 16 suites grouped by area — authentication, authorization, mfa, oauth, oidc, saml, scim, mtls, sessions, tokens, api-keys, configuration, proxy, rate-limiting. Verified lossless: 381 security tests before and after.
-- **Two test harnesses that were reporting on less than the repository contained.**
-  - **`tsc` never cleaned `dist`.** Output for a renamed or deleted source file survived, so a moved suite ran twice and a *deleted* suite kept running. Test discovery did not reflect the source tree.
-  - **`node --test` expands `**` as a single directory level, not globstar.** When the suites gained a directory level, the discovery patterns stopped matching — **48 security tests, the entire authorization suite, silently stopped running, and the run still reported success** because everything that remained passed. A green run was reporting on less than the repository contained. One pattern per depth now, with no overlap.
-- **A stale fixture path that was correct at only one directory depth.** A suite reached its fixture by counting parent directories, which resolved from `src` and not from `dist`. Paths are now anchored on the nearest `package.json`.
-- **CI now runs CodeQL, Semgrep and Gitleaks.** CodeQL on push, pull request and weekly. Gitleaks over the **full history** — verified clean, and verified to still catch a planted private key under `src/tests/`.
-- **8 project-specific Semgrep rules**, each mapped to a registry entry. They encode what actually went wrong *here*, which no general ruleset can know — including the ordering trap that silently disabled `requireHumanPrincipal` (a guard placed before `app.authenticate` sees nothing and permits everything). Verified in both directions: **8 of 8 fire** on a deliberately vulnerable fixture, **0 findings** on the real backend.
-- **The release gate is now explicit.** A release fails on a critical or high advisory without a documented, time-bounded exception; on secret scanning; on a registry that does not validate; or on any of lint, typecheck, build, tests, security tests and the audit.
-- **A failed login is audited on both login routes**, and **a replayed refresh token is detected** and revokes the account's remaining credentials — while an unknown token revokes nothing. Both shipped in 2.8.0 with no test.
-- **The audit log export no longer evaluates as a spreadsheet formula.** It quoted values containing a delimiter, but a value beginning with `=`, `+`, `-` or `@` is evaluated as a formula when the file is opened — and the exported user agent is attacker-supplied. An audit export is exactly the file an operator opens in a spreadsheet. Found while triaging Semgrep's advisory findings; the rule that pointed at it was a false positive, but the code was not.
-- **Service-account requests are no longer invisible in the audit log.** A machine principal carries a sentinel id of `sa:<uuid>`, which the audit subscriber was writing into a **uuid** column. Postgres rejected the insert, the subscriber logged a failure, and the record was lost — so **every request authenticated by an API key or an mTLS service account left no audit trail at all.** The request succeeded, so nothing failed visibly, and a missing record looks exactly like a request that never happened. The privileged machine path was the one that left no trace. (SEC-046)
-- **17 new tests** covering the above, each verified by reverting the fix.
-
-## What's new in v2.8.0
-
-- **A Redis outage no longer removes rate limiting.** When Redis was unavailable every limiter returned "allowed" — so during an outage, `login`, `mfa/verify`, `sms-otp/verify`, and the OAuth token exchange had **no limit at all**. An outage is precisely when unlimited attempts are worth having. Sensitive endpoints now fall back to a bounded in-process budget.
-- **MFA verification is limited per login attempt, not per address.** The budget key included the submitted email, which that endpoint does not carry, so *every* second-factor verification from one address shared a single budget of 20. An attacker got 20 guesses, but so did an office behind one NAT — one busy office could lock out every legitimate MFA login. The key now includes the challenge.
-- **Second-factor management is limited per user, not per address.** Same problem on the TOTP routes: 10 attempts shared across everyone behind an address. Brute-forcing a code is per-account, so a per-user budget is the right unit.
-- **Credential spraying is capped.** The login budget was keyed on address *and* submitted address, so it stopped repeated guesses at one account but did nothing against an attacker varying the address across a thousand accounts from one host. A second, address-keyed budget bounds that.
-- **A refused request is now recorded.** A rate-limit trip previously left no trace — a 429 and nothing else — so sustained guessing at `login` or `mfa/verify` was invisible except in aggregate. `rate_limit_triggered` records the endpoint, the client address, and **which limiter decided**, so a degraded local control is distinguishable from a healthy distributed one.
-- **Failed logins are audited.** `user_login_failed` existed in the event vocabulary and was never emitted, so password guessing left no record. Now emitted for both `/login` and `/token-login`, without a user id, since the submitted address may match no account.
-- **A replayed refresh token is detected and answered.** A second presentation of a consumed refresh token was indistinguishable from an unknown one. It now emits `refresh_token_replayed` and revokes the account's remaining credentials, because a replay means the token leaked.
-- **API key creation is rate limited** like any other authentication event.
-- **16 tests** covering the emergency limiter, proxy spoofing, and the abuse events.
-
-## What's new in v2.7.0
-
-> **Behavioural.** CORS now fails closed: with no `ALLOWED_ORIGINS` configured, browser origins are **refused** in production rather than allowed. Session cookies also default to `Secure` in production. If you relied on either default, set them explicitly before upgrading.
-
-- **The admin config endpoint no longer leaks secrets** — redaction was a *denylist*, and it missed 12 of 24 secret-looking keys, including `SIGNING_KEY`, `JWT_SIGNING_KEY`, `SENDGRID_KEY`, `SAML_CERT`, `HMAC_KEY`, `KMS_KEY` and `DB_URL`. It is now an allowlist, so a key nobody has thought about is private by default rather than public.
-- **CORS fails closed in production** — an empty `ALLOWED_ORIGINS` previously returned "allow", making an unset variable equivalent to permitting every origin on a server that sends credentialed cookies. It now refuses, and logs a warning at boot so a misconfiguration is visible before a browser is turned away.
-- **The setup server no longer reflects any origin** — it creates the owner account and writes configuration, and was registered with `origin: true` plus credentials. Origins must now be listed, defaulting to its own loopback addresses.
-- **The setup token is no longer printed to stdout** — it landed in container logs, journald, and whatever ships logs off the host, permanently, and is a full account-initialisation credential. It is now printed only on explicit `KEYSTONE_PRINT_SETUP_TOKEN=true`, and never in production.
-- **Webhook signing secrets are encrypted at rest** — stored in plaintext, a database dump yielded a working signing key for every endpoint, letting an attacker forge deliveries the receiver would accept. Encrypted rather than hashed, because Keystone *signs* with the secret and so must be able to recover it. Existing plaintext rows keep working and upgrade on rotation.
-- **Session cookies are `Secure` by default in production** — the default was `false`, so an operator who did not set it got cookies that would be sent over plain HTTP.
-- **The setup server binds to loopback by default** — it inherited `0.0.0.0` from the main server, which is right for the main server and wrong for the one that creates the owner account.
-
-## What's new in v2.6.0
-
-- **API key scopes are now a real registry** — a single list of scope names with descriptions. A scope not in the registry cannot be granted, so there is no string a caller can invent, and a route that needs a scope names it from the list so enforcement cannot quietly drift out of date again.
-- **Unknown scopes are refused, not dropped** — key creation previously stored whatever strings it was given. Silently discarding an unrecognised one hides a typo and leaves the caller believing they hold something they do not, so it now returns `400` listing what was rejected and what is allowed.
-- **The `service_account` wildcard is gone** — the scope guard treated a key as holding *every* scope if its scope list merely contained the string `"service_account"`, and that string was client-suppliable at key creation. It is no longer a scope, and a key holding only it satisfies nothing.
-- **The scope guard fails closed** — it previously returned early whenever `apiKeyScopes` was absent, which is indistinguishable from "this is a session", so a key that resolved without a scope list skipped the check entirely. It now keys off `apiKeyId`, which is set only when a machine credential authenticated.
-- **Scopes are enforced** on key, session, and profile routes, so a key is limited to the operations its grant covers.
-- **Profile and MFA scopes cannot be granted to a service account** — a machine's "profile" is a synthesized object with an id of `sa:<uuid>` that matches no user row, and it has no authenticator to enrol a second factor with.
-- **A stated boundary for machine principals** — `requireHumanPrincipal` refuses a service account on TOTP, WebAuthn, SMS OTP, identity linking, consent, and userinfo routes, with an explicit `403` and an audit record, rather than relying on the synthetic principal happening to match no row.
-- **Personal keys default to read-only** on the caller's own resources. The previous default, `api:read`, was not in any registry — a fair sign that nothing was checking it.
-
-> **Note on reachability.** `app.authenticate` is JWT-only, so almost every route still refuses an API key outright. `GET /auth/validate` is the one route that accepts one, and it is where scope enforcement is observable end to end. What this release fixes is the enforcement machinery, so the next route to adopt key authentication inherits a real check.
-
-## What's new in v2.5.0
-
-- **The OIDC nonce now reaches the Google connector** — `GoogleConnector.exchangeCode` overrode the base method without forwarding its options, so the nonce added in 2.4.0 was silently discarded for the default provider. Every non-Google OIDC provider validated the nonce; Google, the most likely to be in use, did not.
-- **The unsigned SAML `Issuer` is now validated** — the response-level `<saml:Issuer>` sits outside both signed regions, so rewriting it does not invalidate the signature, and nothing compared it to the registered IdP. An assertion could claim to come from a different identity provider. Keystone now checks it against the connection, as SAML 2.0 §2.5.1.5 requires. The assertion's own issuer is inside the signed region and was always covered.
-- **`RelayState` verification returns false instead of throwing** — a malformed RelayState is a bad request an attacker fully controls, so it produced a 500 rather than a 400.
-- **A missing userinfo endpoint is reported as unconfigured** — it was passed to the fetcher with a non-null assertion, surfacing a misleading "must be a valid URL" for a URL that was never set.
-- **24 adversarial SAML tests** — tampered signatures, untrusted signing keys, rotated-out certificates, unsigned assertions, XML signature wrapping, issuer and audience substitution, destination and recipient prefix/superstring/case variants, expired and not-yet-valid assertions, `InResponseTo` mismatch, transaction replay, and five RelayState tampering scenarios.
-- **[enterprise-sso.md](docs/security/enterprise-sso.md)** — SAML and OIDC setup, every check applied to an assertion or ID token, certificate rotation (and its lack of a grace period), endpoint SSRF policy, organization scoping, and recommendations.
-
-## What's new in v2.4.0
-
-> **Breaking.** The `authorization_code` grant now requires client authentication. A client redeeming an authorization code must present its `client_secret`; requests without one now receive `401 invalid_client`. Clients that were relying on the grant working without a secret must send it.
-
-- **The authorization code grant now authenticates the client** — it previously looked the client up and redeemed the code without ever checking a secret, so the code and its PKCE verifier were the only factors. This violates RFC 6749 §3.2.1 for confidential clients.
-- **`javascript:` and `data:` are refused as redirect URIs** — validation was `z.string().url()`, which accepts anything the URL parser accepts, including script-bearing schemes. A redirect URI is a value Keystone puts in a `Location` header on its own origin, so an org admin could previously register one and hand any user who authorized their app a redirect toward script execution. Also rejects wildcards, fragments, embedded credentials, and plaintext HTTP to non-loopback hosts.
-- **Public clients are supported and must use PKCE** — a `public` client type is issued no secret at all, rather than a secret it is expected to ignore, and a database constraint keeps the two halves of a client type consistent. PKCE is then mandatory for it, because client authentication is the only thing a secretless client cannot do.
-- **Scopes are intersected, not trusted** — the effective set is registered ∩ requested ∩ consented. A scope outside the registration is refused with `invalid_scope` rather than silently dropped, so a client asking for more than it has is visible instead of quietly downgraded. An empty registration preserves existing behaviour.
-- **OIDC federation sends and verifies a nonce** — `state` already proved the callback belonged to a login this browser started, but nothing bound the *ID token* to it. Any ID token the provider considered valid was accepted, including one minted for a different user or session.
-- **ID token verification is stricter** — algorithms are pinned rather than inferred from key material, and `exp`, `iat`, `iss`, `aud`, `sub` are *required* rather than merely checked when present. A token with no expiry was previously accepted indefinitely.
-- **Refresh tokens carry the granted scope set** — rotation preserves the authorization context instead of dropping it at the first refresh, and a refresh can narrow the grant but never widen it.
-
-## What's new in v2.3.0
-
-- **A password reset now actually logs the attacker out** — completing a reset changed the password but left every existing session and refresh token working. A reset is the standard response to a suspected compromise, so this defeated its own purpose: whoever prompted the reset kept their access. Sessions, refresh tokens, and outstanding recovery credentials are now all invalidated.
-- **An intercepted earlier reset email is dead** — reset tokens issued alongside the one used are now spent, so someone who captured a previous reset email cannot complete it after the user has already recovered.
-- **One revocation layer** — `revokeUserSessions`, `revokeRefreshTokens`, `revokeAuthenticationSessions`, and `revokeRecoveryCredentials` live in one place. Revocation was previously open-coded per call site, which is how the reset path came to omit it; the MFA-enable path now routes through the same function so the rule cannot drift.
-- **Recovery is left intact** — resetting revokes access but does not lock the user out: they can immediately log in with the new password. Covered by a test.
-
-> **Not revoked on reset:** API keys. They are separately issued, long-lived credentials belonging to integrations rather than to the person, and killing them silently breaks deployments. The residual gap — a key minted by an attacker who already held the password — is real; see [SECURITY.md](docs/SECURITY.md) for why key expiry is the right fix.
-
-## What's new in v2.2.0
-
-- **Magic links can no longer be redeemed twice at once** — consumption was a conditional `SELECT` followed by an *unconditional* `UPDATE`. Any number of parallel redemptions passed the check and every one of them logged in. The write is now the gate, so exactly one succeeds.
-- **Password reset tokens are spent exactly once** — the same race meant parallel resets each wrote a different password, last writer winning. This was the most consequential of the three, since whoever won held the account.
-- **SMS OTP codes are spent exactly once** — same shape, same fix.
-- **Replays are reported, not just refused** — a credential presented after it was already used now emits `magic_link_replayed`, `sms_otp_replayed`, or `password_reset_token_replayed`, which reaches the audit log. Previously a replay was indistinguishable from a typo, so a leaked token coming back was invisible. An *expired* credential is deliberately not reported as a replay, since that is not a leak.
-- **One shared primitive** — all consumption goes through a single atomic claim, so the pattern exists once rather than in three places that can drift.
-
-## What's new in v2.1.0
-
-- **Dependency tree is clean** — `npm audit` reports zero vulnerabilities across production *and* development trees, including a transitive `esbuild@0.18.20` that `drizzle-kit` was pinning. Resolved with an `overrides` entry rather than `audit fix --force`, which offered only a breaking downgrade of `drizzle-kit`.
-- **Continuous dependency security** — Dependabot for npm, GitHub Actions, and Docker; OSV scanning as an advisory source independent of npm's; enforced `npm audit`; dependency review on pull requests; SBOM generation; container scanning; and a license gate restricted to permissive terms.
-- **Release metadata is verified** — `npm run verify:release` fails the build on a version that disagrees between `package.json` and the lockfile, a missing or malformed license, or a missing `repository` field. Runs in CI and again before `npm publish`.
-- **The container image no longer ships a vulnerable npm** — the runtime image carried 8 HIGH-severity advisories inherited from the base image's bundled `npm@10.9.9`, invisible to `npm audit` and OSV because they are not in the dependency tree. npm is now removed from the production stage, which the app never invokes, clearing all 8 and shrinking the image from 600 MB to 550 MB.
-- **The package now declares its license** — `package.json` had no `license` field despite shipping an MIT `LICENSE` file, so the published package carried no machine-readable terms.
-
-## What's new in v2.0.0
-
-> **Breaking.** Two changes affect every deployment. `x-service-account-id` no
-> longer authenticates on its own, and `x-forwarded-for` is no longer believed
-> unless `KEYSTONE_TRUSTED_PROXIES` is set — behind a proxy with it unset, all
-> clients share one rate-limit budget. Read
-> [MIGRATION-2.0.md](docs/MIGRATION-2.0.md) before upgrading.
-
-- **A service account cannot be named into existence** — `x-service-account-id` previously authenticated as any service account named in the header, with no certificate and no credential. Identity now comes only from a certificate bound to the account or an authenticated credential.
-- **Certificates are bound to a fingerprint** — a service account authenticates by a client certificate whose SHA-256 fingerprint is bound to it, uniquely. A fingerprint can map to at most one account, and malformed values are rejected before they reach the database.
-- **Client identity headers are stripped from untrusted peers** — an `onRequest` hook removes them before routing and authentication, so no route can read a spoofed identity by accident.
-- **Rate limits can no longer be escaped** — the limiter previously read `x-forwarded-for` unconditionally, so any client could present a fresh address per request and never be limited. Keys come from the peer address unless a trusted proxy forwarded one.
-- **`KEYSTONE_TRUSTED_PROXIES`** names the proxies permitted to set identity headers. Unset by default, which trusts nothing.
-- **Service accounts can be revoked** — `POST /v1/admin/organizations/:id/service-accounts/:accountId/revoke` stops both certificate and API-key authentication.
-- **Documented trust boundaries** — [trust-boundaries.md](docs/security/trust-boundaries.md), [proxy-security.md](docs/security/proxy-security.md), and [mtls.md](docs/security/mtls.md).
-
-## What's new in v1.9.0
-
-- **SCIM is organization-scoped** — every SCIM connection belongs to exactly one organization, and every user and group read and write is filtered by it. A cross-tenant target returns `404`, so the endpoint is not a tenant oracle.
-- **SCIM credentials are per organization** — bearer tokens are stored only as a SHA-256 digest, resolved by that digest, and can be expired, rotated, and revoked. Issuing, rotating, and revoking is owner-only.
-- **Deprovisioning no longer reaches outside the tenant** — removing a user removes that organization's membership, and deactivates the account only when no membership remains anywhere. Previously it disabled a shared account in every organization that user belonged to.
-- **Real SCIM groups** — create, read, replace, patch, and delete groups, manage members, and search. Replaces the old synthetic role-bucket projection.
-- **New SCIM surface** — `PATCH /Users/:id`, `Users/.search`, `ServiceProviderConfig`, `ResourceTypes`, and `filter`/`startIndex`/`count`. Unsupported filters are rejected rather than silently ignored.
-
-> **Migration:** `SCIM_BEARER_TOKEN` and `SCIM_ORG_ID` are deprecated. If still set they are adopted once into a connection and then ignored — including after a revocation, so a restart cannot resurrect a credential you revoked. See [MIGRATION-1.9.md](docs/MIGRATION-1.9.md).
-
-## What's new in v1.8.0
-
-- **MFA is mandatory** — a user with TOTP enabled never receives a token before completing the second factor. Password authentication stops at `requires_mfa`; only `POST /auth/mfa/verify` completes the login.
-- **One-time MFA challenges** — opaque, short-lived, stored only as a hash, single-use, with an attempt budget enforced in the database.
-- **A single token-issuance chokepoint** — a token cannot be minted for an MFA-enabled user without a recorded factor, so no login path can bypass MFA by omission.
-- **TOTP verified against the user's own secret**, and each time-step is accepted exactly once, so a captured code is rejected even against a freshly issued challenge.
-- **Hardened backup codes** — 80 bits of entropy, keyed (peppered) hashing, expiry, and single-use consumption via a conditional update.
-- **Step-up on factor changes** — enrolling, confirming, disabling, or regenerating TOTP codes requires the account password, so a leaked session token cannot take over an account's second factor.
-- **Enabling MFA revokes existing sessions and refresh tokens**, and refresh rotation refuses sessions with no recorded factor.
-- **TOTP secrets are encrypted with AES-256-GCM**; values written by earlier versions remain readable.
-
-> **Migration:** `/auth/login` and `/auth/token-login` return `401` with `code: "MFA_REQUIRED"` and a challenge when MFA is required. Clients must render a code step and call `/auth/mfa/verify`. See [MIGRATION-1.8.md](docs/MIGRATION-1.8.md).
-
-## What's new in v1.7.0
-
-- **Authorization boundary hardening** — platform roles (`owner`/`user`) and organization roles (`owner`/`admin`/`member`) are now separate namespaces.
-- **Dedicated platform-role API** — platform role changes use `PATCH /v1/admin/platform/users/:userId/role` and require a platform owner.
-- **Tenant-safe workflows** — organization workflows can no longer assign global roles or add cross-organization memberships.
-- **Secret-safe user responses** — administrative and organization user responses use a redacted public projection.
-- **Authorization auditing** — role, membership, permission, and denied-authorization events include actor, target, organization, and transition metadata.
-
-> **Migration:** organization user PATCH/DELETE endpoints no longer mutate global accounts. Use the platform user administration endpoint for account-wide changes and organization member endpoints for membership roles.
-
-## What's new in v1.6.0
-
-- **Frontend overhaul** — React 19, Vite 8, Tailwind 4 (config migrated from JS to CSS `@theme` directive), TypeScript 7. Removed autoprefixer, postcss, tailwindcss-animate in favor of Tailwind 4 built-in features.
-
-## What's new in v1.5.0
-
-- **Auth & infrastructure upgrades** — jose 6, ioredis 6, bullmq 6, @simplewebauthn/server 14, nodemailer 10. Updated KeyLike→CryptoKey for jose 6 and AuthenticatorTransportFuture→AuthenticatorTransport for simplewebauthn 14.
-
-## What's new in v1.4.0
-
-- **Fastify ecosystem upgrades** — fastify-plugin 6, @fastify/cookie 11, @fastify/cors 11, @fastify/static 10, @fastify/swagger-ui 6. All plugins updated to latest major versions with no code changes required.
-
-## What's new in v1.3.0
-
-- **Core tooling upgrades** — TypeScript 7, Zod 4, Drizzle ORM 0.45, Commander 15, Dotenv 18. Updated all `z.record()` calls for Zod 4 compatibility.
-
-## What's new in v1.2.0
-
-- **Dependency updates** — All root and frontend packages updated to latest safe patch/minor versions (fastify, argon2, otpauth, OpenTelemetry, autoprefixer, postcss, lucide-react, Playwright).
-
-## What's new in v1.0.0
-
-- **Simplified browser setup wizard** — choose a profile (Development, Docker Compose, Production), test PostgreSQL/Redis, create the owner account, and connect your first project without editing files.
-- **Setup diagnostics & dry-run** — validate the full configuration before applying it, then run a health report after setup completes.
-- **Mobile-first admin UI** — the dashboard and setup wizard are usable down to 375px widths, with touch-friendly controls and hash-routed tabs.
-- **Security dashboard** — owners can view 24h logins, failed logins, active sessions, MFA adoption, and recent login activity.
-- **Account lockout protection** — repeated failed logins temporarily lock accounts and emit security events.
-- **Azure Key Vault secrets provider** — store JWT signing and encryption keys in Azure Key Vault in addition to the default database provider.
-- **API key scopes & signed webhooks** — API keys carry granular scopes and audit webhook deliveries are signed with HMAC.
-- **One-click project connection** — copy integration snippets for React, Next.js, Angular, Svelte, Vue, Django, Rails, Go, Python, and plain HTML.
-- **End-to-end test suite** — Playwright tests cover the simple setup wizard and the post-setup security dashboard using an isolated `hilbras_test` database.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Consumers                                       │
-│   Web App    Mobile    CLI    Microservice    External SaaS             │
-└──────┬───────┬─────────┬──────┬──────────────┬──────────────────────────┘
-       │       │         │      │              │
-       ▼       ▼         ▼      ▼              ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Public SDK Layer                                   │
-│            JS / React / Next.js / Python / CLI                          │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Hilbras Keystone                                 │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │              API-First Admin & Public APIs                      │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │         Internal SDK (stable contracts)                         │   │
-│  │  AuthenticationSdk │ IdentitySdk │ OrganizationSdk │ AuthzSdk   │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │         Application Services (use cases / HTTP agnostic)        │   │
-│  │  AuthenticationApplicationService │ OrganizationApplication... │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │         Domain Services (business rules)                        │   │
-│  │  AuthenticationDomainService │ AuthorizationDomainService       │   │
-│  │  IdentityDomainService       │ OrganizationDomainService        │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │         Repositories (persistence abstraction)                  │   │
-│  │  UserRepository │ OrganizationRepository │ ApplicationRepository │   │
-│  │  IdentityRepository │ AuditRepository │ ApiKeyRepository         │   │
-│  │  SamlConnectionRepository │ OidcConnectionRepository            │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐      │   │
-│  │   Identity   │  │   Token      │  │    Authorization     │      │   │
-│  │   Connectors │  │   Service    │  │    Engine            │      │   │
-│  └──────────────┘  ┌──────────────┘  └──────────────────────┘      │   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐      │   │
-│  │ Versioned    │  │   Secrets    │  │   Workflow Engine    │      │   │
-│  │ Event Bus    │  │   Provider   │  │   + Background Queue │      │   │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘      │   │
-│  ┌────────────────────────────────────────────────────────────┐    │   │
-│  │  DI Container │ Plugin Registry │ ConfigurationService     │    │   │
-│  └────────────────────────────────────────────────────────────┘    │   │
-│  ┌────────────────────────────────────────────────────────────┐    │   │
-│  │  Security: Rate Limiting │ mTLS │ SAML │ SCIM │ WebAuthn  │    │   │
-│  └────────────────────────────────────────────────────────────┘    │   │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-               ┌────────────────────┼────────────────────┐
-               ▼                    ▼                    ▼
-          PostgreSQL            Redis              External providers
-```
-
----
-
-## Design principles
-
-### 1. Connectors are pure provider adapters
-
-Identity connectors know only how to talk to an external provider:
-
-- Build authorization URLs
-- Exchange codes for tokens
-- Validate identity tokens
-- Retrieve and normalize profile information
-
-They do **not** create users, link identities, issue Keystone tokens, or manage sessions. Those responsibilities live in higher-level services such as `FederationService` and `AuthenticationService`. This keeps connectors small, reusable, and easy to test.
-
-### 2. Layered architecture: Application → Domain → Repository
-
-Routes delegate to an **Application Layer** that executes use cases, which in turn delegate to **Domain Services** that encode business rules. Domain services depend on **Repository interfaces**, not on SQL or ORM details.
-
-```
-Routes → Application Services → Domain Services → Repositories
-```
-
-This keeps business logic independent of HTTP and makes future transports (CLI, gRPC, workers, GraphQL) straightforward.
-
-### 3. Everything important emits a versioned event
-
-The audit event bus emits structured events such as `user_registered`, `user_login`, `oauth_callback`, `api_key_created`, and `authz_check`.
-
-Every event carries a version:
-
-```json
-{
-  "type": "user.login",
-  "version": 1,
-  "timestamp": "2026-07-13T00:00:00Z",
-  "payload": {
-    "userId": "...",
-    "ip": "...",
-    "metadata": {}
+import { createRemoteJWKSet, jwtVerify } from "jose";
+
+const JWKS = createRemoteJWKSet(new URL("https://keystone.example.com/.well-known/jwks.json"));
+
+export async function requireUser(req, res, next) {
+  try {
+    const { payload } = await jwtVerify(
+      req.headers.authorization.replace("Bearer ", ""),
+      JWKS,
+      { issuer: "https://keystone.example.com", audience: process.env.CLIENT_ID }
+    );
+    req.user = payload;
+    next();
+  } catch {
+    res.status(401).json({ error: "Unauthorized" });
   }
 }
 ```
 
-Versioned events let subscribers evolve independently without breaking integrations.
+## Features
 
-### 4. Long-running work belongs in a background queue
-
-The in-process event bus is a fast starting point, but actions such as sending emails, delivering webhooks, running analytics, and executing workflow steps should move to a background job queue. Keystone ships with a BullMQ-backed queue that is used automatically when Redis is available (`KEYSTONE_QUEUE_PROVIDER=""` or `bullmq`), falling back to an in-process queue for local development.
-
-### 5. Secrets are pluggable
-
-Secrets management is abstracted so Keystone can store and rotate keys in different backends:
-
-- `DatabaseSecretsProvider` — default, stores keys in PostgreSQL
-- `EnvironmentSecretsProvider` — read from env vars
-- `AWS KMS Provider`, `HashiCorp Vault Provider`, `Azure Key Vault Provider` — enterprise options (via plugin or future built-in providers)
-
-The default provider handles JWT signing keys, encryption keys, password hashes, API keys, and client secrets with rotation support. JWT keys are rotated with a 24-hour grace period so tokens signed with the previous key remain valid.
-
-### 6. Built for a plugin architecture
-
-Keystone is designed to be extended without touching core code. The plugin registry can register:
-
-- Identity providers and authentication methods
-- Email and SMS providers
-- Custom workflow steps
-- Analytics, billing, and custom authorization policies
-
-Load plugins at startup via `KEYSTONE_PLUGINS=./plugins/my-plugin.js` or call `app.registerPlugin(plugin)` at runtime. Each plugin exports a `KeystonePlugin` object with optional `connectors`, `emailProvider`, `smsProvider`, and `workflowSteps`.
-
-### 7. Internal SDK layer
-
-Routes, CLI commands, workers, and scheduled jobs share a stable internal client layer instead of calling low-level services directly:
-
-```ts
-import { getSdk } from "./sdk/index.js";
-
-const sdk = getSdk();
-const session = await sdk.authentication.login({ email, password });
-const user = await sdk.identity.findUser(session.user.id);
-const allowed = await sdk.authorization.hasPermission(role, resource, action);
-const org = await sdk.organization.createOrganization(userId, { name: "Acme" });
-```
-
-The SDK exposes stable TypeScript interfaces (`AuthenticationSdk`, `IdentitySdk`, `OrganizationSdk`, `AuthorizationSdk`) while hiding the concrete application and domain service implementations.
-
----
-
-## Advanced architecture patterns
-
-### Dependency injection
-
-A lightweight DI container wires repositories, domain services, and application services. The container is initialized when the app boots:
-
-```ts
-import { initializeContainer, getContainer } from "./di.js";
-
-initializeContainer();
-const users = getContainer().userRepository;
-```
-
-Services receive dependencies through constructors, making unit testing with mocked repositories straightforward.
-
-### Repository abstraction
-
-Domain services depend on repository interfaces such as `UserRepository`, `OrganizationRepository`, `ApplicationRepository`, `IdentityRepository`, `AuditRepository`, `PermissionRepository`, `ApiKeyRepository`, `SamlConnectionRepository`, and `OidcConnectionRepository`. Drizzle-based implementations live in `src/repositories/`, but the persistence layer can be swapped without touching business logic.
-
-### Standardized results
-
-Internal services return a uniform `Result<T>` type instead of throwing:
-
-```ts
-import { ok, err, type Result } from "./lib/result.js";
-
-function findUser(id: string): Result<User> {
-  if (!user) return err({ code: "NOT_FOUND", message: "User not found", statusCode: 404 });
-  return ok(user);
-}
-```
-
-This simplifies error handling and reduces duplicated try/catch logic.
-
-### Configuration service
-
-`ConfigurationService` centralizes loading, defaults, validation, and environment-specific overrides. Access runtime configuration through the container or via `config.get()`.
-
-### Feature flags
-
-Enable or disable functionality at runtime through `KEYSTONE_FEATURE_FLAGS`:
-
-```bash
-KEYSTONE_FEATURE_FLAGS=beta_oauth=true,experimental_workflows=false
-```
-
-Check flags in code:
-
-```ts
-const features = getContainer().features;
-if (features.isEnabled("beta_oauth")) { /* ... */ }
-```
-
----
-
-## Stack
-
-- **Runtime:** Fastify 5 + TypeScript
-- **Database:** Drizzle ORM + `postgres`
-- **Cache / rate limiting:** Redis (ioredis)
-- **Tokens & JWKS:** `jose`
-- **Validation:** `zod`
-- **Password hashing:** `argon2id` with legacy `scrypt` verification
-- **WebAuthn:** `@simplewebauthn/server`
-- **Tracing:** OpenTelemetry
-
----
-
-## Local development
-
-### One-command setup (recommended)
-
-From `Hilbras/Keystone`:
-
-```bash
-./install.sh       # installs backend + frontend deps + Playwright Chromium
-```
-
-Launch Keystone. `start.sh` will automatically start PostgreSQL and Redis via Docker if they are not already running. If no `.env` exists (or `DATABASE_URL` is missing), Keystone starts in **setup mode** and opens the browser wizard instead of the main API:
-
-```bash
-./start.sh         # starts backend/setup server + frontend together
-```
-
-The wizard guides you through:
-
-1. Pasting the setup token printed in the server logs.
-2. Choosing an environment profile (Development, Docker Compose, Production).
-3. Configuring and testing PostgreSQL and Redis.
-4. Setting public URLs and allowed origins (advanced mode).
-5. Generating platform secrets (internal API key, encryption key).
-6. Choosing and testing email and SMS providers (advanced mode).
-7. Enabling optional identity connectors (advanced mode).
-8. Creating the first owner account and connecting your first project.
-9. Reviewing diagnostics and completing setup.
-
-When finished, the wizard writes `.env`, runs migrations, creates the owner, and optionally restarts the server in normal API mode.
-
-### Admin dashboard
-
-After setup, the same UI at http://localhost:5173 becomes the **admin dashboard**. Log in with the owner email and password to view:
-
-- **Overview** — API health and OIDC discovery endpoints.
-- **Organizations** — all platform organizations.
-- **Applications** — all registered OAuth/OIDC applications.
-- **Connect Project** — copy integration snippets for React, Next.js, Angular, Svelte, Vue, Django, Rails, Go, Python, and HTML.
-- **Users** — all platform users.
-- **Security** — 24h logins, failed logins, active sessions, MFA adoption, and recent activity.
-- **Audit Logs** — recent security events.
-- **Workflows** — configurable post-automation flows.
-- **Settings** — platform configuration and feature flags.
-
-### Manual setup
-
-If you prefer to manage each part separately:
-
-1. Install backend dependencies: `npm install`
-2. Install frontend dependencies: `cd frontend && npm install`
-3. Start Postgres and Redis.
-4. Copy `.env.example` to `.env` and fill in the required values:
-   - `DATABASE_URL`
-   - `REDIS_URL`
-   - `AUTH_API_PUBLIC_URL`
-   - `CLIENT_APP_URL`
-   - `ALLOWED_ORIGINS`
-   - `KEYSTONE_INTERNAL_API_KEY`
-   - `KEYSTONE_ENCRYPTION_KEY` (optional in dev)
-   - **Zitadel is optional.** If you want to use it, set `ZITADEL_DOMAIN`, `ZITADEL_CLIENT_ID`, and `ZITADEL_CLIENT_SECRET`.
-   - To enable Google/GitHub/Azure/Okta/Keycloak federation, set their `*_CLIENT_ID` and `*_CLIENT_SECRET` variables.
-5. Run migrations: `npm run db:migrate`
-6. Start the backend: `npm run dev`
-7. In another terminal, start the frontend: `cd frontend && npm run dev`
-
-### Running integration tests locally
-
-Start test services with Docker Compose:
-
-```bash
-docker compose -f docker-compose.test.yml up -d
-npm test
-```
-
-### Build verification
-
-Before committing or releasing, run the full build and type check:
-
-```bash
-npm run build:all
-npm run typecheck:all
-```
-
-### Setup frontend E2E tests
-
-The setup wizard and post-setup dashboard are tested with Playwright. The E2E suite uses an isolated `hilbras_test` database that is reset automatically before each run. From the project root:
-
-```bash
-npm run test:all
-```
-
-Or run only the backend tests or only the E2E tests:
-
-```bash
-npm test                         # backend tests
-cd frontend && npm run test:e2e  # Playwright E2E tests
-```
-
----
-
-## Building for production
-
-```bash
-npm ci
-npm run build
-npm start
-```
-
-`npm run build` compiles TypeScript and copies migration SQL files into `dist/db/migrations` so they are available at runtime.
-
----
-
-## Production deployment
-
-### Docker Compose (recommended)
-
-1. Copy and customize the environment file:
-
-   ```bash
-   cp .env.example .env
-   # Edit .env with production secrets, URLs, and provider credentials.
-   ```
-
-2. Start the stack:
-
-   ```bash
-   docker compose up -d
-   ```
-
-   This launches PostgreSQL, Redis, and the Keystone API container with health checks and restart policies. On first run, set `KEYSTONE_SETUP_MODE=true` in `.env` and visit `http://localhost:4001/setup` to complete the browser wizard.
-
-3. View logs:
-
-   ```bash
-   docker compose logs -f keystone
-   ```
-
-4. Restart after configuration changes:
-
-   ```bash
-   docker compose down && docker compose up -d
-   ```
-
-### systemd service
-
-For hosts running Docker with systemd, install the provided unit file:
-
-```bash
-sudo cp scripts/keystone.service /etc/systemd/system/hilbras-keystone.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now hilbras-keystone
-```
-
-Place the project files in `/opt/hilbras-keystone` and ensure `.env` is present there.
-
-### Managed PostgreSQL / Redis
-
-For high-availability deployments, replace the bundled `postgres` and `redis` services with managed instances and update `DATABASE_URL` and `REDIS_URL` accordingly. You can then run Keystone with a minimal compose file:
-
-```yaml
-services:
-  keystone:
-    build: .
-    ports:
-      - "4001:4001"
-    env_file: .env
-```
-
----
-
-## Key environment variables
-
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `REDIS_URL` | Redis connection string |
-| `AUTH_API_PUBLIC_URL` | Public URL used for discovery and redirects |
-| `CLIENT_APP_URL` | Default redirect URL after login |
-| `ALLOWED_ORIGINS` | Comma-separated CORS origins |
-| `KEYSTONE_INTERNAL_API_KEY` | Secret for service-to-service calls |
-| `KEYSTONE_ENCRYPTION_KEY` | Master key for encrypted secrets (optional in dev) |
-| `JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` | RSA key pair for signing tokens (optional in dev) |
-| `ZITADEL_DOMAIN` | Zitadel instance domain (optional connector) |
-| `ZITADEL_CLIENT_ID` / `ZITADEL_CLIENT_SECRET` | Zitadel OIDC app credentials |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google connector credentials |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub connector credentials |
-| `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | Azure connector credentials |
-| `OKTA_ISSUER` / `OKTA_CLIENT_ID` / `OKTA_CLIENT_SECRET` | Okta connector credentials |
-| `KEYCLOAK_ISSUER` / `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` | Keycloak connector credentials |
-| `EMAIL_PROVIDER` | `none`, `console`, `smtp`, `sendgrid`, or `mailgun` |
-| `EMAIL_FROM` | Default sender address |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_SECURE` | SMTP settings |
-| `SENDGRID_API_KEY` | SendGrid API key |
-| `MAILGUN_API_KEY` / `MAILGUN_DOMAIN` | Mailgun settings |
-| `SMS_PROVIDER` | `none`, `console`, or `twilio` |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` / `TWILIO_MESSAGING_SERVICE_SID` | Twilio settings |
-| `AUDIT_WEBHOOK_URL` | Webhook destination for audit events |
-| `AUDIT_CONSOLE_EXPORT` | `true` to log audit events to console |
-| `KEYSTONE_SEED_OWNER_EMAIL` | Default owner email for seeded organization |
-| `KEYSTONE_SEED_OWNER_PASSWORD` | Password for the seed owner |
-| `KEYSTONE_SECRETS_PROVIDER` | `database` (default) or `environment` |
-| `AZURE_KEY_VAULT_URL` | Azure Key Vault URL for the `azure-key-vault` secrets provider |
-| `AZURE_KEY_VAULT_TENANT_ID` / `AZURE_KEY_VAULT_CLIENT_ID` / `AZURE_KEY_VAULT_CLIENT_SECRET` | Azure service principal credentials |
-| `KEYSTONE_QUEUE_PROVIDER` | `in-process`, `bullmq`, or empty to auto-select when Redis is available |
-| `KEYSTONE_PLUGINS` | Comma-separated module paths of plugins to load at startup |
-| `KEYSTONE_FEATURE_FLAGS` | Comma-separated `flag=true|false` runtime feature toggles |
-| `KEYSTONE_TOTP_ENCRYPTION_KEY` | Encrypts TOTP secrets and keys the backup-code hash. Falls back to `KEYSTONE_INTERNAL_API_KEY`. Must be stable — changing it invalidates enrolled authenticators |
-| `MFA_CHALLENGE_TTL_SECONDS` | Lifetime of a login MFA challenge (default `300`) |
-| `MFA_MAX_ATTEMPTS` | Factor attempts per challenge before it is locked (default `5`) |
-| `TOTP_BACKUP_CODE_TTL_SECONDS` | Backup-code lifetime (default `7776000`, 90 days) |
-| `SCIM_ROTATION_GRACE_SECONDS` | Grace window for a rotated SCIM token. Defaults to `0`, so rotation revokes the previous token |
-| `SCIM_RATE_LIMIT_MAX` / `SCIM_RATE_LIMIT_WINDOW_SECONDS` | Per-credential SCIM request budget |
-| `SCIM_AUTH_FAILURE_MAX` / `SCIM_AUTH_FAILURE_WINDOW_SECONDS` | Budget for unauthenticated SCIM requests, applied before authentication |
-| `KEYSTONE_TRUSTED_PROXIES` | Comma-separated proxy IPs / CIDRs allowed to set client-identity headers. **Unset means trust nothing** — forwarded headers are stripped and all clients share one rate-limit budget. Required when Keystone runs behind a reverse proxy |
-
----
-
-## Integrating with your projects
-
-See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for complete examples covering:
-
-- React / Next.js / SPAs (OIDC + PKCE)
-- Backend services and microservices (API keys)
-- Python / FastAPI token verification
-- Mobile apps (system browser + custom URL scheme)
-- CLI scripts
-- Federation through external IdPs
-
-If you already have a login/signup page with email/password and Google login and just want to wire it up, start with [`docs/LOGIN_FORM_INTEGRATION.md`](docs/LOGIN_FORM_INTEGRATION.md) or load the one-line CDN script from `http://localhost:4001/sdk/keystone-dropin.js`.
-
-For production deployment with HTTPS and a custom domain, see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
-
-If Keystone feels slow or uses a lot of memory during development, see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
-
-## Endpoints
-
-### Authentication
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/auth/register` | Email/password signup (local password hashing) |
-| POST | `/auth/login` | Email/password login (sets session cookies; returns `401 MFA_REQUIRED` + a challenge when MFA is required) |
-| POST | `/auth/token-login` | Email/password login for SPA/dashboard (returns bearer token) |
-| POST | `/auth/mfa/verify` | Complete a login MFA challenge and receive tokens |
-| POST | `/auth/logout` | Revoke session |
-| GET | `/auth/me` | Current user |
-| POST | `/auth/refresh` | Rotate refresh token |
-| GET | `/auth/oauth/:provider` | Start OAuth login (google, github, azure, okta, keycloak, zitadel) |
-| GET | `/auth/callback/:provider` | OAuth callback |
-| POST | `/auth/forgot-password` | Request password reset |
-| POST | `/auth/reset-password` | Complete password reset |
-| POST/GET | `/auth/api-keys` | Create / list personal API keys |
-| DELETE | `/auth/api-keys/:id` | Revoke a personal API key |
-| GET | `/auth/validate` | Internal token/API-key validation |
-
-### Federation
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/federation/providers` | List supported federation providers |
-| GET | `/federation/:provider/start` | Start broker login through an external IdP |
-| GET | `/federation/:provider/callback` | Broker callback; issues Keystone tokens |
-| POST | `/federation/link` | Link an external identity to the current user |
-| GET | `/federation/identities` | List linked external identities |
-
-### OAuth2 / OIDC
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/oauth2/authorize` | Authorization endpoint (PKCE required) |
-| POST | `/oauth2/token` | Token endpoint |
-| GET | `/oauth2/userinfo` | UserInfo endpoint |
-| POST | `/oauth2/revoke` | Token revocation |
-| POST | `/oauth2/consent` | Grant or revoke consent |
-
-### Admin (API-first)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST/GET | `/v1/admin/organizations` | Create / list organizations for the current user |
-| GET | `/v1/admin/organizations/:id` | Organization details |
-| POST/GET | `/v1/admin/organizations/:id/applications` | Create / list apps |
-| PATCH | `/v1/admin/organizations/:id/applications/:appId` | Update app |
-| POST | `/v1/admin/organizations/:id/invites` | Invite a member with an organization role |
-| GET | `/v1/admin/organizations/:id/members` | List redacted organization members |
-| PATCH/DELETE | `/v1/admin/organizations/:id/members/:userId` | Update/remove an organization membership role |
-| GET | `/v1/admin/organizations/:id/users` | List redacted users in the organization |
-| GET | `/v1/admin/organizations/:id/users/:userId` | Read a redacted organization user |
-| PATCH | `/v1/admin/platform/users/:userId` | Update non-role platform user fields (**owner only**) |
-| PATCH | `/v1/admin/platform/users/:userId/role` | Change a platform role (`owner`/`user`, **owner only**) |
-| GET | `/v1/admin/permissions` | **Owner only** — list all permissions |
-| GET/POST | `/v1/admin/roles/:role/permissions` | **Owner only** — list / assign role permissions |
-| DELETE | `/v1/admin/roles/:role/permissions/:permissionId` | **Owner only** — remove a role permission |
-| GET | `/v1/admin/organizations/:id/api-keys` | List org-scoped API keys |
-| DELETE | `/v1/admin/organizations/:id/api-keys/:keyId` | Revoke an org-scoped API key |
-| GET | `/v1/admin/organizations/:id/audit-logs` | Paginated audit logs |
-| GET | `/v1/admin/platform/users` | **Owner only** — list all users |
-| GET | `/v1/admin/platform/organizations` | **Owner only** — list all organizations |
-| GET | `/v1/admin/platform/applications` | **Owner only** — list all applications |
-| GET | `/v1/admin/platform/audit-logs` | **Owner only** — list recent audit logs |
-| GET | `/v1/admin/platform/audit-logs/export` | **Owner only** — export audit logs |
-| GET | `/v1/admin/platform/metrics/usage` | **Owner only** — platform usage metrics |
-| GET | `/v1/admin/platform/queue` | **Owner only** — queue stats |
-| GET | `/v1/admin/platform/queue/failed` | **Owner only** — failed jobs |
-| POST | `/v1/admin/platform/queue/failed/:id/retry` | **Owner only** — retry failed job |
-| POST | `/v1/admin/platform/queue/retry-all` | **Owner only** — retry all failed jobs |
-| GET/POST | `/v1/admin/platform/webhooks` | **Owner only** — list / create webhooks |
-| PATCH | `/v1/admin/platform/webhooks/:id` | **Owner only** — update a webhook |
-| DELETE | `/v1/admin/platform/webhooks/:id` | **Owner only** — delete a webhook |
-| POST | `/v1/admin/platform/webhooks/:id/rotate-secret` | **Owner only** — rotate webhook secret |
-| GET/POST | `/v1/admin/organizations/:id/saml-connections` | SAML connection management |
-| DELETE | `/v1/admin/organizations/:id/saml-connections/:connectionId` | Delete a SAML connection |
-| GET | `/v1/admin/organizations/:id/saml-connections/:connectionId/metadata` | SAML SP metadata |
-| GET/POST | `/v1/admin/organizations/:id/oidc-connections` | OIDC connection management |
-| DELETE | `/v1/admin/organizations/:id/oidc-connections/:connectionId` | Delete an OIDC connection |
-
-### Enterprise SSO
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/sso/saml/:connectionId` | Start SAML SSO login (requires `?orgId=`) |
-| POST | `/sso/saml/acs` | SAML assertion consumer service |
-| GET | `/sso/saml/:connectionId/metadata` | SAML SP metadata (requires `?orgId=`) |
-| GET | `/sso/sso/oidc/:connectionId` | Start enterprise OIDC SSO login (requires `?orgId=`) |
-| GET | `/sso/sso/oidc/:connectionId/callback` | Enterprise OIDC callback (requires `?orgId=`) |
-
-> **Note:** the doubled `/sso/sso/oidc` segment is real, not a typo. The OIDC
-> enterprise routes declare `/sso/oidc/...` *and* are mounted under the `/sso`
-> prefix. SAML is mounted the same way but declares `/saml/...`, so it resolves
-> cleanly to `/sso/saml/...`. Changing the OIDC path would break existing
-> deployments, so it is scheduled for a future minor release.
-
-### SCIM Provisioning
-
-Every request is authorized by a per-organization SCIM connection and scoped to
-that organization. Cross-tenant targets return `404`.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/scim/v2/Users` | List users (filter, pagination) |
-| GET | `/scim/v2/Users/:userId` | Get user by ID |
-| POST | `/scim/v2/Users` | Provision or update a user |
-| PUT | `/scim/v2/Users/:userId` | Replace user |
-| PATCH | `/scim/v2/Users/:userId` | Partial update |
-| DELETE | `/scim/v2/Users/:userId` | Deprovision user |
-| POST | `/scim/v2/Users/.search` | Search users |
-| GET | `/scim/v2/Groups` | List groups (filter) |
-| GET | `/scim/v2/Groups/:groupId` | Get group by ID |
-| POST | `/scim/v2/Groups` | Create group |
-| PUT/PATCH/DELETE | `/scim/v2/Groups/:groupId` | Manage group |
-| GET/POST | `/scim/v2/Groups/:groupId/members` | Manage group members |
-| GET | `/scim/v2/ServiceProviderConfig` | Supported features |
-
-Bearer tokens are created, rotated, and revoked per organization under
-`/v1/admin/organizations/:id/scim-connections` (owner-only). The token is shown
-once and stored only as a digest.
-
-### MFA & Security
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/auth/mfa/verify` | Complete a login MFA challenge and receive tokens |
-| POST | `/auth/totp/enroll` | Begin TOTP enrollment (requires `password`) |
-| POST | `/auth/totp/verify` | Confirm enrollment (requires `password` + `code`); revokes existing sessions |
-| POST | `/auth/totp/disable` | Disable TOTP MFA (requires `password` + `code`) |
-| POST | `/auth/totp/backup` | Regenerate backup codes (requires `password` + `code`) |
-| POST | `/auth/totp/backup/verify` | Consume a backup code; never establishes a session |
-| POST | `/auth/sms-otp/send` | Send SMS OTP |
-| POST | `/auth/sms-otp/verify` | Verify SMS OTP |
-| POST | `/auth/magic-link/send` | Send magic link |
-| GET | `/auth/magic-link/verify` | Verify magic link |
-| POST | `/auth/email-verification/send` | Send verification email |
-| POST | `/auth/email-verification/request` | Request verification email |
-| GET | `/auth/email-verification/verify` | Verify email token |
-| GET | `/auth/webauthn/register/options` | WebAuthn creation options |
-| POST | `/auth/webauthn/register/verify` | Register a WebAuthn credential |
-| POST | `/auth/webauthn/authenticate/options` | WebAuthn assertion options |
-| POST | `/auth/webauthn/authenticate/verify` | Authenticate and establish a session |
-
-### Sessions
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/auth/sessions` | List active sessions |
-| DELETE | `/auth/sessions/:id` | Revoke session |
-| POST | `/auth/sessions/revoke-all` | Revoke all sessions |
-
-### Workflows
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/v1/admin/workflows?orgId=...` | List organization-scoped workflows |
-| POST | `/v1/admin/workflows` | Create a workflow with safe steps and an `orgId` |
-| GET | `/v1/admin/workflows/:id` | Get a workflow |
-| DELETE | `/v1/admin/workflows/:id` | Delete a workflow |
-| GET | `/v1/admin/workflows/:id/runs` | List workflow runs |
-
-### Discovery
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/.well-known/openid-configuration` | OIDC discovery document |
-| GET | `/.well-known/jwks.json` | Public keys for token verification |
-| GET | `/health` | Health check |
-| GET | `/metrics` | Prometheus metrics |
-| GET | `/documentation` | OpenAPI/Swagger UI |
-
----
-
-## CLI
-
-```bash
-# Rotate the active JWT signing key
-npx keystone secrets:rotate
-
-# Generate a JWT key pair for env vars
-npx keystone keys:create
-
-# List active JWT signing keys
-npx keystone keys:list
-
-# Run migrations
-npx keystone migrate
-
-# Validate required configuration
-npx keystone config:validate
-
-# Create a local platform user (use --role owner for a platform owner)
-npx keystone user:create --email admin@example.com --password 'Str0ngP@ss!' --role owner
-
-# Create an organization from the command line
-npx keystone org:create --name "Acme" --owner-email admin@example.com
-```
-
----
-
-## Security non-negotiables
-
-- Passwords are never stored in plaintext (argon2id with OWASP parameters).
-- Tokens and secrets are hashed at rest (SHA-256).
-- JWTs are signed with RS256 and keys are rotatable with 24-hour grace period.
-- Rate limiting is applied to all sensitive endpoints (login, register, password reset, magic links, SMS OTP, email verification, org creation).
-- Every authentication decision is audited.
-- Cookies use `HttpOnly`, `Secure`, and `SameSite`.
-- OAuth2 public clients must use PKCE.
-- Platform roles (`owner`, `user`) are never interchangeable with organization roles (`owner`, `admin`, `member`).
-- Only platform owners can change platform roles; organization member APIs cannot mutate global users.
-- User responses use a redacted public projection and never include password hashes, TOTP secrets, or sensitive metadata.
-- All workflow operations require organization membership and reject authorization-mutating tenant steps.
-- XML output (SAML metadata) is escaped to prevent injection.
-- Rate limit nonces use cryptographically secure random bytes.
-- Internal implementation details are not exposed in API responses.
-- Input validation uses Zod schemas on all routes.
-- Error messages are sanitized in production mode.
-- **MFA is enforced before token issuance.** An account with TOTP enabled cannot receive a token until a second factor is verified, and the check happens at a single chokepoint rather than per route.
-- TOTP secrets are stored encrypted with AES-256-GCM; backup codes are stored as a keyed, peppered hash, expire, and can only be consumed once.
-- Changing how an account proves its identity — enrolling, confirming, disabling TOTP, or registering a passkey — requires the account password in addition to a valid session.
-- **SCIM credentials are per organization.** Tokens are stored only as a digest, and every SCIM read and write is scoped to the credential's organization. A cross-tenant target is reported as not found.
-- SCIM deprovisioning never reaches outside the caller's organization, and cannot remove the last owner of an organization.
-- SCIM credential creation, rotation, and revocation are restricted to organization owners.
-
----
-
-## Documentation
-
-Full documentation lives in [`docs/`](docs/README.md):
-
-| Document | Purpose |
+| | |
 | --- | --- |
-| [API reference](docs/API.md) | Every HTTP endpoint with auth requirements |
-| [Architecture](docs/ARCHITECTURE.md) | Layered design, services, events, plugins |
-| [Deployment](docs/DEPLOYMENT.md) | Docker Compose, Kubernetes, systemd, hardening |
-| [Integration guide](docs/INTEGRATION.md) | Connect your apps to Keystone |
-| [Security model](docs/SECURITY.md) | Threat model and hardening checklist |
-| [v1.8 migration guide](docs/MIGRATION-1.8.md) | Mandatory MFA: new endpoints, response changes, upgrade steps |
-| [v1.9 migration guide](docs/MIGRATION-1.9.md) | SCIM tenancy: per-organization credentials, deprovisioning semantics, upgrade steps |
-| [Performance](docs/PERFORMANCE.md) | Tuning and load-testing notes |
-| [Contributing](docs/CONTRIBUTING.md) | Dev environment and PR process |
-| [Roadmap](docs/ROADMAP.md) | Planned work |
-| [ADRs](docs/adrs/) | Architecture decision records |
-| [Changelog](CHANGELOG.md) | Release history |
+| **Authentication** | Password (argon2id), magic link, SMS OTP, TOTP, backup codes, WebAuthn/passkeys, social & enterprise SSO |
+| **Authorization** | RBAC and scoped permissions, enforced server-side, decidable over HTTP |
+| **Multi-tenancy** | Organizations, memberships, roles, organization-scoped resources |
+| **OAuth 2.0 / OIDC** | Authorization code + PKCE, refresh rotation, discovery, JWKS, userinfo, nonce |
+| **Enterprise SSO** | SAML SP, OIDC enterprise connections, organization-scoped |
+| **Provisioning** | SCIM 2.0 for users and groups |
+| **Machine identity** | API keys with enforced scopes, mTLS service accounts |
+| **Audit** | Immutable, versioned events, CSV export, signed webhooks |
+| **Operations** | Prometheus metrics, OpenTelemetry tracing, health/readiness probes, background jobs |
 
-The running API also serves interactive docs at `/documentation` (Swagger UI).
+## Authentication
 
----
+Every path that mints a token passes through **one chokepoint**, so a second factor
+cannot be bypassed by choosing a different login route.
+
+Methods: password, magic link, SMS OTP, TOTP with backup codes, WebAuthn, and
+federated sign-in through external identity providers.
+
+A login that requires a second factor returns `401` with `MFA_REQUIRED` and an
+opaque challenge; complete it at `POST /auth/mfa/verify`. The challenge is the only
+credential at that point — no token exists yet.
+
+MFA is **enforced by default** where a user has it enabled: session refresh,
+OAuth token exchange and SSO all re-check it.
+
+→ [docs/LOGIN_FORM_INTEGRATION.md](docs/LOGIN_FORM_INTEGRATION.md) ·
+[docs/HOW-KEYSTONE-WORKS.md](docs/HOW-KEYSTONE-WORKS.md#how-tokens-are-issued)
+
+## Organizations
+
+An organization is the tenant boundary. Users hold a membership with a role —
+`owner`, `admin` or `member` — and every organization-owned resource is scoped to
+one.
+
+```bash
+POST   /v1/admin/organizations
+GET    /v1/admin/organizations
+GET    /v1/admin/organizations/:id
+GET    /v1/admin/organizations/:id/members
+POST   /v1/admin/organizations/:id/members/:userId      # role change: owner-only
+GET    /v1/admin/organizations/:id/users
+```
+
+`requireOrganizationRole` resolves the organization from the request and checks
+membership **there**, not in the caller's own organization — which is what makes
+cross-tenant access a structural impossibility rather than a thing to remember.
+
+→ [docs/RBAC.md](docs/RBAC.md)
+
+## OAuth/OIDC
+
+A standards-compliant provider. Any OIDC client library works — no Keystone-specific
+SDK required.
+
+```
+GET  /.well-known/openid-configuration     discovery
+GET  /.well-known/jwks.json                 signing keys
+GET  /oauth2/authorize                      authorization endpoint
+POST /oauth2/token                          token endpoint
+GET  /oauth2/userinfo                       profile
+```
+
+- **PKCE with `S256` is required for public clients** (SPAs, mobile).
+- **Client authentication is mandatory** on every grant for confidential clients.
+- **Only `https` redirect URIs are registrable** (plus `http` for loopback).
+  `javascript:` and `data:` are rejected.
+- **A nonce is generated and verified** on every authorization request.
+- **The ID token algorithm comes from the connector configuration**, never from
+  the token's own header, and `exp` and `iat` are required.
+- **Refresh tokens rotate** on every use. Persist the new one; presenting a spent
+  token is treated as a replay.
+
+→ [docs/INTEGRATION.md](docs/INTEGRATION.md#1-web--spa-oidc-authorization-code--pkce)
+
+## SAML
+
+Keystone acts as a SAML **service provider** and brokers to your enterprise IdP,
+so users sign in at Keystone and the SAML software never sees a password.
+
+- Register the IdP's entity id, SSO URL and certificate.
+- Publish `GET /sso/saml/metadata/:connectionId` or paste the metadata.
+- Assertions are validated against the configured issuer, audience, destination
+  and conditions — including an `Issuer` outside the signed region.
+
+Endpoint URLs are checked against an address policy that refuses loopback,
+private, link-local, carrier-grade NAT and benchmarking ranges, so a connection
+cannot be pointed at your internal network.
+
+→ [docs/security/enterprise-sso.md](docs/security/enterprise-sso.md)
+
+## SCIM
+
+Standard provisioning, for pushing users and groups from an IdP.
+
+```
+GET    /scim/v2/Users
+POST   /scim/v2/Users
+GET    /scim/v2/Users/.search
+GET    /scim/v2/Groups
+```
+
+Authenticate with the organization's SCIM token as a bearer credential. **That
+token resolves to exactly one organization** and every query is scoped to it.
+Issuing, rotating and revoking a SCIM credential is owner-only.
+
+→ [src/routes/scim.ts](src/routes/scim.ts)
+
+## MFA
+
+TOTP (RFC 6238) with single-use backup codes.
+
+```
+POST /auth/totp/enroll        requires password step-up
+POST /auth/totp/verify        confirms the code
+POST /auth/totp/backup        regenerate backup codes
+POST /auth/totp/disable       requires password step-up
+```
+
+- A code is accepted **once**; reuse across challenges is refused.
+- Codes are rate limited **per user**, so one busy office behind a single NAT
+  cannot lock out everyone's second factor.
+- Enabling MFA **invalidates sessions issued before it** — an attacker holding a
+  pre-enrolment session loses access when you turn it on.
+- Factor management is refused to machine principals.
+
+→ [docs/security/trust-boundaries.md](docs/security/trust-boundaries.md)
+
+## WebAuthn
+
+Passkeys as a second factor.
+
+```
+POST /auth/webauthn/register/options
+POST /auth/webauthn/register/verify
+POST /auth/webauthn/authenticate/options
+POST /auth/webauthn/authenticate/verify
+```
+
+## API Keys
+
+For a service acting as itself.
+
+```bash
+curl -X POST https://keystone.example.com/auth/api-keys \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"name":"billing-worker","scopes":["api_keys:read"]}'
+# -> { "key": "sk_...", }   shown once
+```
+
+- **Scopes are enforced, and there is no wildcard.** Every scope is named. A
+  `service_account` scope used to behave as a wildcard and was removed in 2.6.0.
+- **Enforcement fails closed.** Reaching a scoped route without key authentication
+  means *no authority*, not *no restriction*.
+- **Creation is rate limited**, and the plaintext key is shown exactly once.
+
+→ [docs/security/scopes.md](docs/security/scopes.md)
+
+## Service Accounts
+
+Machine identity without a user, for server-to-server and mTLS.
+
+```bash
+POST /v1/admin/organizations/:id/service-accounts
+POST /v1/admin/organizations/:id/service-accounts/:accountId/api-keys
+POST /v1/admin/organizations/:id/service-accounts/:accountId/certificate
+POST /v1/admin/organizations/:id/service-accounts/:accountId/revoke
+```
+
+With a certificate bound, a machine principal is identified by the **verified
+certificate whose fingerprint matches the stored binding** — possession of any
+certificate from the same CA is not authorization.
+
+`profile:*` and `mfa:manage` are refused to machine principals: those operations
+need a person present.
+
+## Security
+
+46 findings across the hardening programme, each with a permanent regression test
+and machine-verified coverage. **Zero unresolved Critical.**
+
+| Area | Control |
+| --- | --- |
+| Passwords | argon2id, breach-list checking, lockout |
+| Tokens | RS256 JWTs, rotating refresh tokens, replay detection |
+| Sessions | Revoked on password reset and on MFA enablement |
+| Trust boundary | Client-supplied identity headers stripped before any plugin reads them; `x-forwarded-for` honoured only from configured networks |
+| Rate limiting | Bounded local budget when Redis is unavailable — an outage does not remove the control |
+| Secrets | Redaction is an allowlist; webhook secrets encrypted at rest; the setup token is never logged |
+| Cookies | `Secure` by default in production |
+| CORS | Fails closed on an empty allowlist |
+| Audit | Every action recorded, including API-key and mTLS requests |
+| Supply chain | Signed npm provenance, SBOM, Trivy, OSV, CodeQL, Semgrep, Gitleaks |
+
+**Report a vulnerability through [docs/SECURITY.md](docs/SECURITY.md)** — not a
+public issue.
+
+→ [docs/RE-AUDIT.md](docs/RE-AUDIT.md) ·
+[docs/security/registry.md](docs/security/registry.md)
+
+## Configuration
+
+Environment-based and read-only. The required set:
+
+```bash
+DATABASE_URL=postgresql://user:pass@localhost:5432/keystone
+REDIS_URL=redis://localhost:6379
+JWT_PRIVATE_KEY=...            # PEM, or a path via keystone keys:create
+JWT_PUBLIC_KEY=...
+COOKIE_NAME=keystone
+COOKIE_SECURE=true             # defaults true when NODE_ENV=production
+COOKIE_SAME_SITE=lax
+HOST=0.0.0.0
+PORT=3000
+```
+
+Frequently adjusted:
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `ALLOWED_ORIGINS` | — | **Fails closed.** Empty denies every origin |
+| `KEYSTONE_ENCRYPTION_KEY` | — | 32 bytes hex. Required for secrets at rest |
+| `RATE_LIMIT_ATTEMPTS` / `RATE_LIMIT_WINDOW_SECONDS` | `5` / `900` | Per credential, per operation |
+| `GLOBAL_RATE_LIMIT_MAX` / `GLOBAL_RATE_LIMIT_WINDOW` | `100` / `60` | Per client address |
+| `ACCOUNT_LOCKOUT_THRESHOLD` / `..._DURATION_SECONDS` | — | Brute-force response |
+| `HIBP_CHECK_ENABLED` | — | Password breach-list checking |
+| `EMAIL_PROVIDER` / `EMAIL_FROM` | — | Magic links and verification |
+| `KEYSTONE_TRUSTED_PROXIES` | — | CIDRs whose forwarding headers are honoured |
+| `KEYSTONE_SECRETS_PROVIDER` | — | `env`, `database` or `vault` |
+| `KEYSTONE_QUEUE_PROVIDER` | — | `in-process` or `bullmq` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry export |
+
+`keystone config:validate` reports the required set and what is missing.
+
+**The configuration API redacts by allowlist.** A key not declared exposable is
+not returned — a denylist missed half the secret-shaped keys, including the
+signing keys.
+
+## Deployment
+
+- Single instance, or several behind a load balancer (sessions and rate limits
+  live in Redis, so they are shared).
+- PostgreSQL 16+ and Redis 7+ must be reachable; both are required.
+- Terminate TLS at the proxy, then set `KEYSTONE_TRUSTED_PROXIES` to that proxy's
+  CIDR. **Without it, the client address is the proxy's** and every rate limit is
+  shared across all users.
+- `GET /health` and `GET /ready` for probes; `GET /metrics` for Prometheus.
+- Back up PostgreSQL. The audit log is append-only by design, not by policy.
+
+→ [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) ·
+[docs/security/proxy-security.md](docs/security/proxy-security.md)
+
+## Docker
+
+```bash
+docker build -t keystone .
+docker run -p 3000:3000 --env-file .env keystone
+```
+
+The runtime image does **not** bundle npm — including it shipped eight
+high-severity advisories that no lockfile-based scanner could see, because those
+scanners read `package.json`, not the image. Published as
+`ghcr.io/hilbras/keystone` with a build provenance attestation.
+
+## Development
+
+```bash
+git clone https://github.com/Hilbras/Keystone && cd Keystone
+npm install
+npm run dev            # watch mode
+npm run build          # clean, then compile
+```
+
+Layout: `src/routes` (HTTP only) → `src/services/application` (use cases) →
+`src/services/domain` (business rules) → `src/repositories` (persistence).
+Routes must not contain business logic or import the database directly.
+
+→ [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
+[AGENTS.md](AGENTS.md)
+
+## Testing
+
+```bash
+npm test                 # 451 tests
+npm run test:security    # 402 of them the security suite
+npm run lint
+npm run typecheck
+npm run verify:release
+npm run registry:check  # every finding's test must exist
+npm run reaudit:check   # every matrix claim must verify
+npm run review:api       # every route's guards
+```
+
+Needs PostgreSQL and Redis:
+
+```bash
+docker run -d --name keystone-pg -p 5432:5432 \
+  -e POSTGRES_USER=hilbras -e POSTGRES_PASSWORD=hilbras -e POSTGRES_DB=hilbras \
+  postgres:16-alpine
+docker run -d --name keystone-redis -p 6379:6379 redis:7-alpine
+
+export DATABASE_URL=postgresql://hilbras:hilbras@localhost:5432/hilbras
+export REDIS_URL=redis://localhost:6379
+```
+
+→ [docs/API-REVIEW.md](docs/API-REVIEW.md)
+
+## Contributing
+
+Issues and pull requests are welcome. For anything touching authentication,
+authorization or tenant scoping, read [AGENTS.md](AGENTS.md) first — it documents
+the layering and the conventions this codebase holds to.
+
+Every change needs a test that fails without it. If you fix a vulnerability, add
+a registry entry: `npm run registry:check` enforces that each one names a test
+that exists.
+
+→ [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 
 ## License
 
-MIT — Hilbras engineering. See [LICENSE](LICENSE).
+**MIT** — see [LICENSE](LICENSE).

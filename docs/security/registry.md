@@ -4,13 +4,13 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**46 findings.**
+**44 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
-| high | 26 |
-| medium | 13 |
+| high | 25 |
+| medium | 12 |
 | low | 1 |
 
 ## Mandatory attack classes
@@ -44,7 +44,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/authorization/authorization.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `privilege-escalation`, `tenant-isolation`
 
@@ -58,7 +58,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/authorization/authorization.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `privilege-escalation`
 
@@ -72,7 +72,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/mfa/mfa.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `mfa-bypass`
 
@@ -86,7 +86,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/scim/isolation.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `scim-cross-tenant`, `tenant-isolation`
 
@@ -100,7 +100,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/proxy/trust-boundary.test.ts`
 
-**Documentation.** [docs/security/mtls.md](./mtls.md)
+**Documentation.** [docs/security/mtls.md](mtls.md)
 
 **Attack classes.** `mtls-spoofing`, `privilege-escalation`
 
@@ -114,7 +114,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/api-keys/scopes-and-principals.test.ts`
 
-**Documentation.** [docs/security/scopes.md](./scopes.md)
+**Documentation.** [docs/security/scopes.md](scopes.md)
 
 **Attack classes.** `api-scope-escalation`, `privilege-escalation`
 
@@ -130,7 +130,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/authorization/authorization.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `tenant-isolation`, `privilege-escalation`
 
@@ -144,7 +144,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/mfa/mfa.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `mfa-bypass`
 
@@ -158,7 +158,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/rate-limiting/abuse-prevention.test.ts`
 
-**Documentation.** [docs/security/proxy-security.md](./proxy-security.md)
+**Documentation.** [docs/security/proxy-security.md](proxy-security.md)
 
 **Attack classes.** `xff-spoofing`
 
@@ -172,7 +172,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/proxy/trust-boundary.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `xff-spoofing`, `mtls-spoofing`
 
@@ -186,7 +186,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/proxy/trust-boundary.test.ts`
 
-**Documentation.** [docs/security/mtls.md](./mtls.md)
+**Documentation.** [docs/security/mtls.md](mtls.md)
 
 **Attack classes.** `mtls-spoofing`
 
@@ -200,7 +200,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `.github/workflows/supply-chain.yml`
 
-**Documentation.** [docs/security/supply-chain.md](./supply-chain.md)
+**Documentation.** [docs/security/supply-chain.md](supply-chain.md)
 
 ### SEC-012 — Single-use credentials were readable and consumable more than once
 
@@ -212,7 +212,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/tokens/single-use.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `token-replay`
 
@@ -226,7 +226,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/sessions/session-revocation.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `password-reset-invalidation`, `session-persistence`
 
@@ -240,7 +240,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/mfa/mfa.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `session-persistence`, `mfa-bypass`
 
@@ -254,7 +254,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/oauth/oauth2-hardening.test.ts`
 
-**Documentation.** [docs/MIGRATION-2.4.md](./docs/MIGRATION-2.4.md)
+**Documentation.** [docs/MIGRATION-2.4.md](../MIGRATION-2.4.md)
 
 **Attack classes.** `oauth-attacks`
 
@@ -268,7 +268,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/oauth/oauth2-hardening.test.ts`
 
-**Documentation.** [docs/MIGRATION-2.4.md](./docs/MIGRATION-2.4.md)
+**Documentation.** [docs/MIGRATION-2.4.md](../MIGRATION-2.4.md)
 
 **Attack classes.** `oauth-attacks`
 
@@ -282,7 +282,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/oauth/oauth2-hardening.test.ts`
 
-**Documentation.** [docs/MIGRATION-2.4.md](./docs/MIGRATION-2.4.md)
+**Documentation.** [docs/MIGRATION-2.4.md](../MIGRATION-2.4.md)
 
 **Attack classes.** `oauth-attacks`
 
@@ -296,7 +296,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/oidc/enterprise-sso.test.ts`
 
-**Documentation.** [docs/security/enterprise-sso.md](./enterprise-sso.md)
+**Documentation.** [docs/security/enterprise-sso.md](enterprise-sso.md)
 
 **Attack classes.** `oauth-attacks`
 
@@ -310,7 +310,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/api-keys/scopes-and-principals.test.ts`
 
-**Documentation.** [docs/security/scopes.md](./scopes.md)
+**Documentation.** [docs/security/scopes.md](scopes.md)
 
 **Attack classes.** `api-scope-escalation`
 
@@ -324,7 +324,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/api-keys/scopes-and-principals.test.ts`
 
-**Documentation.** [docs/security/scopes.md](./scopes.md)
+**Documentation.** [docs/security/scopes.md](scopes.md)
 
 **Attack classes.** `api-scope-escalation`, `privilege-escalation`
 
@@ -338,7 +338,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/configuration/secrets-config.test.ts`
 
-**Documentation.** [docs/security/configuration.md](./configuration.md)
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 **Attack classes.** `secret-disclosure`
 
@@ -352,7 +352,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/configuration/secrets-config.test.ts`
 
-**Documentation.** [docs/security/configuration.md](./configuration.md)
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 **Attack classes.** `secret-disclosure`
 
@@ -366,7 +366,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/configuration/secrets-config.test.ts`
 
-**Documentation.** [docs/security/configuration.md](./configuration.md)
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 **Attack classes.** `secret-disclosure`, `privilege-escalation`
 
@@ -380,7 +380,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/configuration/secrets-config.test.ts`
 
-**Documentation.** [docs/security/configuration.md](./configuration.md)
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 **Attack classes.** `secret-disclosure`
 
@@ -394,7 +394,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/configuration/secrets-config.test.ts`
 
-**Documentation.** [docs/security/configuration.md](./configuration.md)
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 **Attack classes.** `secret-disclosure`, `session-persistence`
 
@@ -408,7 +408,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/configuration/secrets-config.test.ts`
 
-**Documentation.** [docs/security/configuration.md](./configuration.md)
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 **Attack classes.** `privilege-escalation`
 
@@ -422,7 +422,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/rate-limiting/abuse-prevention.test.ts`
 
-**Documentation.** [docs/security/rate-limiting.md](./rate-limiting.md)
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 ### SEC-034 — MFA verification shared one budget across every user behind an address
 
@@ -434,7 +434,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/rate-limiting/abuse-prevention.test.ts`
 
-**Documentation.** [docs/security/rate-limiting.md](./rate-limiting.md)
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 **Attack classes.** `mfa-bypass`
 
@@ -448,19 +448,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/registry.test.ts`
 
-**Documentation.** [docs/security/registry.md](./registry.md)
-
-### SEC-043 — SAML assertions were validated without a complete issuer and audience binding
-
-*Fixed in v2.5.0. Component: `saml`.*
-
-**Issue.** The response validator checked signature and conditions but did not require a complete binding between the assertion and the configured service-provider entity, so a valid signed assertion minted for a different relying party could be accepted here.
-
-**Fix.** src/services/saml/validator.ts — the audience and issuer are both required and must match configuration
-
-**Test.** `src/tests/security/saml/saml-validator.test.ts`
-
-**Documentation.** [docs/security/enterprise-sso.md](./enterprise-sso.md)
+**Documentation.** [docs/security/registry.md](registry.md)
 
 ### SEC-046 — Every service-account request produced no audit record at all
 
@@ -472,7 +460,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/service-accounts/audit-attribution.test.ts`
 
-**Documentation.** [docs/security/audit.md](./audit.md)
+**Documentation.** [docs/security/audit.md](audit.md)
 
 ## Medium
 
@@ -486,7 +474,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/tokens/single-use.test.ts`
 
-**Documentation.** [docs/security/trust-boundaries.md](./trust-boundaries.md)
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
 
 **Attack classes.** `token-replay`
 
@@ -500,7 +488,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/oauth/oauth2-hardening.test.ts`
 
-**Documentation.** [docs/MIGRATION-2.4.md](./docs/MIGRATION-2.4.md)
+**Documentation.** [docs/MIGRATION-2.4.md](../MIGRATION-2.4.md)
 
 **Attack classes.** `oauth-attacks`
 
@@ -510,11 +498,11 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Issue.** The Issuer was compared only when it fell inside a signed region. An attacker could place an unsigned Issuer naming a trusted IdP alongside a signed assertion from another IdP. Confirmed to lie outside both signed regions, so it was a real gap in the trust decision rather than a theoretical one.
 
-**Fix.** src/services/saml/validator.ts — the Issuer is validated against the configured entity id in all cases
+**Fix.** src/routes/saml.ts — the Issuer is validated against the configured entity id in all cases
 
 **Test.** `src/tests/security/saml/saml-adversarial.test.ts`
 
-**Documentation.** [docs/security/enterprise-sso.md](./enterprise-sso.md)
+**Documentation.** [docs/security/enterprise-sso.md](enterprise-sso.md)
 
 **Attack classes.** `oauth-attacks`
 
@@ -524,11 +512,11 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Issue.** A RelayState that failed its integrity check raised rather than returning a rejection, turning a routine validation failure into a 500 and obscuring the real cause.
 
-**Fix.** src/services/saml/relayState.ts — verification returns a boolean and never throws
+**Fix.** src/routes/saml.ts — verification returns a boolean and never throws
 
 **Test.** `src/tests/security/saml/saml-adversarial.test.ts`
 
-**Documentation.** [docs/security/enterprise-sso.md](./enterprise-sso.md)
+**Documentation.** [docs/security/enterprise-sso.md](enterprise-sso.md)
 
 ### SEC-030 — Webhook signing secrets were stored in plaintext
 
@@ -540,7 +528,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/configuration/secrets-config.test.ts`
 
-**Documentation.** [docs/security/configuration.md](./configuration.md)
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 **Attack classes.** `secret-disclosure`
 
@@ -554,7 +542,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/rate-limiting/abuse-prevention.test.ts`
 
-**Documentation.** [docs/security/rate-limiting.md](./rate-limiting.md)
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 ### SEC-036 — A refused request left no record
 
@@ -566,7 +554,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/rate-limiting/abuse-prevention.test.ts`
 
-**Documentation.** [docs/security/rate-limiting.md](./rate-limiting.md)
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 ### SEC-037 — Failed logins were never audited
 
@@ -578,7 +566,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/authentication/login-abuse.test.ts`
 
-**Documentation.** [docs/security/audit.md](./audit.md)
+**Documentation.** [docs/security/audit.md](audit.md)
 
 ### SEC-038 — A replayed refresh token was indistinguishable from an unknown one
 
@@ -590,7 +578,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/authentication/login-abuse.test.ts`
 
-**Documentation.** [docs/security/audit.md](./audit.md)
+**Documentation.** [docs/security/audit.md](audit.md)
 
 **Attack classes.** `token-replay`, `session-persistence`
 
@@ -604,7 +592,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/rate-limiting/abuse-prevention.test.ts`
 
-**Documentation.** [docs/security/rate-limiting.md](./rate-limiting.md)
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 ### SEC-040 — A stale build output kept deleted security tests running
 
@@ -616,19 +604,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `scripts/verify-release-metadata.mjs`
 
-**Documentation.** [docs/security/registry.md](./registry.md)
-
-### SEC-044 — The SSO endpoint could be resolved through a name the operator did not register
-
-*Fixed in v2.5.0. Component: `saml`.*
-
-**Issue.** The endpoint that initiates SSO was addressable through a host alias that was never in the connection's registered endpoints, so a connection could be initiated against a name outside the configuration an operator reviewed.
-
-**Fix.** src/routes/sso.ts — the request address must be one the connection registered
-
-**Test.** `src/tests/security/saml/sso-endpoint.test.ts`
-
-**Documentation.** [docs/security/enterprise-sso.md](./enterprise-sso.md)
+**Documentation.** [docs/security/registry.md](registry.md)
 
 ### SEC-045 — The audit log export did not neutralise spreadsheet formula injection
 
@@ -640,7 +616,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/audit-export.test.ts`
 
-**Documentation.** [docs/security/audit.md](./audit.md)
+**Documentation.** [docs/security/audit.md](audit.md)
 
 ## Low
 
@@ -654,4 +630,4 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Test.** `src/tests/security/authorization/authorization.test.ts`
 
-**Documentation.** [docs/security/registry.md](./registry.md)
+**Documentation.** [docs/security/registry.md](registry.md)

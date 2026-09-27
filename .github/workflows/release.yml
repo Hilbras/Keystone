@@ -77,6 +77,13 @@ jobs:
       - name: Gate — security regression registry is consistent
         run: npm run registry:check
 
+      - name: Gate — documentation links resolve
+        # Documentation rots quietly: a file is renamed, a heading reworded, and
+        # the link still looks right in the source while 404ing for the reader.
+        # No test catches that, and the people who hit a dead link are usually
+        # the ones evaluating the project for the first time.
+        run: npm run check:docs
+
       - name: Gate — the re-audit matrix regenerates and every claim verifies
         # The matrix is generated from the registry and checked against the
         # repository. A cell that cannot be verified is a claim nobody has
