@@ -1,8 +1,8 @@
 {
   "name": "@hilbras/keystone",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "license": "MIT",
-  "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
+  "description": "Hilbras Keystone \u2014 standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hilbras/Keystone.git"
@@ -57,6 +57,7 @@
     "review:api": "node scripts/review-api-surface.mjs",
     "check:docs": "node scripts/check-doc-links.mjs",
     "plans:record": "node scripts/record-query-plans.mjs",
+    "bench:hot": "npm run build && node dist/bench/hotPaths.js",
     "verify:image": "node scripts/verify-image-hygiene.mjs"
   },
   "dependencies": {

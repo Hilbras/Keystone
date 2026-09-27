@@ -301,7 +301,8 @@ export async function createTokenResponse(
     opts.ip,
     opts.userAgent,
     tokenOpts,
-    opts.deviceFingerprint
+    opts.deviceFingerprint,
+    "oauth-token"
   );
 
   const response: Record<string, unknown> = {

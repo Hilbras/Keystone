@@ -143,7 +143,7 @@ export class AuthenticationDomainService {
       appId: context.org ? context.app?.id : undefined,
       orgId: context.org?.id,
       clientId: context.org ? context.app?.clientId : undefined,
-    });
+    }, undefined, "registration");
 
     await emit({
       type: "user_registered",
@@ -256,7 +256,11 @@ export class AuthenticationDomainService {
         orgId: context.org?.id,
         clientId: context.org ? context.app?.clientId : undefined,
         ...(mfaFactor ? { mfaFactor } : {}),
-      }
+      },
+      undefined,
+      // The second step of a login is the only way to reach issuance with a
+      // factor, so a token carrying one is always the MFA path.
+      mfaFactor ? "mfa" : "password"
     );
   }
 

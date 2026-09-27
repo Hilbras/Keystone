@@ -194,7 +194,7 @@ export default async function oauthRoutes(app: FastifyInstance) {
         appId: app?.id,
         orgId: app?.orgId,
         clientId: app?.clientId,
-      });
+      }, undefined, "oauth-authorize");
       setSessionCookies(reply, tokens.accessToken, tokens.refreshToken, app?.clientId);
 
       await request.audit("oauth_callback", {

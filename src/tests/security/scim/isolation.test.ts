@@ -493,6 +493,46 @@ describe("Tenant isolation — groups", () => {
     assert.equal(members.length, 0, "the outsider must not be a member");
   });
 
+  it("re-checks the organization membership for a member the group already has", async () => {
+    // The reconcile is a set-difference: it reads the current members and only
+    // writes the ones that are missing. It is tempting to skip the organization
+    // check for a member the row already exists for, since there is no write to
+    // do. That is wrong, and this is the test for it.
+    //
+    // A user can be removed from the organization while still being listed in a
+    // group. A reconcile that treats "already a member of the group" as "already
+    // verified" would leave them there, and would report success while doing it.
+    const tenant = await createTenant("group-stale");
+    const group = await createGroup(tenant, "staff");
+    const member = await addMember(tenant.organization, "stale-member");
+    await scim(tenant, "POST", `/scim/v2/Groups/${group.id}/members`, { value: member.id });
+
+    const before = await scim(tenant, "GET", `/scim/v2/Groups/${group.id}`);
+    assert.equal(before.statusCode, 200, before.body);
+    assert.equal(before.json().members.length, 1, "the member should be in the group to start");
+
+    const removed = await organizationRepository.removeMembership(tenant.organization.id, member.id);
+    assert.equal(removed, true, "the membership removal should have succeeded");
+
+    // The same member list, submitted again. Nothing needs writing — but the
+    // member is no longer part of the organization.
+    const res = await scim(tenant, "PUT", `/scim/v2/Groups/${group.id}`, {
+      displayName: "staff",
+      members: [{ value: member.id }],
+    });
+    assert.equal(res.statusCode, 404, `expected the stale member to be refused: ${res.body}`);
+
+    const stillThere = await app.container.scimGroupRepository.listMembers(
+      tenant.organization.id,
+      group.id
+    );
+    assert.equal(
+      stillThere.length,
+      0,
+      "a user removed from the organization must not remain in the group"
+    );
+  });
+
   it("cannot enumerate another organization's group members", async () => {
     const a = await createTenant("enum-a");
     const b = await createTenant("enum-b");

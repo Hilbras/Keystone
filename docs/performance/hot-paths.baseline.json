@@ -1,0 +1,135 @@
+{
+  "recordedAt": "2026-09-27T22:46:45.230Z",
+  "node": "v24.21.0",
+  "control": {
+    "medianMs": 59.5,
+    "minMs": 50.7
+  },
+  "tolerance": 0.4,
+  "scenarios": {
+    "scim-group-list-50": {
+      "ms": 68.223,
+      "fastest": 49.287,
+      "queries": 5,
+      "samples": [
+        86.258,
+        70.422,
+        65.184,
+        49.287,
+        68.223
+      ],
+      "relative": 0.5548,
+      "controlMs": 123
+    },
+    "scim-group-list-200": {
+      "ms": 60.277,
+      "fastest": 33.7,
+      "queries": 5,
+      "samples": [
+        64.95,
+        60.277,
+        60.79,
+        40.212,
+        33.7
+      ],
+      "relative": 0.7211,
+      "controlMs": 83.6
+    },
+    "scim-group-list-1000": {
+      "ms": 226.232,
+      "fastest": 167.258,
+      "queries": 10,
+      "samples": [
+        275.65,
+        280.321,
+        222.448,
+        167.258,
+        226.232
+      ],
+      "relative": 0.9073,
+      "controlMs": 249.3
+    },
+    "scim-group-reconcile-10": {
+      "ms": 570.299,
+      "fastest": 445.256,
+      "queries": 70,
+      "samples": [
+        472.124,
+        445.256,
+        570.299,
+        579.736,
+        670.479
+      ],
+      "relative": 4.6856,
+      "controlMs": 121.7
+    },
+    "scim-group-reconcile-100": {
+      "ms": 2076.378,
+      "fastest": 1136.488,
+      "queries": 610,
+      "samples": [
+        2907.645,
+        2076.378,
+        2526.982,
+        1512.846,
+        1136.488
+      ],
+      "relative": 40.92,
+      "controlMs": 50.7
+    },
+    "scim-group-reconcile-1000": {
+      "ms": 15437.058,
+      "fastest": 14098.458,
+      "queries": 6010,
+      "samples": [
+        15437.058,
+        14098.458,
+        17736.806
+      ],
+      "relative": 259.43,
+      "controlMs": 59.5
+    },
+    "login": {
+      "ms": 506.613,
+      "fastest": 407.697,
+      "queries": 9,
+      "samples": [
+        761.33,
+        589.494,
+        506.613,
+        495.727,
+        407.697
+      ],
+      "relative": 9.1299,
+      "controlMs": 55.5
+    },
+    "refresh": {
+      "ms": 26.526,
+      "fastest": 17.363,
+      "queries": 9,
+      "samples": [
+        26.526,
+        23.482,
+        17.363,
+        38.917,
+        51.193
+      ],
+      "relative": 0.4625,
+      "controlMs": 57.3
+    },
+    "authz-check": {
+      "ms": 16.708,
+      "fastest": 15.569,
+      "queries": 7,
+      "samples": [
+        16.708,
+        18.347,
+        15.569,
+        15.88,
+        17.1
+      ],
+      "relative": 0.297,
+      "controlMs": 56.3
+    }
+  }
+}

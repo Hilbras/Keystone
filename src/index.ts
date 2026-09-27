@@ -90,7 +90,13 @@ export async function buildApp() {
   const container = initializeContainer();
 
   const app = fastify({
-    logger: { level: config.NODE_ENV === "production" ? "info" : "debug" },
+    // KEYSTONE_LOG_LEVEL exists for the benchmark, which injects tens of
+    // thousands of requests and would spend more time serialising log lines than
+    // serving them — a measurement that includes its own logging measures logging.
+    // Unset in every other context, so nothing else changes.
+    logger: {
+      level: config.LOG_LEVEL ?? (config.NODE_ENV === "production" ? "info" : "debug"),
+    },
     // Derived from KEYSTONE_TRUSTED_PROXIES; `false` by default so a client
     // cannot spoof its address through x-forwarded-for.
     trustProxy: fastifyTrustProxySetting(),

@@ -158,6 +158,28 @@ detection. Two things follow for you:
 
 See [Webhooks](#7-webhooks--keystone-calling-you).
 
+### What a trace shows
+
+Keystone exports OpenTelemetry spans when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+HTTP and database calls are instrumented automatically; on top of that there are
+four spans of its own, at the four places where the interesting thing happens:
+
+| Span | It answers |
+|---|---|
+| `keystone.token.issue` | Which flow issued a token, whether MFA was required, and which factor was used. |
+| `keystone.token.rotate` | Whether a refresh was granted or refused. A cluster of refusals is a replay. |
+| `keystone.scim.group.reconcile` | How many members a push submitted, added and removed. |
+| `keystone.webhook.deliver` | Which endpoint, which attempt number, and what came back. |
+
+The first is on the single path every token in the system is minted through —
+password login, refresh, OAuth, federation, SAML, OIDC — so a slow or failing
+issuance is visible wherever it started. If you are integrating against Keystone
+and something feels slow, these are the four names to query.
+
+Span names are exported as constants from `src/services/spans.ts`, and a test
+asserts each one is actually created rather than merely referenced, so a rename
+cannot quietly stop matching your dashboard.
+
 ---
 
 ## Choosing an integration

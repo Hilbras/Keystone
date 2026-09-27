@@ -5,6 +5,119 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-09-28
+
+*Measure. Two things were asserted to be observability and performance work and
+were neither: the OpenTelemetry dependency instrumented nothing, and the
+performance claims rested on a reading of the code rather than a timing of it.*
+
+### Added
+
+- **Four spans on the four chokepoints** — `src/services/spans.ts`, with the span
+  names as exported constants so a dashboard query and a test can share them.
+  The v3.0.1 analysis found OpenTelemetry wired into the bootstrap and
+  instrumenting **zero** custom spans: every trace was HTTP-and-database
+  auto-instrumentation, which cannot tell a correct argon2id cost from a query in
+  a loop, and cannot distinguish a replayed refresh token from an ordinary one.
+
+  | Span | Where | What it answers |
+  |---|---|---|
+  | `keystone.token.issue` | `createTokenSet` — the single door every token in the system is minted through | which flow, whether MFA was required, and which factor |
+  | `keystone.token.rotate` | `rotateRefreshToken`, at both decisions | whether a rotation was granted or refused, and a refusal spike is a replay spike |
+  | `keystone.scim.group.reconcile` | `PUT /scim/v2/Groups/:id` | members submitted, added, removed — so a slow reconcile is attributed to group size |
+  | `keystone.webhook.deliver` | `deliverNow`, on delivery, rejection and unreachable | which endpoint, which attempt, what came back |
+
+- **A hot-path benchmark, and a nightly gate that fails on a regression against
+  the recorded baseline** — `src/bench/hotPaths.ts`, `npm run bench:hot`,
+  `.github/workflows/benchmark.yml`, `docs/performance/`. The gate's decision
+  logic is in `src/bench/compare.ts` and is unit-tested: query count is an exact
+  hard gate, timing is compared control-relatively at 40%, the tolerance comes
+  from the recorded baseline rather than from the run being judged, and a
+  scenario that stops being measured is itself a failure.
+- **`src/db/queryCounter.ts`** — an exact count of the SQL a block of code sent.
+  Timing tells you a path got slower; it does not tell you why, and on a shared
+  runner a timing regression is often just a neighbour.
+- **`KEYSTONE_LOG_LEVEL`** — read only by `buildApp`. The benchmark injects tens of
+  thousands of requests and was spending more time serialising log lines than
+  serving them, so it was measuring logging.
+- **`docs/performance/README.md`** — why the numbers are in files and not in
+  comments, which is a story about two unindexed tables that turned out not to
+  need indexes.
+
+### Changed
+
+- **`createTokenSet` takes a `flow`.** A union rather than a string, so a
+  misspelled flow is a compile error at the call site instead of a span attribute
+  that quietly says `"unknown"` forever. All eleven internal call sites name their
+  flow. The parameter is optional, because `createTokenSet` is exported and an SDK
+  consumer should not have to learn a new argument to keep working.
+- **`GET /scim/v2/Groups` re-reads the member list once per page instead of once
+  per group** — §1.2, in the previous development cycle but recorded here because
+  it is the change the benchmark now exists to protect.
+- **`PUT /scim/v2/Groups/:id` reconciles by set-difference** — read the current
+  members once, then add what is missing and remove what is gone, instead of
+  re-reading the full member list inside the loop over submitted members. This is
+  a **behaviour-preserving** change: the same memberships result.
+
+### Fixed
+
+- **The SCIM group reconcile no longer re-reads every member once per submitted
+  member.** The old loop called `listMembers` inside the loop over `body.members`,
+  which is quadratic in group size with a full table read on every iteration.
+  Measured at 57× on a 1,098-group list before the change.
+- **The reconcile checks organization membership for every submitted member, even
+  the ones it does not need to write.** The set-difference rewrite made the check
+  conditional on the member being absent from the group, which would have let a
+  user removed from the organization — but still listed in a group — remain in
+  it, with the reconcile reporting success. The check is unconditional; only the
+  write is conditional. Covered by a new test in the SCIM isolation suite.
+
+### Measured, and the diagnosis was half wrong
+
+§1.4's benchmark instrumented the SQL, which corrected the roadmap in two places
+that had been written before anything ran:
+
+- The group list is **constant at 5 statements per page** — 5 at 50 groups, 5 at
+  200, 10 for 1,000 (two pages, since the page cap is 500). The plan's target of
+  "2 queries" was a guess. The read is already fixed; what remains is SCIM
+  credential resolution.
+- The reconcile is **not quadratic — it is linear with a 6× constant**, which is
+  worse than it sounds. `addMember` opens a transaction per member: `BEGIN`, a
+  group lookup, a membership lookup, an insert, `COMMIT`. Six statements and a
+  commit per member; a 1,000-member group push is 6,010 statements. No
+  individual query is slow. There are six thousand of them. §2.1 now has a real
+  target instead of the guess.
+- **Login is nine statements and about two seconds, and all of it is argon2id.**
+  The parameters are above the OWASP minimum on purpose, and this is the number
+  that says what that costs. The `keystone.token.issue` span separates the two:
+  a two-second span over nine statements puts the time in the hash, not the
+  database.
+
+### The benchmark was wrong twice before it was right
+
+Both are worth recording, because each produced a plausible result rather than an
+obvious failure, and both are the sort of mistake that a gate silently inherits.
+
+- **It measured the rate limiter instead of the login.** `POST /auth/token-login`
+  allows five attempts per fifteen minutes. The sixth login from one address was
+  refused — and a refusal is fast, because it never reaches the password check.
+  The scenario reported 528, 495, 504, 504 and then **20ms**, and the 20ms was a
+  429. Four plausible numbers in a row is what let it through. Each sample now
+  uses a distinct source address.
+- **It measured a refusal instead of an authorization.** `/v1/authz/check` answers
+  `false` for anything the caller's role does not grant, and the scenario asked
+  for a resource that is not in the permission catalogue — so the endpoint was
+  correct and the benchmark was recording the cost of a denial. It now asks for
+  something the role actually holds and asserts `allowed === true`, not merely a
+  200. A denied answer is a valid answer, and it is a different code path.
+
+- **It reported the fastest sample as the cost.** The usual rule is to take the
+  minimum, because contention only adds time. That is true, and a 25× spread is
+  not contention — it is state, and a state-dependent fast path is the one thing
+  a minimum cannot tell apart from real speed. The gate now compares the median
+  and records the minimum beside it, so the spread (`spread 1.1x` on a healthy
+  run) stays visible.
+
 ## [3.0.1] - 2026-09-27
 
 ### Documentation

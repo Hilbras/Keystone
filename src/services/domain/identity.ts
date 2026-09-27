@@ -294,7 +294,8 @@ export class IdentityDomainService {
       undefined,
       undefined,
       { ...opts, mfaFactor },
-      opts?.deviceFingerprint
+      opts?.deviceFingerprint,
+      "mfa"
     );
   }
 }

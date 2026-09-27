@@ -3,6 +3,7 @@ import postgres from "postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
+import { noteQuery } from "./queryCounter.js";
 
 let dbClient: postgres.Sql | null = null;
 
@@ -21,7 +22,16 @@ export function initDb(): void {
   if (dbClient) {
     dbClient.end().catch(() => {});
   }
-  dbClient = postgres(databaseUrl, { max: 10 });
+  dbClient = postgres(databaseUrl, {
+    max: 10,
+    // Feeds the benchmark's exact query count. `debug` fires once per statement
+    // on every driver version used here, including prepared-statement execution,
+    // so an N+1 regression is visible as a number rather than inferred from a
+    // latency. It is a no-op unless a benchmark is counting.
+    debug: () => {
+      noteQuery();
+    },
+  });
   db = drizzle(dbClient, { schema });
 }
 

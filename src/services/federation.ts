@@ -63,7 +63,9 @@ export async function completeFederationLogin(
     undefined,
     application
       ? { appId: application.id, orgId: application.orgId, clientId: application.clientId }
-      : {}
+      : {},
+    undefined,
+    "federation"
   );
   return { user, tokens: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken } };
 }

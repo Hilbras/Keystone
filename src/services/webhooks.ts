@@ -3,6 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { webhookDeliveries, webhookEndpoints, type WebhookEndpoint } from "../db/schema.js";
 import { signWebhookPayload } from "../lib/webhookSignature.js";
+import { ATTR, SPAN, recordSpan } from "./spans.js";
 import { decryptSecret, encryptSecret } from "./totp.js";
 import { queue } from "./queue/index.js";
 import type { KeystoneEvent } from "./events/types.js";
@@ -177,6 +178,17 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       signal: AbortSignal.timeout(10_000),
     });
 
+    // The span covers the attempt and its outcome, which is what an operator
+    // needs when a consumer starts rejecting: which endpoint, which attempt
+    // number, and what came back. The HTTP exchange itself is already traced by
+    // the auto-instrumentation, so it is not nested again.
+    recordSpan(SPAN.webhookDelivery, {
+      [ATTR.endpointId]: endpoint.id,
+      [ATTR.attempt]: attempts,
+      [ATTR.statusCode]: response.status,
+      [ATTR.outcome]: response.ok ? "delivered" : "rejected",
+    });
+
     const responseBody = (await response.text()).slice(0, 2000);
     await db
       .update(webhookDeliveries)
@@ -193,6 +205,12 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       await retryLater(deliveryId);
     }
   } catch (err) {
+    recordSpan(SPAN.webhookDelivery, {
+      [ATTR.endpointId]: endpoint.id,
+      [ATTR.attempt]: attempts,
+      [ATTR.statusCode]: 0,
+      [ATTR.outcome]: "unreachable",
+    });
     await db
       .update(webhookDeliveries)
       .set({

@@ -192,7 +192,8 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
         request.ip,
         request.headers["user-agent"],
         { orgId: connection.orgId },
-        fingerprint
+        fingerprint,
+        "oidc"
       );
       setSessionCookies(reply, tokens.accessToken, tokens.refreshToken);
 
