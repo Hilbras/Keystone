@@ -21,6 +21,7 @@ const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 const bySeverity = Object.fromEntries(SEVERITY_ORDER.map((s) => [s, []]));
 for (const entry of registry.entries) bySeverity[entry.severity]?.push(entry);
 
+const outPath = path.join(root, "docs", "security", "registry.md");
 const out = [];
 out.push("# Security regression registry");
 out.push("");
@@ -69,7 +70,9 @@ for (const severity of SEVERITY_ORDER) {
     out.push("");
     out.push(`**Test.** \`${entry.test}\``);
     out.push("");
-    out.push(`**Documentation.** [${entry.documentation}](./${entry.documentation.replace(/^docs\/security\//, "")})`);
+    // Relative to *this* document (docs/security/registry.md), not the repo root.
+    const docHref = path.relative(path.dirname(outPath), path.join(root, entry.documentation));
+    out.push(`**Documentation.** [${entry.documentation}](${docHref})`);
     if (entry.covers?.length) {
       out.push("");
       out.push(`**Attack classes.** ${entry.covers.map((c) => `\`${c}\``).join(", ")}`);

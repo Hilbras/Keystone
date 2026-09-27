@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "license": "MIT",
   "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
@@ -54,7 +54,8 @@
     "registry:render": "node scripts/render-security-registry.mjs",
     "reaudit:check": "node scripts/render-reaudit-matrix.mjs --check",
     "reaudit:render": "node scripts/render-reaudit-matrix.mjs",
-    "review:api": "node scripts/review-api-surface.mjs"
+    "review:api": "node scripts/review-api-surface.mjs",
+    "check:docs": "node scripts/check-doc-links.mjs"
   },
   "dependencies": {
     "@authenio/samlify-node-xmllint": "^2.0.0",

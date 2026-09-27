@@ -5,6 +5,49 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-09-27
+
+### Documentation
+
+- **`docs/HOW-KEYSTONE-WORKS.md`** — a new guide covering both halves of the
+  integration question: how a request actually flows through Keystone, and the
+  five ways to connect a program to it, with working code in Node, Python, Go,
+  Java, Ruby, .NET, PHP, Rust, Swift and Dart. It explains the things that are
+  expensive to discover the hard way — that Fastify's plugin order *is* the
+  security model, that refresh tokens rotate and a client which keeps the old one
+  gets treated as a replay, that identifying a caller is not authorizing them,
+  and how to verify a JWT without a network call.
+- **The README was rebuilt as a product README.** It had grown to 34 headings,
+  23 of them "What's new in vX.Y.Z" — a release-notes feed where a README belongs.
+  It now carries all 20 sections the plan requires: installation, quick start,
+  features, and a section per capability, with the per-version history collapsed
+  to a link to the changelog.
+- **`SECURITY.md` at the repository root**, so the disclosure path is where
+  contributors and GitHub's Security tab look for it.
+- **`docs/README.md` rebuilt as a real index**, grouped by start-here,
+  integrating, reference, security, migrating and reference material.
+- **`scripts/check-doc-links.mjs`**, wired into the release gate. It resolves
+  every relative link in the README, `SECURITY.md`, `AGENTS.md` and `docs/`,
+  including anchors. 137 links across 40 files.
+
+### Fixed
+
+- The generated security registry emitted documentation links relative to the
+  repository root while living in `docs/security/`, so every link to a
+  migration guide resolved to `docs/security/docs/...`. Four were broken; the
+  generator now computes the path relative to the document itself.
+- `SECURITY.md` linked to `../docs/security/` from the repository root, one level
+  too high.
+
+### Notes
+
+The link checker found a bug in itself first: it collapsed runs of whitespace when
+building anchors, so `1. Web / SPA` produced `1-web-spa` and rejected GitHub's
+actual `1-web--spa`. A checker that flags valid links gets ignored, which is the
+same failure mode as a security rule nobody can satisfy — so the anchor rule now
+matches GitHub, and the fix was verified in all three directions: a dead file
+fails, a dead anchor fails, and the double-dash anchor passes.
+
 ## [3.0.0] - 2026-09-27
 
 ### Security
