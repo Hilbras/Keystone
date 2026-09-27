@@ -85,9 +85,22 @@ jobs:
         run: npm run reaudit:check
 
       - name: Gate — no secrets in the repository or its history
-        uses: gitleaks/gitleaks-action@v2
-        with:
-          args: detect --config .gitleaks.toml --redact --no-banner --log-opts="--all"
+        # The gitleaks *action* v2 requires a paid licence for organisations and
+        # aborts before scanning, so the CLI is run from its container instead —
+        # the same approach as sast.yml. These must stay in step: the action form
+        # here failed the 3.0.0 release on the licence check, after the identical
+        # step in sast.yml had already been fixed.
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            -w /repo \
+            zricethezav/gitleaks:latest \
+            detect \
+              --source /repo \
+              --config /repo/.gitleaks.toml \
+              --redact \
+              --no-banner \
+              --log-opts="--all"
 
       - name: Lint
         run: npm run lint
