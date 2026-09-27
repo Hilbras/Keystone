@@ -53,7 +53,8 @@
     "registry:check": "node scripts/verify-security-registry.mjs",
     "registry:render": "node scripts/render-security-registry.mjs",
     "reaudit:check": "node scripts/render-reaudit-matrix.mjs --check",
-    "reaudit:render": "node scripts/render-reaudit-matrix.mjs"
+    "reaudit:render": "node scripts/render-reaudit-matrix.mjs",
+    "review:api": "node scripts/review-api-surface.mjs"
   },
   "dependencies": {
     "@authenio/samlify-node-xmllint": "^2.0.0",

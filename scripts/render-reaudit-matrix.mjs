@@ -147,6 +147,21 @@ for (const r of rows) {
   );
 }
 out.push("");
+out.push("## API security review");
+out.push("");
+out.push(
+  "Every route enumerated from source and checked for a guard. Result in\n" +
+    "[`docs/API-REVIEW.md`](./API-REVIEW.md).\n\n" +
+    "**69 routes. Zero with no authentication guard.** 27 carry no route-level\n" +
+    "authorization and each was traced: SCIM\u2019s bearer token *is* the authorization,\n" +
+    "`GET /me` returns the caller\u2019s own profile, the OAuth authorize endpoint\n" +
+    "authenticates in the request, and `workflows.ts` checks membership in the handler.\n\n" +
+    "One structural weakness found: `workflows.ts` does its organization check inside\n" +
+    "each of five handlers rather than in a guard, so a sixth route added later would\n" +
+    "have no reason to include it. Not a live vulnerability \u2014 the checks are correct \u2014\n" +
+    "but the only module in the codebase that does it this way."
+);
+out.push("");
 out.push("## Unresolved Critical findings");
 out.push("");
 out.push(

@@ -37,8 +37,8 @@ export default async function emailVerificationRoutes(app: FastifyInstance) {
         keyPrefix: "email-verification",
         maxAttempts: 3,
         windowSeconds: 900,
-          // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
-          emergencyLocalLimit: true,
+        // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
+        emergencyLocalLimit: true,
       }),
     ],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
