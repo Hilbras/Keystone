@@ -23,7 +23,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
 const { buildApp } = await import("../../../index.js");
 const { loadSigningKeys } = await import("../../../services/tokens.js");
-const { isOriginAllowed } = await import("../../../services/trustedProxies.js");
 const {
   localRateLimit,
   resetLocalRateLimits,

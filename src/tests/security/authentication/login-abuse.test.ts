@@ -119,7 +119,7 @@ async function auditRows(type: string, userId?: string) {
 // ---------------------------------------------------------------------------
 describe("Failed logins are recorded", () => {
   it("records a failed password attempt", async () => {
-    const { id, email } = await createUser();
+    const { email } = await createUser();
     const before = (await auditRows("user_login_failed")).length;
 
     const response = await app.inject({

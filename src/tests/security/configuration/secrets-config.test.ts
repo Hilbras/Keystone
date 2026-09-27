@@ -18,12 +18,11 @@ const {
   REDACTED_CONFIG_VALUE,
   EXPOSABLE_CONFIG_KEYS,
   isExposableConfigurationKey,
-  isSensitiveConfigurationKey,
   redactConfigurationValues,
   mergeConfigurationUpdates,
 } = await import("../../../services/configuration/profiles.js");
 const { encryptSecret } = await import("../../../services/totp.js");
-const { readWebhookSecret, createEndpoint, rotateEndpointSecret } = await import(
+const { readWebhookSecret, rotateEndpointSecret } = await import(
   "../../../services/webhooks.js"
 );
 const { signWebhookPayload } = await import("../../../lib/webhookSignature.js");

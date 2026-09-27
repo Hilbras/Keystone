@@ -4,13 +4,13 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**44 findings.**
+**45 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 25 |
-| medium | 12 |
+| medium | 13 |
 | low | 1 |
 
 ## Mandatory attack classes
@@ -617,6 +617,18 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Test.** `src/tests/security/saml/sso-endpoint.test.ts`
 
 **Documentation.** [docs/security/enterprise-sso.md](./enterprise-sso.md)
+
+### SEC-045 — The audit log export did not neutralise spreadsheet formula injection
+
+*Fixed in v2.9.0. Component: `audit`.*
+
+**Issue.** The CSV export quoted values containing a delimiter or a quote, but did not neutralise a value beginning with `=`, `+`, `-` or `@`. Several of the exported columns are attacker-supplied — the user agent above all — and a spreadsheet evaluates such a cell as a formula when the file is opened. An audit export is precisely the file an operator opens in a spreadsheet, so that is the expected consumer rather than an edge case. Found by Semgrep's `direct-response-write` rule during the triage for this release; the rule's own finding was a false positive, but the code it pointed at was not.
+
+**Fix.** src/routes/admin/platform.ts — a value with a formula prefix in first position is prefixed with an apostrophe before quoting
+
+**Test.** `src/tests/security/audit-export.test.ts`
+
+**Documentation.** [docs/security/audit.md](./audit.md)
 
 ## Low
 

@@ -65,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `npm test`, not only at release time.
 - `src/tests/security/authentication/login-abuse.test.ts` — 7 tests for 2.8.0
   behaviour that shipped untested.
+- `src/tests/security/audit-export.test.ts` — 5 tests for the CSV export.
 - `.github/workflows/{codeql,sast}.yml`, `.semgrep.yml`, `.gitleaks.toml`.
 - 7 release-gate steps in `release.yml`, replacing a single audit call.
 
@@ -89,6 +90,15 @@ organisational, which is the point: 430 tests before the restructure, 430 after,
 - The `keystone-cookie-without-secure` rule stays silent when a cookie's options
   are spread from another variable, because the rule cannot substantiate a finding
   there. `auth.ts` builds its options in a helper and spreads them.
+- The Semgrep community rulesets (`p/default`, `p/security-audit`,
+  `p/owasp-top-ten`) run **advisory**, not blocking. Their 15 findings against
+  `src/` have been triaged: four are `escapeXml` output the rule cannot see
+  through, six are `console.*` log-forging at worst, four are AES-GCM where Node
+  enforces the tag length through `setAuthTag`, and one was the `direct-response-write`
+  false positive that led to SEC-045. Gating on a community ruleset nobody has
+  worked through means either a permanently red build or a gate that gets switched
+  off, so they report and the triage is recorded here instead. The project ruleset
+  in `.semgrep.yml` is the blocking gate.
 - Two suites span two domains rather than being split: `proxy/trust-boundary.test.ts`
   also covers mTLS certificate binding, and `oauth/oauth2-hardening.test.ts` also
   covers OIDC ID token verification. Splitting them is mechanical but every split

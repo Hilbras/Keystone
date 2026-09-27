@@ -42,6 +42,19 @@ records which of the two it was:
   is revoked, because an attacker guessing random values must not be able to log
   a user out.
 
+## The audit export is opened in a spreadsheet
+
+The CSV export quotes a value containing a delimiter or a quote. It also
+neutralises a value whose **first character** is `=`, `+`, `-` or `@`, because a
+spreadsheet evaluates such a cell as a formula when the file is opened.
+
+Quoting alone is not enough, and several exported columns are attacker-supplied —
+the user agent above all. A `User-Agent` of `=cmd|'/c calc'!A1` reached the export
+intact.
+
+The apostrophe prefix is applied *before* quoting, and a value with no formula
+prefix is left alone so ordinary data is not corrupted.
+
 ## Event versioning
 
 Events are stored as `<name>:v1`. A query against the bare name matches nothing

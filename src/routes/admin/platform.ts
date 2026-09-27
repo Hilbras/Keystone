@@ -106,7 +106,20 @@ export default async function platformRoutes(app: FastifyInstance) {
 
     const escapeCsv = (value: unknown): string => {
       const s = value == null ? "" : String(value);
-      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      // Neutralise spreadsheet formula injection before quoting.
+      //
+      // Quoting alone is not enough. A cell beginning with `=`, `+`, `-` or `@`
+      // is evaluated as a formula by Excel, LibreOffice and Google Sheets when
+      // the file is opened, and several of these columns are attacker-supplied:
+      // a `User-Agent` of `=cmd|'/c calc'!A1` reaches this export intact. The
+      // audit log is exactly the kind of file an operator opens in a
+      // spreadsheet, so this is the expected consumer, not an edge case.
+      //
+      // A tab or carriage return in first position is prefixed for the same
+      // reason, and quoting a value that starts with a quote or contains a
+      // delimiter still applies afterwards.
+      const guarded = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+      return /[",\n\r]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
     };
     const header = "id,event,user_id,org_id,app_id,request_id,ip_address,user_agent,created_at,metadata";
     const rows = logs.map((l) =>
