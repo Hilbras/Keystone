@@ -834,55 +834,44 @@ export default async function scimRoutes(app: FastifyInstance) {
         });
 
         if (body.members) {
-          // Wrapped in a span because this is the expensive path, and its cost is
-          // a function of group size. The benchmark in `src/bench/hotPaths.ts`
-          // measured it at six SQL statements and one transaction per member, so
-          // a 1,000-member push is about 6,000 statements. The span carries the
-          // counts, so a slow reconcile can be attributed to group size instead of
-          // argued about.
+          // One repository call, one transaction, and a statement count that does
+          // not depend on how many members were submitted. The previous version
+          // looped, and `addMember` opened a transaction and issued six statements
+          // per member: 6,010 statements for a 1,000-member push. It is now a
+          // set-difference resolved in five statements, whatever the group size.
           //
-          // It was called quadratic, on the strength of reading the old code: the
-          // previous implementation re-read the whole member list inside the loop
-          // over submitted members. That is gone. What remains is linear with a
-          // large constant, which the measurement in §2.1 of the roadmap is aimed
-          // at.
-          const current = await app.container.scimGroupRepository.listMembers(orgId, existing.id);
-          const wanted = new Set(body.members.map((m) => m.value));
-          const present = new Set(current.map((m) => m.userId));
-
-          let added = 0;
-          let removed = 0;
-          await withSpan(
+          // The span carries the counts so a slow reconcile can be attributed to
+          // group size rather than argued about.
+          const submitted = body.members.map((m) => m.value);
+          const outcome = await withSpan(
             SPAN.scimGroupReconcile,
             {
               [ATTR.groupId]: existing.id,
-              [ATTR.submitted]: wanted.size,
+              [ATTR.submitted]: submitted.length,
               [ATTR.added]: 0,
               [ATTR.removed]: 0,
             },
-            async (span) => {
-              for (const member of body.members!) {
-                // The organization check runs for every submitted member, even
-                // when the membership row already exists. The previous
-                // implementation did the same, and skipping it here would let a
-                // user who had been removed from the organization — but who was
-                // still listed in a group — stay in that group, because the
-                // reconcile saw the row it did not need to rewrite and moved on.
-                // Only the write is conditional; the check never is.
-                await assertMemberOfOrg(request, member.value);
-                if (present.has(member.value)) continue;
-                await app.container.scimGroupRepository.addMember(orgId, existing.id, member.value);
-                added += 1;
-              }
-              for (const member of current) {
-                if (wanted.has(member.userId)) continue;
-                await app.container.scimGroupRepository.removeMember(orgId, existing.id, member.userId);
-                removed += 1;
-              }
-              span.setAttribute(ATTR.added, added);
-              span.setAttribute(ATTR.removed, removed);
-            }
+            (span) =>
+              app.container.scimGroupRepository
+                .reconcileMembers(orgId, existing.id, submitted)
+                .then((result) => {
+                  span.setAttribute(ATTR.added, result.added);
+                  span.setAttribute(ATTR.removed, result.removed);
+                  return result;
+                })
           );
+
+          if (outcome.rejected.length > 0) {
+            // The repository already checked, in bulk, that every submitted user is
+            // a member of this organization, and it wrote nothing. The old code
+            // checked the same thing one user at a time and had already inserted
+            // the members before it reached the one that failed.
+            //
+            // The identity of the rejected user is not echoed, for the same reason
+            // the rest of SCIM does not: a 404 that names the user confirms whether
+            // that user exists anywhere in the platform.
+            throw new ScimNotFound("User not found");
+          }
         }
 
         await request.audit("scim_group_updated", {

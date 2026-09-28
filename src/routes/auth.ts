@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import { config } from "../config.js";
 import { getSdk } from "../sdk/index.js";
 import {
   setSessionCookies,
@@ -89,8 +90,8 @@ export default async function authRoutes(app: FastifyInstance) {
       preHandler: [
         rateLimit({
           keyPrefix: "register",
-          maxAttempts: 5,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
           emergencyLocalLimit: true,
         }),
@@ -128,8 +129,8 @@ export default async function authRoutes(app: FastifyInstance) {
       preHandler: [
         rateLimit({
           keyPrefix: "login",
-          maxAttempts: 5,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           // A Redis outage must not remove the limit on an endpoint worth
           // brute-forcing.
           emergencyLocalLimit: true,
@@ -140,12 +141,18 @@ export default async function authRoutes(app: FastifyInstance) {
         // fresh budget per attempt and can enumerate or guess across a thousand
         // accounts from one host. This second budget is keyed on the address
         // alone, so spraying is capped no matter how many addresses are tried.
+        //
+        // `includeSubmittedAddress: false` is what makes that true. The key used
+        // to append the submitted address to *every* limiter's key, which left
+        // this one keyed on address **and** account — the same shape as the budget
+        // above it, and no control on spraying at all. SEC-048.
         rateLimit({
           keyPrefix: "login-per-address",
-          maxAttempts: 30,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_PER_ADDRESS_MAX,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           emergencyLocalLimit: true,
           keyFrom: (request) => request.ip,
+          includeSubmittedAddress: false,
         }),
       ],
     },
@@ -207,8 +214,8 @@ export default async function authRoutes(app: FastifyInstance) {
       preHandler: [
         rateLimit({
           keyPrefix: "login",
-          maxAttempts: 5,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           // A Redis outage must not remove the limit on an endpoint worth
           // brute-forcing.
           emergencyLocalLimit: true,
@@ -219,12 +226,18 @@ export default async function authRoutes(app: FastifyInstance) {
         // fresh budget per attempt and can enumerate or guess across a thousand
         // accounts from one host. This second budget is keyed on the address
         // alone, so spraying is capped no matter how many addresses are tried.
+        //
+        // `includeSubmittedAddress: false` is what makes that true. The key used
+        // to append the submitted address to *every* limiter's key, which left
+        // this one keyed on address **and** account — the same shape as the budget
+        // above it, and no control on spraying at all. SEC-048.
         rateLimit({
           keyPrefix: "login-per-address",
-          maxAttempts: 30,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_PER_ADDRESS_MAX,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           emergencyLocalLimit: true,
           keyFrom: (request) => request.ip,
+          includeSubmittedAddress: false,
         }),
       ],
     },

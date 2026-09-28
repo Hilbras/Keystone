@@ -223,56 +223,66 @@ change, not a behaviour change.
 reconcile is under 10 statements at **any** member count — not 3, which the
 measurement shows was never achievable with a per-member audit write.
 
-**Gate:** the §1.4 benchmark shows a **constant** query count for group list
-regardless of page size, asserted directly in a test (not inferred from timing).
-Plus the existing 55 SCIM isolation tests unchanged — this is a performance
-change, not a behaviour change.
+---
 
-## 2.2 Index the authorization path
+# v3.2.0 — status
 
-**Finding:** §2.3, carried from §1.2. Two tables, no indexes, on the hottest read
-in the system.
+All four items are done, and the release was supposed to be a schema migration.
+It did not contain one, because the migration was a pessimization (§2.2), and it
+produced two security findings that have nothing to do with databases (§2.3's
+cache work uncovered both).
 
-**Do:** the migration and composite indexes from §1.2. Permissions change rarely;
-this is the single highest-leverage index work in the codebase.
+**§2.1 — done, and the diagnosis improved.** `reconcileMembers` resolves the
+group, the current members and the organization memberships once, then applies the
+set-difference in two statements inside one transaction. **15 statements at 10
+members, at 100, and at 1,000** — the count no longer depends on group size, which
+is the property that matters. The 1,000-member push went from 48,976ms to 317ms.
 
-**Gate:** the sequential-scan assertion from §1.2, plus the authorization suite
-unchanged.
+The target above ("under 10 statements") was written before the work and is not
+met — 15, not 3 and not 10 — because the 5 statements are the route's own
+credential resolution, group load, update and audit, none of which is the
+reconcile. The gate is the constant, and the constant is what shipped. A rejected
+reconcile now applies nothing at all, which the per-member loop did not do.
 
-## 2.3 Cache role→permissions, invalidate on write
+**§2.2 — the migration was not written, deliberately.** Both tables already carry
+composite unique indexes on exactly the columns the query uses. At the catalogue's
+real size (150 and 302 rows) the planner picks a sequential scan at 0.291ms and 5
+buffers, and forcing the indexes costs 0.415ms — the index would have been 40%
+slower for the same answer, plus a write on every permission seed. The deliverable
+is a gate instead: it asserts the indexes exist, asserts the catalogue is under the
+size at which the scan was last measured, and names exactly what to re-measure when
+it is not. Verified by dropping the constraint and by inserting 5,200 probe rows.
 
-**Finding:** §2.7. `requirePermission` reads the database on every
-organization-scoped request. Permissions change on the order of once a deployment.
+**§2.3 — done, and it found two live security defects.** The cache is
+Redis-only with no in-process fallback, invalidated on every write, and never caches
+an empty set. Eight tests, each confirmed to fail against a version with the
+corresponding property removed.
 
-**Do:** cache the resolved permission set per role in Redis, with a key namespace
-under the existing `CACHE_KEY_PREFIX`, invalidated on any permission or
-role-permission write. Fail **open to the database** on a cache error — a cache
-outage must not become an authorization outage, and the reverse (serving a stale
-deny) is worse than a slow request.
+Adding it meant issuing a command on the shared Redis client — and that connected
+it, which switched the rate limiter from per-instance to shared and immediately
+exposed that **the distributed rate limiter had never been running** (SEC-047:
+`checkLimit` guarded on client readiness, and a `lazyConnect` client is not "ready"
+until something issues a command, so the guard returned the local budget without
+ever trying Redis). Three controls were inert, including a pre-authentication
+budget on `/scim/v2/*` that failed open on every request. Fixing that exposed
+**SEC-048**: `rateLimit()` appended the submitted address to every limiter's key,
+so `login-per-address` — the budget that exists to stop spraying — was keyed on
+address *and* account and bounded nothing. Both are fixed and both have regression
+tests, including one that sprays 31 accounts from one address rather than
+inspecting the key format.
 
-**Gate:**
-- a test that a permission change is visible on the next request (no TTL wait)
-- a test that a Redis failure still authorizes correctly, by falling through
-- a benchmark showing the read is served from cache
+The measured effect of §2.3 on its own: `/v1/authz/check` went from 7 statements
+to 6, since the two permission queries are now one cache read.
 
-**Done when:** the authorization benchmark improves measurably, and both
-correctness tests pass.
+**§2.4 — done.** `workflows.ts` no longer imports `db` or `drizzle-orm`, its five
+hand-written membership checks are one `preHandler`, and the data access is behind
+`src/repositories/workflow.ts`. Behaviour is unchanged: the same 403s, the same audit
+events, a missing `orgId` on the collection is still a 400, and a delete that
+matched nothing is still a 404.
 
-## 2.4 Fix the query-per-request in `workflows.ts`
-
-**Finding:** §2.2 of the API review. `GET /workflows` loads all workflows for an
-org and then filters; authorization is in the handler and re-reads membership.
-
-**Do:** scope the query by organization and role in the repository, and move the
-check behind a guard like every other module. This is the one place the codebase
-does authorization by hand, and it is the reason a sixth route would be
-dangerous.
-
-**Gate:** a cross-tenant test — user A in org 1 reading org 2's workflow — which
-already exists, plus the guard now visible in the route definition.
-
-**Done when:** `workflows.ts` has no direct `db` import and no handler-level
-authorization.
+Also removed: `src/services/permissions.ts`, which nothing imported. It was a
+second copy of the permission catalogue, able to drift from the copy that actually
+authorizes.
 
 ---
 

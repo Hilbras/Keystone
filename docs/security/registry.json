@@ -22,7 +22,7 @@
       "component": "authorization",
       "release": "1.7.0",
       "issue": "A member could set their own organization role, so a `member` could promote themselves to `owner` and then administer the organization they were only supposed to belong to.",
-      "fix": "src/routes/admin/organizations.ts — role changes are owner-only and cannot target the caller's own membership",
+      "fix": "src/routes/admin/organizations.ts \u2014 role changes are owner-only and cannot target the caller's own membership",
       "test": "src/tests/security/authorization/authorization.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -37,7 +37,7 @@
       "component": "authorization",
       "release": "1.7.0",
       "issue": "Platform administration endpoints checked authentication but not the owner role, so any authenticated session could list and modify every user, organization and application in the installation.",
-      "fix": "src/routes/admin/helpers.ts — requireOwner() on every platform route",
+      "fix": "src/routes/admin/helpers.ts \u2014 requireOwner() on every platform route",
       "test": "src/tests/security/authorization/authorization.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -51,7 +51,7 @@
       "component": "authorization",
       "release": "1.7.0",
       "issue": "Workflow lookup was keyed by identifier alone, so a request naming another organization's workflow run executed it and read its output.",
-      "fix": "src/services/workflows/engine.ts — every lookup is scoped to the owning organization",
+      "fix": "src/services/workflows/engine.ts \u2014 every lookup is scoped to the owning organization",
       "test": "src/tests/security/authorization/authorization.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -65,8 +65,8 @@
       "severity": "critical",
       "component": "mfa",
       "release": "1.8.0",
-      "issue": "MFA was checked on the interactive login path only. Every other token-issuing path — refresh, OAuth token exchange, the token login flow — issued a full session without consulting the user's MFA state, so the control was present in the UI and absent everywhere else.",
-      "fix": "src/services/application/authentication.ts — a single token-issuance chokepoint that every flow passes through",
+      "issue": "MFA was checked on the interactive login path only. Every other token-issuing path \u2014 refresh, OAuth token exchange, the token login flow \u2014 issued a full session without consulting the user's MFA state, so the control was present in the UI and absent everywhere else.",
+      "fix": "src/services/application/authentication.ts \u2014 a single token-issuance chokepoint that every flow passes through",
       "test": "src/tests/security/mfa/mfa.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -80,7 +80,7 @@
       "component": "mfa",
       "release": "1.8.0",
       "issue": "A TOTP code was checked against a resolved secret without confirming the code belonged to the account being authenticated, so a valid code for one account could satisfy verification for another.",
-      "fix": "src/services/totp.ts — verification is user-scoped",
+      "fix": "src/services/totp.ts \u2014 verification is user-scoped",
       "test": "src/tests/security/mfa/mfa.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -94,7 +94,7 @@
       "component": "scim",
       "release": "1.9.0",
       "issue": "A SCIM token was accepted as a global credential, so a provisioning client for one organization could read and write users and groups in every organization in the installation.",
-      "fix": "src/services/scimCredentials.ts and src/routes/scim.ts — a credential resolves to exactly one organization",
+      "fix": "src/services/scimCredentials.ts and src/routes/scim.ts \u2014 a credential resolves to exactly one organization",
       "test": "src/tests/security/scim/isolation.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -109,7 +109,7 @@
       "component": "trust-boundary",
       "release": "2.0.0",
       "issue": "The mTLS plugin trusted a client-supplied `x-service-account-id` header as the caller's identity. Any client that could reach the service could assert any service account and act as it, with no certificate and no secret.",
-      "fix": "src/plugins/mtls.ts — identity is derived from the verified client certificate and bound to its fingerprint",
+      "fix": "src/plugins/mtls.ts \u2014 identity is derived from the verified client certificate and bound to its fingerprint",
       "test": "src/tests/security/proxy/trust-boundary.test.ts",
       "documentation": "docs/security/mtls.md",
       "covers": [
@@ -124,7 +124,7 @@
       "component": "proxy",
       "release": "2.0.0",
       "issue": "`trustProxy: true` accepted x-forwarded-for from any peer, so a client could present a fresh address on every request and receive an unlimited rate-limit budget on every endpoint, including login and MFA verification.",
-      "fix": "src/services/trustedProxies.ts — forwarding headers are honoured only from explicitly configured networks",
+      "fix": "src/services/trustedProxies.ts \u2014 forwarding headers are honoured only from explicitly configured networks",
       "test": "src/tests/security/rate-limiting/abuse-prevention.test.ts",
       "documentation": "docs/security/proxy-security.md",
       "covers": [
@@ -138,7 +138,7 @@
       "component": "trust-boundary",
       "release": "2.0.0",
       "issue": "Identity-bearing headers survived to route handlers even when the peer was untrusted, so a header-stripping gap in one plugin would be a bypass in another.",
-      "fix": "src/plugins/headerSanitization.ts — untrusted identity headers are removed before routing",
+      "fix": "src/plugins/headerSanitization.ts \u2014 untrusted identity headers are removed before routing",
       "test": "src/tests/security/proxy/trust-boundary.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -153,7 +153,7 @@
       "component": "mtls",
       "release": "2.0.0",
       "issue": "Certificate authentication proved possession of a valid certificate but not that the certificate belonged to the service account being used, so any certificate issued by a trusted CA could impersonate any service account.",
-      "fix": "src/plugins/mtls.ts — the certificate fingerprint must match the stored binding",
+      "fix": "src/plugins/mtls.ts \u2014 the certificate fingerprint must match the stored binding",
       "test": "src/tests/security/proxy/trust-boundary.test.ts",
       "documentation": "docs/security/mtls.md",
       "covers": [
@@ -167,7 +167,7 @@
       "component": "supply-chain",
       "release": "2.1.0",
       "issue": "The production image included npm itself, which carried eight high advisories. `npm audit` and the OSV scanner both read the lockfile, not the image, so the finding was invisible to every configured gate.",
-      "fix": "Dockerfile — npm is removed from the runtime stage",
+      "fix": "Dockerfile \u2014 npm is removed from the runtime stage",
       "test": ".github/workflows/supply-chain.yml",
       "documentation": "docs/security/supply-chain.md",
       "covers": []
@@ -178,8 +178,8 @@
       "severity": "high",
       "component": "tokens",
       "release": "2.2.0",
-      "issue": "Magic links, password reset tokens and SMS OTP codes were checked and then consumed as two separate steps. Concurrent requests could each pass the check before any of them consumed the credential, so a single emailed code produced many sessions — 50 concurrent requests yielded 50 successful logins.",
-      "fix": "src/services/singleUse.ts — a single atomic claim, so exactly one request can consume a credential",
+      "issue": "Magic links, password reset tokens and SMS OTP codes were checked and then consumed as two separate steps. Concurrent requests could each pass the check before any of them consumed the credential, so a single emailed code produced many sessions \u2014 50 concurrent requests yielded 50 successful logins.",
+      "fix": "src/services/singleUse.ts \u2014 a single atomic claim, so exactly one request can consume a credential",
       "test": "src/tests/security/tokens/single-use.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -193,7 +193,7 @@
       "component": "tokens",
       "release": "2.2.0",
       "issue": "Replay of a consumed magic link, reset token or OTP returned the same error as presenting a credential that never existed, so the second use of a stolen code was invisible.",
-      "fix": "src/services/singleUse.ts — replay is detected and reported as its own outcome",
+      "fix": "src/services/singleUse.ts \u2014 replay is detected and reported as its own outcome",
       "test": "src/tests/security/tokens/single-use.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -207,7 +207,7 @@
       "component": "sessions",
       "release": "2.3.0",
       "issue": "Resetting a password left every existing session and refresh token valid. An attacker who had obtained a session before the victim changed their password retained access indefinitely, which defeats the purpose of the reset.",
-      "fix": "src/services/sessionRevocation.ts — a password change evicts sessions, refresh tokens and pending challenges",
+      "fix": "src/services/sessionRevocation.ts \u2014 a password change evicts sessions, refresh tokens and pending challenges",
       "test": "src/tests/security/sessions/session-revocation.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -222,7 +222,7 @@
       "component": "sessions",
       "release": "2.3.0",
       "issue": "Turning on a second factor left pre-existing sessions untouched, so an attacker holding a session captured before enrolment kept full access after the user believed they had raised their security.",
-      "fix": "src/services/sessionRevocation.ts — revocation is centralized and applied on MFA enablement",
+      "fix": "src/services/sessionRevocation.ts \u2014 revocation is centralized and applied on MFA enablement",
       "test": "src/tests/security/mfa/mfa.test.ts",
       "documentation": "docs/security/trust-boundaries.md",
       "covers": [
@@ -236,8 +236,8 @@
       "severity": "high",
       "component": "oauth",
       "release": "2.4.0",
-      "issue": "`verifyClientSecret` was called on the other grants but not on the authorization code exchange, so a confidential client could redeem a code with only its public client_id. Latent rather than live — the code still required a matching redirect_uri and the code itself — but it removed a layer that the grant was specified to have.",
-      "fix": "src/routes/oauth2.ts — client authentication is mandatory for confidential clients on every grant",
+      "issue": "`verifyClientSecret` was called on the other grants but not on the authorization code exchange, so a confidential client could redeem a code with only its public client_id. Latent rather than live \u2014 the code still required a matching redirect_uri and the code itself \u2014 but it removed a layer that the grant was specified to have.",
+      "fix": "src/routes/oauth2.ts \u2014 client authentication is mandatory for confidential clients on every grant",
       "test": "src/tests/security/oauth/oauth2-hardening.test.ts",
       "documentation": "docs/MIGRATION-2.4.md",
       "covers": [
@@ -251,7 +251,7 @@
       "component": "oauth",
       "release": "2.4.0",
       "issue": "Redirect URI validation checked structure but not scheme, so a client could register a `javascript:` URI. The authorization response carrying a code or token would then execute in the context of the authorization page, turning the redirect into script execution.",
-      "fix": "src/services/redirectUri.ts — only https, and http for loopback, are registrable",
+      "fix": "src/services/redirectUri.ts \u2014 only https, and http for loopback, are registrable",
       "test": "src/tests/security/oauth/oauth2-hardening.test.ts",
       "documentation": "docs/MIGRATION-2.4.md",
       "covers": [
@@ -265,7 +265,7 @@
       "component": "oidc",
       "release": "2.4.0",
       "issue": "The authorization request generated no nonce and the ID token response was not checked for one, so a token minted for a different session could be replayed into this one.",
-      "fix": "src/routes/oauth2.ts — a nonce is generated per request and verified on the response",
+      "fix": "src/routes/oauth2.ts \u2014 a nonce is generated per request and verified on the response",
       "test": "src/tests/security/oauth/oauth2-hardening.test.ts",
       "documentation": "docs/MIGRATION-2.4.md",
       "covers": [
@@ -279,7 +279,7 @@
       "component": "oidc",
       "release": "2.4.0",
       "issue": "The ID token's signing algorithm was read from the token's own header rather than from the connector's registered configuration, and neither `exp` nor `iat` was required. A token could therefore be verified under an algorithm the operator never configured, and one with no expiry at all was accepted.",
-      "fix": "src/services/connectors/oidc.ts — the algorithm comes from configuration, and exp and iat are required",
+      "fix": "src/services/connectors/oidc.ts \u2014 the algorithm comes from configuration, and exp and iat are required",
       "test": "src/tests/security/oauth/oauth2-hardening.test.ts",
       "documentation": "docs/MIGRATION-2.4.md",
       "covers": [
@@ -293,7 +293,7 @@
       "component": "oidc",
       "release": "2.5.0",
       "issue": "`GoogleConnector.exchangeCode` dropped the nonce when calling the token endpoint, so a correct nonce was never sent and the response could not be checked. This defeated SEC-018 for the most commonly configured provider, which is why the fix in 2.4.0 was not sufficient on its own.",
-      "fix": "src/services/connectors/google.ts — the nonce is forwarded on exchange",
+      "fix": "src/services/connectors/google.ts \u2014 the nonce is forwarded on exchange",
       "test": "src/tests/security/oidc/enterprise-sso.test.ts",
       "documentation": "docs/security/enterprise-sso.md",
       "covers": [
@@ -307,7 +307,7 @@
       "component": "saml",
       "release": "2.5.0",
       "issue": "The Issuer was compared only when it fell inside a signed region. An attacker could place an unsigned Issuer naming a trusted IdP alongside a signed assertion from another IdP. Confirmed to lie outside both signed regions, so it was a real gap in the trust decision rather than a theoretical one.",
-      "fix": "src/routes/saml.ts — the Issuer is validated against the configured entity id in all cases",
+      "fix": "src/routes/saml.ts \u2014 the Issuer is validated against the configured entity id in all cases",
       "test": "src/tests/security/saml/saml-adversarial.test.ts",
       "documentation": "docs/security/enterprise-sso.md",
       "covers": [
@@ -321,7 +321,7 @@
       "component": "saml",
       "release": "2.5.0",
       "issue": "A RelayState that failed its integrity check raised rather than returning a rejection, turning a routine validation failure into a 500 and obscuring the real cause.",
-      "fix": "src/routes/saml.ts — verification returns a boolean and never throws",
+      "fix": "src/routes/saml.ts \u2014 verification returns a boolean and never throws",
       "test": "src/tests/security/saml/saml-adversarial.test.ts",
       "documentation": "docs/security/enterprise-sso.md",
       "covers": []
@@ -333,7 +333,7 @@
       "component": "api-keys",
       "release": "2.6.0",
       "issue": "The scope registry contained a `service_account` entry that any key carrying could use as a wildcard against every scope check, so a narrowly scoped key behaved as a fully privileged one.",
-      "fix": "src/services/scopes.ts — the wildcard is gone; every scope must be named",
+      "fix": "src/services/scopes.ts \u2014 the wildcard is gone; every scope must be named",
       "test": "src/tests/security/api-keys/scopes-and-principals.test.ts",
       "documentation": "docs/security/scopes.md",
       "covers": [
@@ -348,7 +348,7 @@
       "component": "api-keys",
       "release": "2.6.0",
       "issue": "`requireScopes` returned early when `request.apiKeyId` was absent, so any authenticated path that reached a scoped route without going through key authentication skipped the scope check entirely.",
-      "fix": "src/services/scopes.ts — enforcement fails closed and treats a missing key as no authority",
+      "fix": "src/services/scopes.ts \u2014 enforcement fails closed and treats a missing key as no authority",
       "test": "src/tests/security/api-keys/scopes-and-principals.test.ts",
       "documentation": "docs/security/scopes.md",
       "covers": [
@@ -362,7 +362,7 @@
       "component": "service-accounts",
       "release": "2.6.0",
       "issue": "Profile and MFA management accepted any authenticated principal, so a service account key could read and change a person's profile and second-factor settings.",
-      "fix": "src/plugins/machinePrincipal.ts — requireHumanPrincipal() rejects machine principals, placed after authentication so it can see them",
+      "fix": "src/plugins/machinePrincipal.ts \u2014 requireHumanPrincipal() rejects machine principals, placed after authentication so it can see them",
       "test": "src/tests/security/api-keys/scopes-and-principals.test.ts",
       "documentation": "docs/security/scopes.md",
       "covers": [
@@ -376,8 +376,8 @@
       "severity": "high",
       "component": "configuration",
       "release": "2.7.0",
-      "issue": "Redaction matched a list of known secret-looking key names. Measuring it against the real configuration surface, 12 of 24 secret-shaped keys were returned unredacted, including the signing keys — so the owner-only configuration endpoint disclosed the material used to sign tokens.",
-      "fix": "src/services/configuration/profiles.ts — an allowlist of exposable keys replaces the denylist",
+      "issue": "Redaction matched a list of known secret-looking key names. Measuring it against the real configuration surface, 12 of 24 secret-shaped keys were returned unredacted, including the signing keys \u2014 so the owner-only configuration endpoint disclosed the material used to sign tokens.",
+      "fix": "src/services/configuration/profiles.ts \u2014 an allowlist of exposable keys replaces the denylist",
       "test": "src/tests/security/configuration/secrets-config.test.ts",
       "documentation": "docs/security/configuration.md",
       "covers": [
@@ -391,7 +391,7 @@
       "component": "configuration",
       "release": "2.7.0",
       "issue": "An unset or empty `ALLOWED_ORIGINS` was treated as 'allow all', combined with credentialed requests. A misconfiguration therefore produced a wildcard CORS policy that browsers enforce, rather than a closed one.",
-      "fix": "src/services/trustedProxies.ts — isOriginAllowed() fails closed on an empty allowlist, shared with the tests rather than duplicated",
+      "fix": "src/services/trustedProxies.ts \u2014 isOriginAllowed() fails closed on an empty allowlist, shared with the tests rather than duplicated",
       "test": "src/tests/security/configuration/secrets-config.test.ts",
       "documentation": "docs/security/configuration.md",
       "covers": [
@@ -405,7 +405,7 @@
       "component": "configuration",
       "release": "2.7.0",
       "issue": "The first-run setup server was configured with `origin: true` and credentials enabled, so any page in the operator's browser could call it during setup and complete provisioning.",
-      "fix": "src/routes/setup.ts — the setup origin is restricted to the server's own address",
+      "fix": "src/routes/setup.ts \u2014 the setup origin is restricted to the server's own address",
       "test": "src/tests/security/configuration/secrets-config.test.ts",
       "documentation": "docs/security/configuration.md",
       "covers": [
@@ -419,8 +419,8 @@
       "severity": "high",
       "component": "configuration",
       "release": "2.7.0",
-      "issue": "The token granting initial owner access was printed to the process log, so it reached log aggregation, container stdout capture and any log shipper — the credential intended to bootstrap trust was the one most widely distributed.",
-      "fix": "src/services/setup/token.ts — the token is delivered once, and printing requires an explicit opt-in",
+      "issue": "The token granting initial owner access was printed to the process log, so it reached log aggregation, container stdout capture and any log shipper \u2014 the credential intended to bootstrap trust was the one most widely distributed.",
+      "fix": "src/services/setup/token.ts \u2014 the token is delivered once, and printing requires an explicit opt-in",
       "test": "src/tests/security/configuration/secrets-config.test.ts",
       "documentation": "docs/security/configuration.md",
       "covers": [
@@ -434,7 +434,7 @@
       "component": "secrets",
       "release": "2.7.0",
       "issue": "Webhook secrets were stored as issued, so a database read, a backup or an admin query returned material that lets an attacker forge delivery attempts signed as this installation.",
-      "fix": "src/services/webhooks.ts — AES-256-GCM at rest, with legacy plaintext still readable",
+      "fix": "src/services/webhooks.ts \u2014 AES-256-GCM at rest, with legacy plaintext still readable",
       "test": "src/tests/security/configuration/secrets-config.test.ts",
       "documentation": "docs/security/configuration.md",
       "covers": [
@@ -448,7 +448,7 @@
       "component": "configuration",
       "release": "2.7.0",
       "issue": "`COOKIE_SECURE` defaulted to false, so a production deployment that did not set it explicitly issued session cookies over plaintext, exposing them to interception on any non-TLS path.",
-      "fix": "src/plugins/auth.ts — Secure defaults to true when NODE_ENV is production",
+      "fix": "src/plugins/auth.ts \u2014 Secure defaults to true when NODE_ENV is production",
       "test": "src/tests/security/configuration/secrets-config.test.ts",
       "documentation": "docs/security/configuration.md",
       "covers": [
@@ -463,7 +463,7 @@
       "component": "configuration",
       "release": "2.7.0",
       "issue": "The setup server bound 0.0.0.0, so during first run the unauthenticated provisioning endpoint was reachable from the network rather than only from the operator's machine.",
-      "fix": "src/routes/setup.ts — loopback by default, overridable, and warns when exposed",
+      "fix": "src/routes/setup.ts \u2014 loopback by default, overridable, and warns when exposed",
       "test": "src/tests/security/configuration/secrets-config.test.ts",
       "documentation": "docs/security/configuration.md",
       "covers": [
@@ -477,7 +477,7 @@
       "component": "rate-limiting",
       "release": "2.8.0",
       "issue": "Every limiter returned 'allowed' when Redis was unavailable, so during an outage login, MFA verification, OTP verification and the OAuth token exchange had no limit at all. An outage is precisely when unlimited attempts are worth having, because a burst of guessing no longer looks like a burst.",
-      "fix": "src/services/localRateLimit.ts — a bounded in-process budget, used only when Redis is unavailable",
+      "fix": "src/services/localRateLimit.ts \u2014 a bounded in-process budget, used only when Redis is unavailable",
       "test": "src/tests/security/rate-limiting/abuse-prevention.test.ts",
       "documentation": "docs/security/rate-limiting.md",
       "covers": []
@@ -489,7 +489,7 @@
       "component": "rate-limiting",
       "release": "2.8.0",
       "issue": "The rate-limit key included the submitted email, which the verification endpoint does not carry, so all 20 attempts were shared across every user at that address. An office behind a single NAT could have every legitimate second-factor login locked out by ordinary traffic.",
-      "fix": "src/routes/auth.ts — the key includes the challenge, which identifies one login attempt",
+      "fix": "src/routes/auth.ts \u2014 the key includes the challenge, which identifies one login attempt",
       "test": "src/tests/security/rate-limiting/abuse-prevention.test.ts",
       "documentation": "docs/security/rate-limiting.md",
       "covers": [
@@ -503,7 +503,7 @@
       "component": "rate-limiting",
       "release": "2.8.0",
       "issue": "The login budget was keyed on address and submitted address together, so it stopped repeated guesses at one account and did nothing about an attacker varying the address across a thousand accounts from one host.",
-      "fix": "src/routes/auth.ts — a second, address-keyed budget bounds spraying independently",
+      "fix": "src/routes/auth.ts \u2014 a second, address-keyed budget bounds spraying independently",
       "test": "src/tests/security/rate-limiting/abuse-prevention.test.ts",
       "documentation": "docs/security/rate-limiting.md",
       "covers": []
@@ -515,7 +515,7 @@
       "component": "audit",
       "release": "2.8.0",
       "issue": "A rate-limit trip produced a 429 and nothing else, so sustained guessing at login or MFA verification was invisible except in aggregate. The requests that most warranted attention were the only ones absent from the log.",
-      "fix": "src/plugins/rateLimit.ts — rate_limit_triggered records the endpoint, address and which limiter decided",
+      "fix": "src/plugins/rateLimit.ts \u2014 rate_limit_triggered records the endpoint, address and which limiter decided",
       "test": "src/tests/security/rate-limiting/abuse-prevention.test.ts",
       "documentation": "docs/security/rate-limiting.md",
       "covers": []
@@ -527,7 +527,7 @@
       "component": "audit",
       "release": "2.8.0",
       "issue": "user_login_failed existed in the event vocabulary and was never emitted, on either login route. Password guessing left no record.",
-      "fix": "src/routes/auth.ts — emitted on both routes, with no user id since the submitted address may match no account",
+      "fix": "src/routes/auth.ts \u2014 emitted on both routes, with no user id since the submitted address may match no account",
       "test": "src/tests/security/authentication/login-abuse.test.ts",
       "documentation": "docs/security/audit.md",
       "covers": []
@@ -539,7 +539,7 @@
       "component": "tokens",
       "release": "2.8.0",
       "issue": "Rotation consumes a refresh token, so a second presentation failed exactly as a token that never existed would. A leaked token used twice was therefore treated as a typo, and the account's other credentials stayed valid.",
-      "fix": "src/services/refreshTokenState.ts — a spent token is identified and the account's credentials are revoked",
+      "fix": "src/services/refreshTokenState.ts \u2014 a spent token is identified and the account's credentials are revoked",
       "test": "src/tests/security/authentication/login-abuse.test.ts",
       "documentation": "docs/security/audit.md",
       "covers": [
@@ -554,7 +554,7 @@
       "component": "api-keys",
       "release": "2.8.0",
       "issue": "Minting a credential is an authentication event but was unlimited, so a leaked session could enumerate a batch of keys.",
-      "fix": "src/routes/apiKeys.ts — bounded like any other authentication endpoint",
+      "fix": "src/routes/apiKeys.ts \u2014 bounded like any other authentication endpoint",
       "test": "src/tests/security/rate-limiting/abuse-prevention.test.ts",
       "documentation": "docs/security/rate-limiting.md",
       "covers": []
@@ -565,8 +565,8 @@
       "severity": "medium",
       "component": "testing",
       "release": "2.9.0",
-      "issue": "`tsc` does not remove output for sources that were renamed or deleted, so a moved suite ran twice under two paths and a deleted suite kept running. Test discovery therefore did not reflect the source tree, and a security test could be removed from the repository while continuing to pass in CI — or the reverse, a suite silently dropped out of the run.",
-      "fix": "package.json — the build cleans dist before compiling",
+      "issue": "`tsc` does not remove output for sources that were renamed or deleted, so a moved suite ran twice under two paths and a deleted suite kept running. Test discovery therefore did not reflect the source tree, and a security test could be removed from the repository while continuing to pass in CI \u2014 or the reverse, a suite silently dropped out of the run.",
+      "fix": "package.json \u2014 the build cleans dist before compiling",
       "test": "scripts/verify-release-metadata.mjs",
       "documentation": "docs/security/registry.md",
       "covers": []
@@ -578,7 +578,7 @@
       "component": "testing",
       "release": "2.9.0",
       "issue": "A suite reached its fixture by counting parent directories, which resolved correctly from `src` and not from the compiled output in `dist`. The suite passed and then failed to load the moment it was moved, which is a poor way to discover that a path is fragile.",
-      "fix": "src/tests/helpers/paths.ts — paths are anchored on the nearest package.json",
+      "fix": "src/tests/helpers/paths.ts \u2014 paths are anchored on the nearest package.json",
       "test": "src/tests/security/authorization/authorization.test.ts",
       "documentation": "docs/security/registry.md",
       "covers": []
@@ -589,8 +589,8 @@
       "severity": "high",
       "component": "testing",
       "release": "2.9.0",
-      "issue": "`node --test` expands `**` as a single directory level rather than as globstar, so the discovery patterns stopped matching as soon as the security suites gained a directory level. 48 security tests — the entire authorization suite — stopped running, and the suite still reported success because the remaining files passed. A green run was reporting on less than the repository contained.",
-      "fix": "package.json — one pattern per directory depth, with no overlap",
+      "issue": "`node --test` expands `**` as a single directory level rather than as globstar, so the discovery patterns stopped matching as soon as the security suites gained a directory level. 48 security tests \u2014 the entire authorization suite \u2014 stopped running, and the suite still reported success because the remaining files passed. A green run was reporting on less than the repository contained.",
+      "fix": "package.json \u2014 one pattern per directory depth, with no overlap",
       "test": "src/tests/security/registry.test.ts",
       "documentation": "docs/security/registry.md",
       "covers": []
@@ -601,8 +601,8 @@
       "severity": "medium",
       "component": "audit",
       "release": "2.9.0",
-      "issue": "The CSV export quoted values containing a delimiter or a quote, but did not neutralise a value beginning with `=`, `+`, `-` or `@`. Several of the exported columns are attacker-supplied — the user agent above all — and a spreadsheet evaluates such a cell as a formula when the file is opened. An audit export is precisely the file an operator opens in a spreadsheet, so that is the expected consumer rather than an edge case. Found by Semgrep's `direct-response-write` rule during the triage for this release; the rule's own finding was a false positive, but the code it pointed at was not.",
-      "fix": "src/routes/admin/platform.ts — a value with a formula prefix in first position is prefixed with an apostrophe before quoting",
+      "issue": "The CSV export quoted values containing a delimiter or a quote, but did not neutralise a value beginning with `=`, `+`, `-` or `@`. Several of the exported columns are attacker-supplied \u2014 the user agent above all \u2014 and a spreadsheet evaluates such a cell as a formula when the file is opened. An audit export is precisely the file an operator opens in a spreadsheet, so that is the expected consumer rather than an edge case. Found by Semgrep's `direct-response-write` rule during the triage for this release; the rule's own finding was a false positive, but the code it pointed at was not.",
+      "fix": "src/routes/admin/platform.ts \u2014 a value with a formula prefix in first position is prefixed with an apostrophe before quoting",
       "test": "src/tests/security/audit-export.test.ts",
       "documentation": "docs/security/audit.md",
       "covers": []
@@ -613,10 +613,34 @@
       "severity": "high",
       "component": "audit",
       "release": "2.9.0",
-      "issue": "A machine principal is represented in memory by a user object whose id is the sentinel `sa:<uuid>`, so that routes expecting `request.user` keep working without a matching user row. The audit subscriber passed that sentinel straight into `audit_log.user_id`, which is a uuid column. Postgres rejected the insert, the subscriber's catch logged `failed to write event` and the audit record was lost. The request itself succeeded, so nothing failed visibly, and the absence of a record looked exactly like a request that never happened. The practical effect was that every request authenticated by an API key or an mTLS service account left no audit trail — the privileged, non-human path, which is the one an attacker would most want to use quietly. Surfaced by a test whose fixture failed in CI and not locally, because CI's request ids and principal resolution differed enough for the bad insert to occur there.",
-      "fix": "src/services/events/subscribers/auditLog.ts — the sentinel is stripped, user_id is left null, and the service account is recorded in metadata",
+      "issue": "A machine principal is represented in memory by a user object whose id is the sentinel `sa:<uuid>`, so that routes expecting `request.user` keep working without a matching user row. The audit subscriber passed that sentinel straight into `audit_log.user_id`, which is a uuid column. Postgres rejected the insert, the subscriber's catch logged `failed to write event` and the audit record was lost. The request itself succeeded, so nothing failed visibly, and the absence of a record looked exactly like a request that never happened. The practical effect was that every request authenticated by an API key or an mTLS service account left no audit trail \u2014 the privileged, non-human path, which is the one an attacker would most want to use quietly. Surfaced by a test whose fixture failed in CI and not locally, because CI's request ids and principal resolution differed enough for the bad insert to occur there.",
+      "fix": "src/services/events/subscribers/auditLog.ts \u2014 the sentinel is stripped, user_id is left null, and the service account is recorded in metadata",
       "test": "src/tests/security/service-accounts/audit-attribution.test.ts",
       "documentation": "docs/security/audit.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-047",
+      "title": "The distributed rate limiter was never running; every limit was per-instance",
+      "severity": "high",
+      "component": "rate-limiting",
+      "release": "3.2.0",
+      "issue": "checkLimit opened with `if (!isRedisReady()) return <local decision>`. The shared Redis client is created with `lazyConnect`, so on a fresh process its status is `\"wait\"` and isRedisReady() is false. The guard therefore returned the in-process budget **without ever issuing a command** \u2014 so the client stayed lazy, so the next request reached the same verdict, and the Redis limiter was never reached on any request. Whether rate limiting was shared across a fleet depended entirely on whether some unrelated code path happened to touch Redis first: the queue, anomaly detection, or \u2014 as of 3.2.0 \u2014 the new permission cache. In a deployment where nothing did, every instance limited independently, which is the precise weakness the distributed limiter exists to remove: a client multiplies its budget by the instance count. Three controls were inert as a result. The emergency local limit on `POST /auth/token-login` and `/auth/mfa/verify` meant a brute-force budget per instance rather than per deployment. The pre-authentication budget on `/scim/v2/*` (`scim-auth:<address>`, 60 a minute) was never enforced at all, because it is called with `useEmergencyLocal: false` and so failed open on every request \u2014 an unauthenticated surface with no budget whatsoever. And the global `onRequest` limiter did the same. Found while adding the permission cache: the cache issues a command on the same client, which connected it, which switched the limiter from per-instance to shared, and the security suites' aggregate request count then exceeded a budget that had never applied to them.",
+      "fix": "src/plugins/rateLimit.ts \u2014 the readiness guard is gone. checkLimit attempts the command, because a lazily-connecting client connects on its first command, and selects the local path only when the command actually fails. The pre-auth budget on /scim/v2 now has a working backend and is a real control rather than a failing-open no-op",
+      "test": "src/tests/security/rate-limiting/backend-choice.test.ts",
+      "documentation": "docs/security/rate-limiting.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-048",
+      "title": "The anti-spraying login budget was keyed on address and account, so it bounded nothing",
+      "severity": "high",
+      "component": "rate-limiting",
+      "release": "3.2.0",
+      "issue": "`rateLimit()` built every key as `prefix:identifier:body.email`, appending the submitted address whether or not the limiter wanted it. `POST /auth/token-login` carries two budgets: `login` at 5 per 15 minutes keyed on address and submitted address, and `login-per-address` at 30 per 15 minutes, which exists specifically because the first is the wrong shape for spraying \u2014 the comment beside it says an attacker who varies the submitted address gets a fresh budget per attempt and can guess across a thousand accounts from one host. The second budget was keyed on address **and** account, so it had exactly the shape the comment describes as the problem, and thirty distinct accounts from one address each received a full budget of thirty. The control bounded nothing. The code, the comment beside it, and docs/security/rate-limiting.md all disagreed with each other; the documentation described the intended behaviour, and no test asserted it. Every other limiter inherited the same key shape, so this was a property of the helper rather than of this one route.",
+      "fix": "src/plugins/rateLimit.ts \u2014 the key composition is now an explicit option, `includeSubmittedAddress`, defaulting to the previous behaviour so no other limiter moves. Both `login-per-address` budgets set it to false. The regression test sprays rather than inspecting the key, because a test written against the key format would have been written against whatever the format happened to be",
+      "test": "src/tests/security/rate-limiting/spraying.test.ts",
+      "documentation": "docs/security/rate-limiting.md",
       "covers": []
     }
   ],
@@ -644,6 +668,16 @@
       "test": "src/tests/security/saml/sso-endpoint.test.ts",
       "covers": "isPrivateAddress classifies loopback, private, link-local, carrier-grade NAT, benchmarking and both spellings of IPv4-mapped IPv6 as non-public.",
       "why": "Coverage for the endpoint address policy in src/services/ssoEndpointPolicy.ts, which keeps operator-supplied SSO endpoint URLs from pointing at internal addresses. No defect was evidenced behind it, so it is not a numbered finding."
+    },
+    {
+      "test": "src/tests/security/authorization/permissionCache.test.ts",
+      "covers": "The Redis permission cache: a grant and a revocation are both visible on the next read with no TTL wait, a deleted permission cascades to every role, a Redis client that is disconnected or failing falls through to the database rather than to an in-process copy, an empty set is never cached, and a malformed cache entry is read as a miss rather than as an empty permission set.",
+      "why": "Coverage for the permission cache added in 3.2.0. No defect was evidenced behind it: the cache is new, and the two failure modes it is shaped around \u2014 a stale in-process fallback, and a poisoned entry resolving to an empty set \u2014 are asserted as properties rather than as regressions against a numbered finding. The one real defect found alongside it, the SCIM group reconcile skipping its organization membership check, was introduced and fixed inside the unreleased 3.1.0 cycle and is covered in src/tests/security/scim/isolation.test.ts, a suite that is already registered \u2014 it is not a numbered finding because it never reached a release."
+    },
+    {
+      "test": "src/tests/security/rate-limiting/backend-choice.test.ts",
+      "covers": "The rate limiter selects its backend by attempting the Redis command rather than by inspecting the client: an unconnected but connectable client is used, and a disconnected one rejects so the local fallback is reachable. A budget spent through one 'instance' is seen by the next, which is the property a distributed limiter exists for.",
+      "why": "The regression test for SEC-047. Registered separately from the finding because the backend-selection assertions are properties of the plugin rather than evidence of the defect, which the spraying and 3.1.0 suites also cover."
     }
   ]
 }

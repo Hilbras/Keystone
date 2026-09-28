@@ -5,6 +5,111 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-09-28
+
+*The database layer. The release the roadmap called medium-risk, and which turned
+up two security findings that had nothing to do with databases.*
+
+### Two rate limits were never running
+
+**SEC-047 — the distributed limiter was dead on arrival.** `checkLimit` opened with
+`if (!isRedisReady()) return <the local decision>`. The shared Redis client is
+created with `lazyConnect`, so on a fresh process its status is `"wait"` and
+`isRedisReady()` is false. The guard returned the in-process budget **without ever
+issuing a command** — so the client stayed lazy, so the next request reached the
+same verdict, and Redis was never reached on any request. Whether rate limiting
+was shared across a fleet depended on whether something unrelated happened to touch
+Redis first: the queue, anomaly detection, or — as of this release — the new
+permission cache. In a deployment where nothing did, every instance limited
+independently, which is the exact weakness the distributed limiter exists to
+prevent. Three controls were inert: the emergency local limit on `login` and
+`mfa/verify` (a brute-force budget per instance), the `scim-auth` pre-authentication
+budget on `/scim/v2/*` (**nothing** — it is called with `useEmergencyLocal: false`
+and so failed open on every request), and the global `onRequest` limiter (same).
+
+Fix: attempt the command, and let a real failure select the local path. A
+lazily-connecting client connects on its first command, so there is nothing to poll.
+
+**SEC-048 — the anti-spraying budget bounded nothing.** `rateLimit()` built every
+key as `prefix:identifier:body.email`, appending the submitted address whether or
+not the limiter wanted it. `login-per-address` — 30 per fifteen minutes, which
+exists *because* the per-account budget beside it is the wrong shape for spraying —
+was therefore keyed on address **and** account. Thirty distinct accounts from one
+address each got a full budget of thirty. The code, the comment beside it, and
+`docs/security/rate-limiting.md` all disagreed with each other, and no test asserted
+it. Key composition is now the explicit option `includeSubmittedAddress`, defaulting
+to the old behaviour so no other limiter moved; both address-only budgets opt out.
+
+Found by accident, which is worth recording: the permission cache issues a command
+on the same Redis client, which connected it, which switched the limiter from
+per-instance to shared — and the security suites' aggregate request count then
+exceeded a budget that had never applied to them. A control that is quietly off is
+invisible until something turns it on.
+
+### Fixed
+
+- **The SCIM group reconcile no longer costs a transaction per member.**
+  `addMember` opened its own transaction and issued six statements per member, so
+  a 1,000-member push was 6,010 statements. `reconcileMembers` resolves the group,
+  the current members and the organization memberships once, then applies the
+  whole set-difference in two statements. **70 → 15 statements at 10 members, 610 →
+  15 at 100, and 15 at 1,000** — the count no longer depends on the group size.
+- **A rejected reconcile now applies nothing.** The old loop inserted members one
+  at a time and threw partway through, so a request refused with 404 could leave
+  the first few members inserted — a state no single request described, and which a
+  retry would have found already half-done. It is one transaction now.
+- **The login budgets are configurable** (`LOGIN_MAX_ATTEMPTS`,
+  `LOGIN_PER_ADDRESS_MAX`, `LOGIN_WINDOW_SECONDS`). They had to be: until now they
+  were decorative, since raising them appeared to do nothing and lowering them broke
+  nothing.
+
+### Added
+
+- **A Redis permission cache** for the hottest read in the system, which runs on
+  every organization-scoped request. Invalidated on every write, with a 5-minute
+  TTL only as a backstop.
+  Deliberately **Redis-only, with no in-process fallback**: the general-purpose
+  cache in `services/cache.ts` falls back to a `Map`, which is right for a rendered
+  dashboard and wrong for an authorization decision, because a fallback entry has
+  no invalidation path and two instances would answer differently. A revoked
+  permission that survives in a cache is a security defect, not a caching trade-off.
+  An empty set is never cached either, so a role granted permissions later is not
+  left holding nothing until the TTL expires.
+- **`src/repositories/workflow.ts`**, and `workflows.ts` behind a shared guard.
+  Five handlers each wrote their own membership query against `db` and decided
+  authorization for themselves; the check is now one `preHandler` and the query is
+  behind a repository. The behaviour is unchanged — same 403s, same audit events —
+  and it is now visible in the route table.
+- **Two gates, each verified by breaking it**: `reconcileStatements.test.ts`
+  (reverting to the per-member loop fails it, and the message names the counts) and
+  `permissionIndex.test.ts`.
+
+### The index migration did not happen, on purpose
+
+§2.2 proposed indexes on `permissions` and `role_permissions`. Both already had
+composite unique indexes — `(resource, action)` and `(role, permission_id)` — which
+are exactly the columns the query uses. The analysis found no *other* index and
+reported that as no index at all.
+
+And at this repository's real counts (150 and 302 rows) the planner correctly picks
+a sequential scan: **0.291ms, 5 buffers**. Forcing the existing indexes costs more —
+**0.415ms**. The index would have been 40% slower for the same answer, plus a write
+on every permission seed. So the deliverable is a gate, not a migration: it asserts
+the indexes exist, asserts the catalogue is below the size at which the sequential
+scan was last measured, and tells you exactly what to re-measure when it isn't.
+
+The crossover is somewhere between 302 rows (scan wins) and 2,000 matching rows
+(index wins, 5.2ms against 7.9ms). The real condition is the shape, not the number:
+the catalogue is bounded by the resource:action surface, so it cannot grow with
+users or organizations.
+
+### Removed
+
+- **`src/services/permissions.ts`**, which nothing imported. It was a second,
+  drifting copy of the permission catalogue — the same 22 permissions and 3 role
+  maps as `repositories/permission.ts`, able to disagree with the copy that actually
+  authorizes.
+
 ## [3.1.0] - 2026-09-28
 
 *Measure. Two things were asserted to be observability and performance work and

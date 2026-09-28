@@ -10,3 +10,4 @@ export { DrizzleOidcConnectionRepository, type OidcConnectionRepository } from "
 export { DrizzleMfaChallengeRepository } from "./mfaChallenge.js";
 export { DrizzleScimConnectionRepository } from "./scimConnection.js";
 export { DrizzleScimGroupRepository } from "./scimGroup.js";
+export { DrizzleWorkflowRepository } from "./workflow.js";

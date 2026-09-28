@@ -82,6 +82,7 @@ interface Measured {
   /** The fastest sample, so a large spread is visible rather than averaged away. */
   fastest: number;
   queries: number;
+  queriesMax: number;
   samples: number[];
 }
 
@@ -168,9 +169,7 @@ async function calibrate(): Promise<{ cpuMs: number; dbMs: number; total: number
  * Time a call and count the SQL it sent.
  *
  * `setup` runs before the clock starts and before counting starts, so resetting
- * state between samples does not show up as work. The query count reported is the
- * **maximum** across samples rather than the median: an N+1 that appears on one
- * request in five is still a regression, and a median would hide it.
+ * state between samples does not show up as work.
  */
 async function measure(
   setup: ((sample: number) => Promise<void>) | undefined,
@@ -178,7 +177,7 @@ async function measure(
   samples = SAMPLES
 ): Promise<Measured> {
   const timings: number[] = [];
-  let maxQueries = 0;
+  const queryCounts: number[] = [];
 
   for (let i = 0; i < samples; i++) {
     // One untimed pass first. The first execution of a path pays for JIT
@@ -203,7 +202,7 @@ async function measure(
     } finally {
       const ms = Number(process.hrtime.bigint() - started) / 1e6;
       timings.push(ms);
-      maxQueries = Math.max(maxQueries, stopCountingQueries());
+      queryCounts.push(stopCountingQueries());
       process.stdout.write(`    sample ${i + 1}/${samples}: ${ms.toFixed(1)}ms\n`);
     }
   }
@@ -223,7 +222,11 @@ async function measure(
     // and record as the new normal.
     ms: Number(median(timings).toFixed(3)),
     fastest: Number(Math.min(...timings).toFixed(3)),
-    queries: maxQueries,
+    // The median, not the max: a cold cache makes the first sample cost more
+    // than the rest, and reporting that as the per-request cost would be wrong in
+    // the direction that flatters the change. See `queriesMax` in ./compare.ts.
+    queries: median(queryCounts),
+    queriesMax: Math.max(...queryCounts),
     samples: timings.map((t) => Number(t.toFixed(3))),
   };
 }

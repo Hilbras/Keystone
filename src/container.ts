@@ -10,6 +10,7 @@ import type {
   MfaChallengeRepository,
   ScimConnectionRepository,
   ScimGroupRepository,
+  WorkflowRepository,
 } from "./repositories/types.js";
 import type { ApiKeyRepository } from "./repositories/apiKey.js";
 import type { SamlConnectionRepository } from "./repositories/samlConnection.js";
@@ -29,6 +30,7 @@ export interface Container {
   mfaChallengeRepository: MfaChallengeRepository;
   scimConnectionRepository: ScimConnectionRepository;
   scimGroupRepository: ScimGroupRepository;
+  workflowRepository: WorkflowRepository;
   apiKeyRepository: ApiKeyRepository;
   samlConnectionRepository: SamlConnectionRepository;
   oidcConnectionRepository: OidcConnectionRepository;
