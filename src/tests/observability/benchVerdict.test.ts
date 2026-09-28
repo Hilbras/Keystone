@@ -21,6 +21,7 @@ function reading(over: Partial<ScenarioReading> = {}): ScenarioReading {
     ms: 100,
     fastest: 95,
     queries: 5,
+    queriesMax: 5,
     relative: 1,
     controlMs: 100,
     samples: [100, 100, 100],
@@ -67,6 +68,30 @@ describe("benchmark verdict", () => {
     // The pre-3.1.0 shape: one member query per group per page. A page of 500.
     const baseline = run({ "group-list": reading({ queries: 5 }) });
     const current = run({ "group-list": reading({ queries: 505 }) });
+    const verdict = compare(baseline, current);
+
+    assert.equal(verdict.failed, true);
+    assert.equal(verdict.queryRegressions.length, 1);
+  });
+
+  it("is not fooled by a cold first request", () => {
+    // The permission cache makes the first `/v1/authz/check` of a run cost 7
+    // statements and every one after it cost 5. Gating on the maximum would
+    // report 7 for a path whose steady-state cost is 5 — flattering the change
+    // in one direction and, worse, reporting a per-request number that no
+    // request pays.
+    const baseline = run({ "authz-check": reading({ queries: 5, queriesMax: 5 }) });
+    const current = run({ "authz-check": reading({ queries: 5, queriesMax: 7 }) });
+    const verdict = compare(baseline, current);
+
+    assert.equal(verdict.failed, false, "a one-off cold-cache cost is not a regression");
+  });
+
+  it("still fails when every request pays the extra statement", () => {
+    // The same shape, but this time the median moved too — which is what an
+    // actual N+1 looks like.
+    const baseline = run({ "authz-check": reading({ queries: 5, queriesMax: 5 }) });
+    const current = run({ "authz-check": reading({ queries: 6, queriesMax: 6 }) });
     const verdict = compare(baseline, current);
 
     assert.equal(verdict.failed, true);

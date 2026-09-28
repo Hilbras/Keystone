@@ -1,6 +1,6 @@
 # Rate limiting and abuse prevention
 
-Covers SEC-033 through SEC-039.
+Covers SEC-033 through SEC-039, and SEC-047.
 
 ## Redis is the primary limiter, and there is a fallback
 
@@ -30,6 +30,65 @@ deliberate: the fallback is per-instance, and applying it to high-volume
 low-value endpoints would trade a real availability problem for a small
 reduction in abuse resistance.
 
+## The primary limiter was not running (SEC-047, 3.2.0)
+
+Everything above describes a design in which Redis is the limiter and the
+in-process window is the fallback. In practice the fallback was the *only* path,
+because of the same mistake twice over.
+
+`checkLimit` opened with:
+
+```ts
+if (!isRedisReady()) return <the local decision>;
+```
+
+The shared client is created with `lazyConnect`, so on a fresh process its status
+is `"wait"` and `isRedisReady()` is false. The guard returned the local budget
+**without ever issuing a command** — so the client stayed lazy, so the next
+request reached the same verdict, and Redis was never reached on any request.
+
+Whether rate limiting was shared across a fleet depended on whether some
+unrelated code path happened to touch Redis first: the queue, anomaly detection,
+or — as of 3.2.0 — the new permission cache. A deployment where nothing did had
+one budget per instance, which is exactly what the distributed limiter exists to
+prevent.
+
+Three controls were inert as a result:
+
+| Control | What it was doing instead |
+|---|---|
+| `login` / `mfa/verify` emergency local limit | limiting per instance, so a client could multiply a brute-force budget by the instance count |
+| `scim-auth:<address>` — the pre-authentication budget on `/scim/v2/*` | **nothing**. It is called with `useEmergencyLocal: false`, so it failed open on every request: an unauthenticated surface with no budget at all. |
+| the global `onRequest` limiter | the same, failing open |
+
+The fix is to attempt the command and let a real failure select the local path.
+A lazily-connecting client connects on its first command, so there is nothing to
+poll:
+
+```ts
+try {
+  const count = await redis.eval(slidingWindowLua, /* ... */);
+  return { allowed: count < maxAttempts, limiter: "redis", /* ... */ };
+} catch {
+  return localDecision(key, maxAttempts, windowSeconds, useEmergencyLocal);
+}
+```
+
+Regression tests: `src/tests/security/rate-limiting/backend-choice.test.ts`.
+
+It was found by accident, which is worth recording. Adding the permission cache
+made it issue a command on the same client, which connected it, which switched the
+limiter from per-instance to shared — and the security suites' aggregate request
+count immediately exceeded a budget that had never applied to them. A control
+that was quietly off is invisible until something turns it on.
+
+The test scripts raise `GLOBAL_RATE_LIMIT_MAX`, `SCIM_AUTH_FAILURE_MAX` and
+`SCIM_RATE_LIMIT_MAX`. That is the values, not the limiter: a suite fires
+hundreds of requests from one loopback address in under a minute, which is not an
+attack, and throttling it produces failures that say nothing about the code.
+`abuse-prevention.test.ts` and `backend-choice.test.ts` exercise the real limits
+and are unaffected.
+
 ## What each budget is keyed on
 
 The key matters more than the number.
@@ -42,8 +101,16 @@ The key matters more than the number.
 | `totp-*` | user | a TOTP code is checked against one account's secret |
 | `scim` | credential | one noisy IdP cannot exhaust everyone else's budget |
 
-Two of these were wrong before v2.8.0, and both were found by a test suite that
-had been passing for the wrong reason:
+`login-per-address` only became address-only in 3.2.0. The key was
+`prefix:identifier:submittedAddress` for every limiter, so it was keyed on address
+**and** account — the same shape as the budget beside it, and no control on
+spraying at all. The key composition is now the explicit option
+`includeSubmittedAddress`, which defaults to the old behaviour so that no other
+limiter moved, and both `login-per-address` budgets set it to false. The table
+above described the intent the code did not implement; see SEC-048.
+
+Four of these were wrong before 3.2.0, and all of them were found by a test suite
+that had been passing for the wrong reason:
 
 - `mfa-verify` included `body.email`, which that endpoint does not carry. So
   every second-factor verification from one address shared a budget of 20. An

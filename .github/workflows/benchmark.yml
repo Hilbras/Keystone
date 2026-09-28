@@ -72,12 +72,18 @@ jobs:
       REDIS_URL: redis://localhost:6379
       KEYSTONE_INTERNAL_API_KEY: benchmark-internal-key
       KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
-      # The benchmark makes about 40 SCIM requests; the default limit is 600 a
-      # minute, which is enough. Raised anyway so that lowering the rate limit for
-      # a security test cannot quietly turn the reconcile scenarios into 429s —
-      # and a 429 is a fast response, so the benchmark would report it as a
-      # spectacular improvement rather than a failure.
-      SCIM_RATE_LIMIT_MAX: "100000"
+      # Budgets raised, not disabled. The benchmark injects tens of thousands of
+      # requests from one loopback address in a few minutes, which is not an
+      # attack. This matters more than it used to: until 3.2.0 the global and SCIM
+      # limits were inert (SEC-047), so the benchmark never hit them. Now that they
+      # work, a run without these would be answered 429 — and a 429 is a *fast*
+      # response, so the benchmark would report a spectacular improvement rather
+      # than a failure. The statement counts would be meaningless too.
+      GLOBAL_RATE_LIMIT_MAX: "1000000"
+      SCIM_AUTH_FAILURE_MAX: "1000000"
+      SCIM_RATE_LIMIT_MAX: "1000000"
+      LOGIN_MAX_ATTEMPTS: "1000000"
+      LOGIN_PER_ADDRESS_MAX: "1000000"
       NO_COLOR: "1"
 
     steps:

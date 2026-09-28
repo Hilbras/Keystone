@@ -188,4 +188,113 @@ export class DrizzleScimGroupRepository implements ScimGroupRepository {
       .returning({ id: scimGroupMembers.id });
     return rows.length === 1;
   }
+
+  /**
+   * Make the group's membership exactly `submittedUserIds`, in one transaction.
+   *
+   * This replaces a per-member loop, and the reason is a measurement rather than
+   * a preference. `addMember` opens its own transaction and issues six statements
+   * per member — `BEGIN`, the group lookup, the membership lookup, the insert,
+   * `COMMIT`, and the driver's own bookkeeping — so a 1,000-member group push was
+   * 6,010 statements and about 65 seconds. Not quadratic, as it had been
+   * described; linear with a 6x constant, which is the same problem wearing a
+   * different hat.
+   *
+   * Here the statement count does not depend on the member count at all: the
+   * group, the current members, the organization memberships, the additions and
+   * the removals are each resolved in exactly one statement, and the two writes
+   * are one statement each regardless of how many rows they carry.
+   *
+   * Two properties the per-member version had, and how they are kept:
+   *
+   * **Tenancy is still enforced here, not by the caller.** The group must belong
+   * to `orgId` and every submitted user must be a member of `orgId`, both resolved
+   * inside this transaction. `addMember`'s comment said callers could not bypass
+   * the check by passing a foreign id; that is still true, and it is still not the
+   * route's job to arrange.
+   *
+   * **Application is now atomic.** The old loop inserted members one at a time
+   * and threw partway through if a later one was not an org member, so a rejected
+   * request could leave the first few members inserted. That was never documented
+   * and no test relied on it, but a caller retrying after a 404 would have found
+   * the group in a state no single request described. Now either the whole
+   * submitted set is applied or none of it is.
+   *
+   * `rejected` lists the submitted users that are not members of `orgId`. The
+   * caller decides what a rejection means — the SCIM route turns it into a 404,
+   * which is the behaviour `addMember`'s `false` return produced.
+   */
+  async reconcileMembers(
+    orgId: string,
+    groupId: string,
+    submittedUserIds: string[]
+  ): Promise<{ added: number; removed: number; rejected: string[] }> {
+    // De-duplicate, preserving order. A group list may legitimately contain the
+    // same user twice, and without this the additions statement would carry the
+    // same row twice and lean on ON CONFLICT DO NOTHING to absorb it.
+    const submitted = [...new Set(submittedUserIds)];
+
+    return db.transaction(async (tx) => {
+      // 1. The group must belong to this organization.
+      const [group] = await tx
+        .select({ id: scimGroups.id })
+        .from(scimGroups)
+        .where(and(eq(scimGroups.id, groupId), eq(scimGroups.orgId, orgId)))
+        .limit(1);
+      if (!group) return { added: 0, removed: 0, rejected: submitted };
+
+      // 2. What is in the group now. User ids only — the read-modify-write needs
+      //    no email or name, and the response is built separately.
+      const current = await tx
+        .select({ userId: scimGroupMembers.userId })
+        .from(scimGroupMembers)
+        .where(eq(scimGroupMembers.groupId, groupId));
+      const present = new Set(current.map((r) => r.userId));
+
+      // 3. Who is actually in the organization. One query for the whole
+      //    submitted set, rather than one per member.
+      const eligible = new Set<string>();
+      if (submitted.length > 0) {
+        const rows = await tx
+          .select({ userId: orgMemberships.userId })
+          .from(orgMemberships)
+          .where(
+            and(eq(orgMemberships.orgId, orgId), inArray(orgMemberships.userId, submitted))
+          );
+        for (const row of rows) eligible.add(row.userId);
+      }
+
+      const rejected = submitted.filter((id) => !eligible.has(id));
+      if (rejected.length > 0) {
+        // Nothing is written. See the note on atomicity above.
+        return { added: 0, removed: 0, rejected };
+      }
+
+      const wanted = new Set(submitted);
+      const toAdd = submitted.filter((id) => !present.has(id));
+      const toRemove = current.map((r) => r.userId).filter((id) => !wanted.has(id));
+
+      // 4 and 5. One statement each, however many rows they carry.
+      if (toAdd.length > 0) {
+        await tx
+          .insert(scimGroupMembers)
+          .values(toAdd.map((userId) => ({ groupId, userId })))
+          .onConflictDoNothing({
+            target: [scimGroupMembers.groupId, scimGroupMembers.userId],
+          });
+      }
+      if (toRemove.length > 0) {
+        await tx
+          .delete(scimGroupMembers)
+          .where(
+            and(
+              eq(scimGroupMembers.groupId, groupId),
+              inArray(scimGroupMembers.userId, toRemove)
+            )
+          );
+      }
+
+      return { added: toAdd.length, removed: toRemove.length, rejected: [] };
+    });
+  }
 }

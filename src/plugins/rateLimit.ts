@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { redis, isRedisReady } from "../services/redis.js";
+import { redis } from "../services/redis.js";
 import { clientAddress } from "../services/trustedProxies.js";
 import { localRateLimit } from "../services/localRateLimit.js";
 import { emit } from "../services/events/bus.js";
@@ -15,6 +15,22 @@ interface RateLimitPluginOptions {
    * one noisy identity provider cannot exhaust the budget of every other tenant.
    */
   keyFrom?: (request: FastifyRequest) => string;
+  /**
+   * Whether the submitted address is part of the key.
+   *
+   * The key is the control, so it is worth being explicit about. This used to be
+   * unconditional — every limiter's key was `prefix:identifier:body.email` — and
+   * that silently gave every limiter the same shape regardless of what it was
+   * written to do. `login-per-address` is the case that matters: it exists to bound
+   * *spraying*, and the comment next to it says so, but because the submitted
+   * address was appended it was keyed on address **and** account, so an attacker
+   * varying the address on each attempt got a fresh budget every time and the
+   * control bounded nothing. See SEC-048.
+   *
+   * Defaults to `true` so no existing limiter's behaviour moves; set it to `false`
+   * where the budget is meant to be per address alone.
+   */
+  includeSubmittedAddress?: boolean;
   /**
    * Hold a local in-process budget while Redis is unavailable.
    *
@@ -66,25 +82,47 @@ return count
  */
 type LimitDecision = { allowed: boolean; limiter: "redis" | "local" | "none"; retryAfterSeconds?: number };
 
+/**
+ * The local fallback, for when Redis genuinely cannot be reached.
+ *
+ * Failing open removes the control exactly when an attacker would most like it
+ * gone, so sensitive endpoints fall back to a bounded in-process budget instead.
+ */
+function localDecision(
+  key: string,
+  maxAttempts: number,
+  windowSeconds: number,
+  useEmergencyLocal: boolean
+): LimitDecision {
+  if (!useEmergencyLocal) return { allowed: true, limiter: "none" };
+  const result = localRateLimit(key, maxAttempts, windowSeconds);
+  return result.allowed
+    ? { allowed: true, limiter: "local" }
+    : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
+}
+
 async function checkLimit(
   key: string,
   maxAttempts: number,
   windowSeconds: number,
   useEmergencyLocal: boolean
 ): Promise<LimitDecision> {
-  if (!isRedisReady()) {
-    // Redis is the primary control and is unavailable. Failing open removes the
-    // control exactly when an attacker would most like it gone, so sensitive
-    // endpoints fall back to a bounded in-process budget instead.
-    if (!useEmergencyLocal) {
-      return { allowed: true, limiter: "none" };
-    }
-    const result = localRateLimit(key, maxAttempts, windowSeconds);
-    return result.allowed
-      ? { allowed: true, limiter: "local" }
-      : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
-  }
-
+  // No readiness check before the command, and the reason is worth recording.
+  //
+  // The shared client is created with `lazyConnect`, so on a fresh process its
+  // status is `"wait"` — and `isRedisReady()` is false. A guard here therefore
+  // returned the local budget *without ever issuing a command*, so the client
+  // stayed lazy, so the next request made the same decision, and the distributed
+  // limiter never activated at all. Whether rate limiting was shared across the
+  // fleet depended on whether some unrelated code path — the queue, anomaly
+  // detection — happened to touch Redis first. In a deployment where nothing did,
+  // every instance limited independently, which is the exact weakness the
+  // distributed limiter exists to remove.
+  //
+  // A lazily-connecting client connects on its first command, so the command is
+  // simply attempted. A real outage rejects, the catch runs, and the local
+  // budget applies — which is the behaviour that was wanted, arrived at with one
+  // fewer branch and no guess about the client's state.
   try {
     const now = Date.now();
     const member = `${now}:${cryptoRandom()}`;
@@ -103,14 +141,9 @@ async function checkLimit(
       retryAfterSeconds: windowSeconds,
     };
   } catch {
-    // A Redis error mid-request is the same situation as Redis being down.
-    if (!useEmergencyLocal) {
-      return { allowed: true, limiter: "none" };
-    }
-    const result = localRateLimit(key, maxAttempts, windowSeconds);
-    return result.allowed
-      ? { allowed: true, limiter: "local" }
-      : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
+    // A Redis error is the same situation as Redis being down, which is the only
+    // thing that should reach the local budget.
+    return localDecision(key, maxAttempts, windowSeconds, useEmergencyLocal);
   }
 }
 
@@ -183,7 +216,11 @@ async function reportLimited(
 export function rateLimit(options: RateLimitPluginOptions) {
   return async function preHandler(request: FastifyRequest, reply: FastifyReply) {
     const id = options.keyFrom ? options.keyFrom(request) : clientIdentifier(request);
-    const key = `${options.keyPrefix}:${id}:${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
+    const subject =
+      options.includeSubmittedAddress === false
+        ? ""
+        : `${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
+    const key = `${options.keyPrefix}:${id}:${subject}`;
     const decision = await checkLimit(
       key,
       options.maxAttempts,

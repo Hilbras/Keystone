@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "license": "MIT",
   "description": "Hilbras Keystone \u2014 standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
@@ -44,8 +44,8 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed.ts",
     "db:reencrypt-oidc-secrets": "node dist/db/reencryptOidcSecrets.js",
-    "test": "node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/*.test.js dist/tests/*/*.test.js dist/tests/*/*/*.test.js dist/tests/*/*/*/*.test.js",
-    "test:security": "node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/security/*.test.js dist/tests/security/*/*.test.js dist/tests/security/*/*/*.test.js dist/tests/security/*/*/*/*.test.js",
+    "test": "LOGIN_MAX_ATTEMPTS=1000000 LOGIN_PER_ADDRESS_MAX=1000000 LOGIN_WINDOW_SECONDS=60 GLOBAL_RATE_LIMIT_MAX=1000000 GLOBAL_RATE_LIMIT_WINDOW=60 SCIM_AUTH_FAILURE_MAX=1000000 SCIM_AUTH_FAILURE_WINDOW_SECONDS=60 SCIM_RATE_LIMIT_MAX=1000000 SCIM_RATE_LIMIT_WINDOW_SECONDS=60 node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/*.test.js dist/tests/*/*.test.js dist/tests/*/*/*.test.js dist/tests/*/*/*/*.test.js",
+    "test:security": "LOGIN_MAX_ATTEMPTS=1000000 LOGIN_PER_ADDRESS_MAX=1000000 LOGIN_WINDOW_SECONDS=60 GLOBAL_RATE_LIMIT_MAX=1000000 GLOBAL_RATE_LIMIT_WINDOW=60 SCIM_AUTH_FAILURE_MAX=1000000 SCIM_AUTH_FAILURE_WINDOW_SECONDS=60 SCIM_RATE_LIMIT_MAX=1000000 SCIM_RATE_LIMIT_WINDOW_SECONDS=60 node --test --test-force-exit --test-concurrency=1 --test-timeout=60000 dist/tests/security/*.test.js dist/tests/security/*/*.test.js dist/tests/security/*/*/*.test.js dist/tests/security/*/*/*/*.test.js",
     "test:all": "npm test && cd frontend && npm run test:e2e",
     "setup": "./install.sh",
     "start:all": "./start.sh",

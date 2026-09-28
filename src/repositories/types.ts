@@ -6,6 +6,7 @@ import type {
   auditLog,
   MfaChallenge,
   Permission,
+  Workflow,
   ScimConnection,
   ScimGroup,
 } from "../db/schema.js";
@@ -204,6 +205,24 @@ export interface ScimGroupRepository {
   listMembersForGroups(orgId: string, groupIds: string[]): Promise<Map<string, { userId: string; email: string; name: string | null }[]>>;
   addMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
   removeMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
+  /**
+   * Make the group's membership exactly `submittedUserIds`, atomically.
+   *
+   * `rejected` lists submitted users that are not members of `orgId`; when it is
+   * non-empty nothing was written. The caller decides what a rejection means.
+   */
+  reconcileMembers(
+    orgId: string,
+    groupId: string,
+    submittedUserIds: string[]
+  ): Promise<{ added: number; removed: number; rejected: string[] }>;
+}
+
+export interface WorkflowRepository {
+  listByOrg(orgId: string): Promise<Workflow[]>;
+  /** No `orgId` filter: the route guard has already established the tenancy. */
+  findById(id: string): Promise<Workflow | undefined>;
+  delete(id: string): Promise<Workflow | undefined>;
 }
 
 export interface AuditRepository {
