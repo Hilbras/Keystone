@@ -129,3 +129,59 @@ rules:
       tokens, codes and nonces.
     severity: WARNING
     languages: [javascript, typescript]
+
+  # The layering rule, which AGENTS.md states and nothing enforced.
+  #
+  # `AGENTS.md`: "Routes must not import from `../db/index.js` directly — use
+  # repository interfaces" and "Use `app.container.<repository>` for data access,
+  # not direct DB queries." Two files did it, and the reason the rule is worth
+  # enforcing rather than tidying is that a route with `db` in scope can skip a
+  # repository's tenancy guarantee by accident, and nothing in a review reliably
+  # catches that. It is the reason `workflows.ts` was the one place in the codebase
+  # doing authorization by hand.
+  #
+  # `pattern-regex` rather than `pattern` because both obvious `pattern` forms
+  # quietly match nothing: `import $X from ".../db/index.js"` does not treat `...`
+  # as a path wildcard inside the string, and `import $X from "drizzle-orm"` does
+  # not match a *named* import list, which is how both files actually import it.
+  # A rule that does not fire looks exactly like a codebase with no violations, so
+  # both patterns here were verified against a deliberately planted import before
+  # being written down.
+  - id: keystone-route-imports-db
+    pattern-regex: 'import\s+\{[^}]*\bdb\b[^}]*\}\s+from\s+"(\.\./)+db/index\.js"'
+    paths:
+      include:
+        - "src/routes/**"
+    message: >-
+      A route must not import the database client. Routes parse, delegate and
+      respond; data access belongs behind a repository interface in
+      `src/repositories/`, which is where the tenancy guarantees live. Use
+      `app.container.<repository>` — and if none does what you need, add one
+      rather than reaching past it. (layering rule, AGENTS.md)
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      category: correctness
+      confidence: HIGH
+      cwe: "CWE-1068 (Inconsistency Between Implementation and Documented Design)"
+
+  # The same rule by the other door. A route can import `drizzle-orm` and build its
+  # own query without ever naming `db`, which is what `admin/platform.ts` did: it
+  # held the client, and a reviewer scanning for `db` in a route would have found
+  # the import on the next line.
+  - id: keystone-route-imports-drizzle
+    pattern-regex: 'import\s+[^;]*\bfrom\s+"drizzle-orm"'
+    paths:
+      include:
+        - "src/routes/**"
+    message: >-
+      A route must not import a query builder. Even with no `db` in scope this is a
+      route deciding how data is read, which is the repository's job. Move the
+      query into `src/repositories/` and call it through
+      `app.container.<repository>`. (layering rule, AGENTS.md)
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      category: correctness
+      confidence: HIGH
+      cwe: "CWE-1068 (Inconsistency Between Implementation and Documented Design)"
