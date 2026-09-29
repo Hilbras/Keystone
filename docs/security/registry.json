@@ -690,6 +690,30 @@
       "test": "src/tests/security/federation/connectors.test.ts",
       "documentation": "docs/security/federation.md",
       "covers": []
+    },
+    {
+      "id": "SEC-053",
+      "title": "One failed login was recorded three times, and a poison background job crashed the process",
+      "severity": "high",
+      "component": "anomaly-detection",
+      "release": "3.4.0",
+      "issue": "Three separate problems, all in the accounting around a failed sign-in, found by \u00a74.4 asking for job retry and dead-letter coverage and getting an unhandled rejection instead. (1) `isFailedLoginAnomaly` called `recordFailedLogin` to obtain its answer, so asking the question was itself evidence. Every call site therefore recorded the failure twice \u2014 once through the `user_login_failed` subscriber and once by asking \u2014 and with a threshold of 10 the spray signal fired after 5 real failed logins. Measured: 2, 4, 6, 8, 9, 10 across six real attempts. (2) `routes/auth.ts` called `request.audit(\"user_login_failed\")` on both login paths, and `audit()` is `emit()`, so the same failure was published to the bus twice: once by `AuthenticationDomainService` (which carries the reason and covers all five refusal paths) and once by the route (which carries the request id). Every subscriber saw two events. (3) `InProcessQueue.run` scheduled retries with `setTimeout(() => this.run(...))`, discarding the returned promise, so the attempt that exhausted the budget threw into an unhandled rejection. Node terminates a process on an unhandled rejection, so one poison job took the server down. The in-process driver is what a deployment without `REDIS_URL` gets.",
+      "fix": "src/services/anomalyDetection.ts \u2014 `countFailedLogins` is a read and `isFailedLoginAnomaly` uses it, so a predicate no longer mutates what it measures; `isNewDeviceAnomaly` fixed the same way. src/services/domain/authentication.ts \u2014 the explicit `recordFailedLogin` on the unknown-user path is gone, because the emit right below it is already the record, and the five emits now carry the client address. src/routes/auth.ts \u2014 the two duplicate `request.audit(\"user_login_failed\")` calls are removed; the domain service owns the event. src/services/queue/inProcess.ts \u2014 the retry's promise is caught, so an exhausted job is logged and dropped instead of terminating the process.",
+      "test": "src/tests/integration/queue.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-054",
+      "title": "Every unmatched URL became its own Prometheus time series",
+      "severity": "medium",
+      "component": "metrics",
+      "release": "3.4.0",
+      "issue": "The `onResponse` hook labelled `keystone_http_requests_total` with `request.routeOptions?.url || request.url`. For a request that matched no route there is no template, so the fallback was the concrete URL \u2014 and every distinct 404 became a permanent, individually-labelled time series. Measured: two probes produced `route=\"/nope/aaaaaaaa-1111\"` and `route=\"/nope/bbbbbbbb-2222\"`, with no upper bound on how many followed. A scanner, a crawler, or a client with a URL bug grows the series count without limit, and unbounded label cardinality is the standard way a metrics endpoint takes a Prometheus server down. The failure is silent: the endpoint keeps answering, and the only symptom is a Prometheus that runs out of memory hours later.",
+      "fix": "src/plugins/metrics.ts \u2014 an unmatched request is labelled with the constant `unmatched` instead of its URL. 404 volume is still visible and still alertable through `status_code`, and the series count is now bounded by the number of routes.",
+      "test": "src/tests/integration/metrics.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
     }
   ],
   "withdrawn": [

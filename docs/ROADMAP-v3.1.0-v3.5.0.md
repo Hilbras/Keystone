@@ -689,6 +689,102 @@ rather than silently changing a dashboard.
 **Gate:** both pass; the metrics test asserts the series *exist*, which is the
 part that rots.
 
+## 4.4 status — done, and two things that counted wrong
+
+**A counter that never moved.** `keystone_failed_logins_total` was registered in
+`plugins/metrics.ts` and incremented from nowhere. It exported as a series with
+value 0, forever — which on a dashboard is indistinguishable from "nobody has
+failed to log in", the one reading a failed-login alert must never be able to take.
+
+It is fed by a new `events/subscribers/metrics.ts` rather than by a call in the
+route, because the event is emitted from six places and the route is one of them.
+`reason` is the label rather than a constant, so a new failure mode shows up as a
+new series value instead of being folded into "failed".
+
+**The gate for the next one is static, and deliberately so.** A behavioural check
+("every series moved after this traffic") is the wrong shape:
+`keystone_cache_hits_total` is perfectly alive and no amount of logging in and out
+of the server touches it, so the assertion would be about which subsystems a test
+happens to exercise. What rots is the *pairing* between a registered name and the
+code that writes to it, and that is a property of the source. So every registered
+series must appear as an increment target somewhere in `src/` — rename the series
+and it stops matching, delete the call site and it stops matching, and both fail.
+
+**SEC-054, medium. Every unmatched URL was its own time series.** The `onResponse`
+hook labelled requests with `request.routeOptions?.url || request.url`. For a
+request that matched no route there is no template, so the fallback was the
+concrete URL:
+
+```
+keystone_http_requests_total{...,route="/nope/aaaaaaaa-1111",status_code="404"} 1
+keystone_http_requests_total{...,route="/nope/bbbbbbbb-2222",status_code="404"} 1
+```
+
+Two requests, two series, no upper bound on how many follow. A scanner, a crawler
+or a client with a URL bug grows the count without limit, and unbounded label
+cardinality is the standard way a metrics endpoint takes Prometheus down. The
+failure is silent: the endpoint keeps answering and the only symptom is a
+Prometheus out of memory hours later. Unmatched requests are labelled `unmatched`
+now, so the series count is bounded by the number of routes.
+
+**SEC-053, high. Three counts, all wrong.**
+
+1. **`isFailedLoginAnomaly` was a predicate that mutated what it measured** — it
+   called `recordFailedLogin` to get its answer, so asking the question was itself
+   evidence. Every call site therefore recorded twice, and the threshold of 10
+   fired after **5** real failed logins. Measured before: `2, 4, 6, 8, 9, 10`
+   across six real attempts. After: `1, 2, 3, 4, 5, 6`.
+2. **The route published an event the domain service had already published.**
+   `audit()` *is* `emit()` — there is no separate audit log, the table is written
+   by a subscriber — so `request.audit("user_login_failed")` in both login paths
+   published the same failure a second time. It was written when "a wrong password
+   produced a 401 and nothing else"; by then the domain service was already
+   emitting with the reason and covering all five refusal paths.
+3. **A poison job crashed the process.** `setTimeout(() => this.run(...), delay)`
+   discarded the promise, so the attempt that exhausted the budget threw into an
+   unhandled rejection, and Node terminates a process on one. One poison job took
+   the server down — on the in-process driver, which is what a deployment without
+   `REDIS_URL` gets.
+
+Removing the duplicate emit exposed a fourth thing, which is the more interesting
+one: **the audit subscriber discarded every payload field that was not a column.**
+So the domain service's `reason` and the submitted address were being thrown away
+on the way to the table, and the route's duplicate event was the only reason they
+were ever recorded. Non-column payload keys are now nested under `metadata.event`.
+
+That required restating one SEC-037 assertion honestly. It asserted
+`row.userId === null` for a wrong password, which was true only because the *route's*
+row was the one the test found — the route deliberately recorded no user id
+because "at that point no credential has been proven". The single remaining event
+names the targeted account, which is a *better* audit record and is what makes the
+per-account anomaly keying work. The test now asserts what SEC-037 actually
+claimed — that the attempt is identifiable by the submitted address, that an
+unknown address is still recorded, and that `reason` distinguishes
+`unknown_user` from `invalid_password`.
+
+### The queue, which is the other half of §4.4
+
+| | in-process | BullMQ |
+|---|---|---|
+| enqueue → execute | ✔ | ✔ |
+| retry up to the attempt budget | ✔ | ✔ |
+| stops at the budget | ✔ | ✔ |
+| counted failed **once**, not per attempt | ✔ | — |
+| dead-letter retrievable afterwards | **no** | ✔ |
+| an unroutable job is not counted as work | ✔ | — |
+
+The "no dead-letter" row is asserted rather than skipped, so it cannot be mistaken
+for tested behaviour: `getFailed` returns `[]` and `retryAll` is a no-op, so on
+that driver a permanently failing job is lost — a log line and a counter, and
+nothing an operator can re-run. The BullMQ driver keeps them, which is one more
+reason it is the default.
+
+The SEC-053 regression sits in the same file, including the structural case:
+**counting does not itself count** — record once, read five times, assert the count
+did not move. A suite that only checked the end-to-end total would still pass if
+someone merged the predicate and the recorder back together and moved the double
+count somewhere else.
+
 ## 4.5 The CLI
 
 **Finding:** §2.10. 177 lines, 8 commands, no tests — for the interface an

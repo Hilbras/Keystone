@@ -22,9 +22,31 @@ export async function recordFailedLogin(identifier: string): Promise<number> {
   return (results?.[2]?.[1] as number) ?? 0;
 }
 
+/**
+ * How many failures are recorded for `identifier` in the window. A **read**.
+ *
+ * Split out from `recordFailedLogin` because `isFailedLoginAnomaly` used to call
+ * the recorder to get its answer, which made asking the question itself count as
+ * evidence. Every call site then recorded the failure twice — once through the
+ * `user_login_failed` subscriber and once by asking — so the threshold of 10 was
+ * reached after **5** real failed logins rather than 10 (SEC-053).
+ *
+ * A predicate named `is...` that mutates the thing it measures is the kind of
+ * signature that makes the next call site wrong too, so the two operations are
+ * now separate and the name says which one it is.
+ */
+export async function countFailedLogins(identifier: string): Promise<number> {
+  if (redis.status !== "ready" && redis.status !== "connect") return 0;
+  const key = `anomaly:failed_login:${identifier}`;
+  // Trim the window first, so a count is not inflated by entries that have already
+  // aged out. The recorder does the same trim; doing it here too means a caller
+  // that only ever reads still sees the number it would see after a write.
+  await redis.zremrangebyscore(key, 0, Date.now() - ANOMALY_WINDOW_SECONDS * 1000);
+  return redis.zcard(key);
+}
+
 export async function isFailedLoginAnomaly(identifier: string): Promise<boolean> {
-  const count = await recordFailedLogin(identifier);
-  return count >= FAILED_LOGIN_THRESHOLD;
+  return (await countFailedLogins(identifier)) >= FAILED_LOGIN_THRESHOLD;
 }
 
 export async function recordNewDevice(userId: string): Promise<number> {
@@ -42,9 +64,15 @@ export async function recordNewDevice(userId: string): Promise<number> {
   return (results?.[2]?.[1] as number) ?? 0;
 }
 
+/**
+ * Whether a device has been seen enough times to be an anomaly. A **read**, for
+ * the same reason as `isFailedLoginAnomaly`.
+ */
 export async function isNewDeviceAnomaly(userId: string): Promise<boolean> {
-  const count = await recordNewDevice(userId);
-  return count >= NEW_DEVICE_THRESHOLD;
+  if (redis.status !== "ready" && redis.status !== "connect") return false;
+  const key = `anomaly:new_device:${userId}`;
+  await redis.zremrangebyscore(key, 0, Date.now() - ANOMALY_WINDOW_SECONDS * 1000);
+  return (await redis.zcard(key)) >= NEW_DEVICE_THRESHOLD;
 }
 
 /**

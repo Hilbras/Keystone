@@ -65,7 +65,21 @@ export class InProcessQueue implements Queue {
           { jobType: job.type, attempt, maxAttempts, delayMs: delay },
           "job failed, scheduling a retry"
         );
-        setTimeout(() => this.run(job, attempt + 1), delay);
+        // The rejection of the *retry* is handled here, not only the first
+        // attempt's. `setTimeout(() => this.run(...))` discards the returned
+        // promise, so the attempt that finally exhausts the budget threw into
+        // nobody's hands and became an unhandled rejection — which terminates a
+        // Node process by default. A single poison job took the server down
+        // (SEC-053). The first attempt is covered by `enqueue`'s `.catch`; the
+        // retries are covered here.
+        setTimeout(() => {
+          this.run(job, attempt + 1).catch((retryErr: unknown) => {
+            log.error(
+              { err: retryErr, jobType: job.type, attempts: maxAttempts },
+              "job failed permanently and was dropped"
+            );
+          });
+        }, delay);
         return;
       }
       this.increment(job.type, "failed");

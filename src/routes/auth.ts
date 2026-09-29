@@ -177,15 +177,24 @@ export default async function authRoutes(app: FastifyInstance) {
       });
 
       if (!result.success) {
-        // Previously unaudited: a wrong password produced a 401 and nothing
-        // else, so credential guessing was invisible except through the limiter.
-        // Deliberately records no user id, because the submitted address may not
-        // correspond to any account.
-        await request.audit("user_login_failed", {
-          email: body.email,
-          ip: request.ip,
-          reason: result.error.code,
-        });
+        // No `user_login_failed` audit here, and its absence is the fix rather
+        // than an omission (SEC-053).
+        //
+        // `AuthenticationDomainService.login` already emits `user_login_failed`
+        // for every refusal it can return — `unknown_user`, `invalid_password`,
+        // `account_deactivated`, `account_review_required`, `account_locked` —
+        // each carrying the reason, the user id where one exists, and the client
+        // address. This call site used to emit the same event a second time,
+        // because it was written when a wrong password produced a 401 and
+        // nothing else.
+        //
+        // Two events for one failure doubled every subscriber's count: the failed
+        // -login metric read twice the truth, and the anomaly detector reached its
+        // threshold of 10 after 5 real attempts.
+        //
+        // The domain service is the right owner: it covers all five paths,
+        // including the ones that return before this handler could audit, and it
+        // fires for the CLI and any future transport too.
         return sendResultError(reply, result);
       }
 
@@ -262,14 +271,8 @@ export default async function authRoutes(app: FastifyInstance) {
       });
 
       if (!result.success) {
-        // Same reasoning as /login: a failed token login is a guessing attempt
-        // and should be visible as one.
-        await request.audit("user_login_failed", {
-          email: body.email,
-          ip: request.ip,
-          reason: result.error.code,
-          flow: "token_login",
-        });
+        // Same reasoning as /login, and for the same reason: the domain service
+        // emitted `user_login_failed` for this refusal already (SEC-053).
         return sendResultError(reply, result);
       }
 
