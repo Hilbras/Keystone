@@ -51,12 +51,13 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
     const pair = await generateKeyPair("RS256", { extractable: true });
     const privatePem = await exportPKCS8(pair.privateKey);
     const publicPem = await exportSPKI(pair.publicKey);
-    // eslint-disable-next-line no-console
-    moduleLog.warn("secrets");
-    // eslint-disable-next-line no-console
-    moduleLog.warn("secrets");
-    // eslint-disable-next-line no-console
-    moduleLog.warn("secrets");
+    moduleLog.warn(
+      {},
+      "Generated ephemeral JWT keys. Set JWT_PRIVATE_KEY/JWT_PUBLIC_KEY in production. " +
+        "The PEMs follow, in order private then public."
+    );
+    moduleLog.warn({}, `JWT_PRIVATE_KEY\n${privatePem}`);
+    moduleLog.warn({}, `JWT_PUBLIC_KEY\n${publicPem}`);
     envKeyPair = { keyId: "env-generated", privateKey: pair.privateKey, publicKey: pair.publicKey };
     return envKeyPair;
   }
@@ -89,8 +90,11 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
       return envEncryptionKey;
     }
     envEncryptionKey = crypto.randomBytes(32);
-    // eslint-disable-next-line no-console
-    moduleLog.warn("secrets");
+    moduleLog.warn(
+      {},
+      "Generated an ephemeral encryption key. Set KEYSTONE_ENCRYPTION_KEY in " +
+        "production — without it, every encrypted secret becomes unreadable on restart."
+    );
     return envEncryptionKey;
   }
 

@@ -36,7 +36,6 @@ const { migrate } = await import("drizzle-orm/postgres-js/migrator");
 const { db, closeDb } = await import("../../../db/index.js");
 const { buildApp } = await import("../../../index.js");
 const { loadSigningKeys } = await import("../../../services/tokens.js");
-const { hashPassword } = await import("../../../services/secrets/index.js");
 const { redis } = await import("../../../services/redis.js");
 const { resetLocalRateLimits } = await import("../../../services/localRateLimit.js");
 const { users } = await import("../../../db/schema.js");
@@ -62,8 +61,6 @@ const { migrationsFolder } = await import("../../../lib/paths.js");
  * reads the key: a test asserting the key format would have been written against
  * whatever the format was.
  */
-
-const PASSWORD = "Spray-Attempt-Passw0rd!";
 
 let app: FastifyInstance;
 
