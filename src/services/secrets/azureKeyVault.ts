@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
+import { decryptAtRest, encryptAtRest, isLegacyCiphertext } from "./cipher.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("secrets");
 
 /**
  * Azure Key Vault secrets provider.
@@ -103,21 +107,32 @@ export class AzureKeyVaultSecretsProvider implements SecretsProvider {
   }
 
   async encryptSecret(plain: string): Promise<string> {
-    const key = await this.getEncryptionKey();
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-    const encrypted = Buffer.concat([cipher.update(plain, "utf-8"), cipher.final()]);
-    return `${iv.toString("base64")}:${encrypted.toString("base64")}`;
+    return encryptAtRest(await this.getEncryptionKey(), plain);
   }
 
+  /**
+   * Read a value in either format.
+   *
+   * The format, the authentication and the legacy CBC read path all live in
+   * `cipher.ts`, so they can be tested directly — the first version of the
+   * SEC-059 suite copied the logic into the test file, and a test of a copy
+   * cannot fail: reverting this provider to CBC left the suite green.
+   *
+   * The legacy branch is still here, deliberately. Deleting it would turn a
+   * security improvement into an outage — every already-stored value would become
+   * undecryptable. Migration is the explicit operation
+   * `npm run db:reencrypt-oidc-secrets`; a read must not silently rewrite
+   * storage, so it does not.
+   */
   async decryptSecret(cipherText: string): Promise<string> {
-    const key = await this.getEncryptionKey();
-    const [ivBase64, encryptedBase64] = cipherText.split(":");
-    if (!ivBase64 || !encryptedBase64) throw new Error("Invalid cipher text format");
-    const iv = Buffer.from(ivBase64, "base64");
-    const encrypted = Buffer.from(encryptedBase64, "base64");
-    const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
-    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf-8");
+    const plaintext = decryptAtRest(await this.getEncryptionKey(), cipherText);
+    if (isLegacyCiphertext(cipherText)) {
+      moduleLog.warn(
+        { component: "secrets", provider: this.name, event: "legacy_ciphertext_decrypted" },
+        "decrypted a legacy AES-256-CBC secret; run db:reencrypt-oidc-secrets to migrate"
+      );
+    }
+    return plaintext;
   }
 
   // Reference stubs for Azure Key Vault HTTP API integration.

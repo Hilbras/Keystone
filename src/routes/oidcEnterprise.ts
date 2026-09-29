@@ -11,6 +11,7 @@ import { assertSafeSsoEndpoint, customFetch, fetchSsoEndpoint, safeJwksFetch } f
 import { buildOAuthErrorResponse } from "../lib/errors.js";
 import { decryptSecret } from "../services/secrets/index.js";
 import { isLegacyOidcSecret, LEGACY_OIDC_SECRET_PREFIX } from "../services/oidcSecretFormat.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 
 const OIDC_STATE_COOKIE = "keystone_oidc_enterprise_state";
 
@@ -61,7 +62,23 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
     return reply.redirect(url.toString());
   });
 
-  app.get("/sso/oidc/:connectionId/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get("/sso/oidc/:connectionId/callback", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "oidc-enterprise-callback",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // The enterprise SSO callback, unauthenticated by necessity — it is where
+        // the IdP hands over the code, and therefore a brute-force target like
+        // every other credential check in this file.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
     const query = request.query as { code?: string; state?: string; orgId?: string; error?: string; error_description?: string };
 

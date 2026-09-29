@@ -69,7 +69,24 @@ export default async function magicLinkRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.get("/magic-link/verify", async (request: FastifyRequest, reply) => {
+  app.get("/magic-link/verify", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "magic-link-verify",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // The token is in the query string, so this is the most brute-forceable route in
+        // the system: no body, no header, just a URL. Long tokens make it infeasible
+        // rather than impossible, and an infeasible brute force is still a cost the
+        // attacker chooses when they choose.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply) => {
     const query = request.query as { token?: string; redirect?: string };
     if (!query.token) {
       return reply.status(400).send({ error: "Missing token" });

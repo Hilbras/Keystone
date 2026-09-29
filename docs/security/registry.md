@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**58 findings.**
+**62 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 33 |
-| medium | 16 |
-| low | 3 |
+| medium | 18 |
+| low | 5 |
 
 ## Scope
 
@@ -770,17 +770,41 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Documentation.** [docs/security/monitoring.md](monitoring.md)
 
-### SEC-059 — One secrets provider encrypts with unauthenticated AES-256-CBC
+### SEC-059 — One secrets provider encrypted with unauthenticated AES-256-CBC
 
 *Fixed in v3.5.0. Component: `secrets`.*
 
 **Issue.** Four of the five locally-encrypting secrets providers use AES-256-GCM. `secrets/azureKeyVault.ts` uses AES-256-CBC, which is malleable and unauthenticated. Someone with write access to the stored ciphertext — a compromised database row, a tampered backup — can flip chosen plaintext bits without the key. Encrypting secrets at rest exists to defend against exactly that position, and this provider does not. Exploitability is limited: a bit flip in a TOTP secret or an OAuth client secret does not obviously yield either, and the attacker must already hold database write, which is why this is medium and not high. Found by asking the question `gcm-no-tag-length` was actually asking while triaging it.
 
-**Fix.** src/services/secrets/azureKeyVault.ts — NOT FIXED, deliberately. Changing the cipher invalidates every already-encrypted value, and a secrets provider has no safe default for a value it cannot decrypt. The migration needs a read-both/write-new path; src/db/reencryptOidcSecrets.ts already has the shape of one. It needs to be a planned operation rather than a patch. Recorded so it is not lost.
+**Fix.** src/services/secrets/cipher.ts (new) — one cipher, one format, tested directly. `encryptAtRest` writes `aes-256-gcm$<base64url(iv || tag || ct)>`, byte-for-byte the shape `database.ts`, `environment.ts` and `vault.ts` already used, so a ciphertext says what it is and can be migrated. `decryptAtRest` reads that format and rejects a tampered value, and also reads the pre-3.5.1 `base64(iv):base64(ct)` CBC form, because deleting that read path would turn a security improvement into an outage: every stored value would become undecryptable. src/services/secrets/azureKeyVault.ts now delegates both directions, and logs `legacy_ciphertext_decrypted` when it reads a CBC value. Migration is the existing explicit operation `npm run db:reencrypt-oidc-secrets` — a read must not silently rewrite storage, so it does not. Two controls keep it fixed: `keystone-secrets-aead-only` in .semgrep.yml forbids a `createCipheriv` with a non-AEAD algorithm anywhere under src/services/secrets/ (verified by reverting the provider to CBC, which it catches), and src/tests/security/secrets/azureCipher.test.ts exercises the shared module rather than a copy of it.
 
-**Test.** `docs/security/codeql-triage.md`
+**Test.** `src/tests/security/secrets/azureCipher.test.ts`
 
 **Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-061 — Eight unauthenticated routes that consume an attacker-supplied credential had no rate limit
+
+*Fixed in v3.5.1. Component: `rate-limiting`.*
+
+**Issue.** §3.6 enumerated 21 routes with no rate limit and deliberately left the decision open, because a mechanical rule cannot tell a login from a discovery document. Making the judgement per route corrected the number in both directions. TRUE POSITIVES, now limited (8): GET /federation/:provider/callback and GET /auth/callback/:provider (a federated login completing on an attacker-supplied provider token), GET /sso/sso/oidc/:connectionId/callback (the enterprise SSO code), GET /auth/magic-link/verify (the token is in the query string, so it is the most brute-forceable route in the system — no body, no header, just a URL), GET /sso/saml/:connectionId and POST /sso/saml/acs (the assertion consumer service accepts an attacker-supplied assertion and runs signature verification on it, which is the classic SAML DoS shape), and POST /auth/webauthn/authenticate/options and /verify (challenge minting and challenge consumption). FALSE POSITIVES (9): auth.ts token-login x2, oauth2 authorize and token, smsOtp verify, and totp x4. CodeQL's js/missing-rate-limiting looks for a rateLimit call in a route's own options and misses it in two ordinary shapes — a limiter inside a preHandler array declared on a preceding line, and a limiter behind a named helper (factorRateLimit("totp-verify")). Both are how this repository writes limiters, so 9 of the 21 alerts were routes that were already protected. DELIBERATELY NOT LIMITED (3): GET /sdk/keystone-dropin.js and its .sri are a static file and its integrity hash, which a browser and a CDN fetch — limiting them breaks caching and protects nothing. POST /setup/init is guarded by assertSetupToken, is one-shot, and is an operator's FIRST request to a new installation; a rate limit there can lock somebody out of their own deploy, which is a support incident caused by a security control. AUTHENTICATED, LOWER PRIORITY (1): POST /auth/webauthn/register/verify sits behind app.authenticate, so the attacker already holds a credential.
+
+**Fix.** src/routes/magicLinks.ts and src/routes/saml.ts, plus federation.ts, oauth.ts, oidcEnterprise.ts and webauthn.ts — a rateLimit in preHandler on each of the eight, keyed per route so one flood cannot deny service to another, with emergencyLocalLimit: true so a Redis outage degrades to a bounded per-process budget rather than failing open. The three deliberate non-limits are recorded in docs/security/rate-limiting.md, because an omission nobody wrote down looks like an oversight.
+
+**Test.** `src/tests/security/rateLimit/unauthenticatedSurface.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-064 — The API surface review does not analyse a quarter of the route files, and eight of its reasons were inert
+
+*Fixed in v3.5.1. Component: `tooling`.*
+
+**Issue.** `scripts/review-api-surface.mjs` is the gate on the API surface, and it resolves the mount prefix for a route file by matching `import <name> from "./routes/<file>.js"` against `register(<name>, { prefix })`. It does not follow **composition**: `src/routes/admin/*.ts` are composed by `admin/index.ts` and registered once at `/v1/admin`, and `health.ts`, `sso.ts` and others are not matched either. 8 of 25 route files therefore have no resolved prefix and are not analysed at all. The tool reports 79 routes across 22 files and does not say which 8 it skipped beyond a list at the end. A second consequence turned up with it: **8 of 23 PUBLIC_BY_DESIGN reasons were inert** — they named route paths the server does not serve, so `get()` returned undefined for the route each was written about while the entry read as if it were doing work. They were noticed only because adding a `preHandler` array to six routes made the parser see them at all, at which point `--strict` failed and pointed at three that had never been checked. `/setup` named a path that does not exist; the setup plugin is mounted at `/setup` and serves `/setup/status` and `/setup/init`.
+
+**Fix.** scripts/review-api-surface.mjs — the reason table is now checked in **both** directions. It already failed a route with no reason; it now also reports a reason that matches no route, distinguishing **inert** (the path appears in no route file) from **unverified** (the route is real, but in a file the parser cannot place). The comparison is on trailing segments, because a plugin's prefix is not declared in its file: `/auth/refresh` is declared as a refresh route in a file mounted at `/auth`. The genuinely-wrong `/setup` entry is removed. **The unresolved-prefix gap is recorded, not fixed**: 8 files remain unanalysed, the tool prints them and the count, and this entry says so. Following composition is a real change to how routes are discovered, and an entry marked 'unverified' is a truthful middle state between claiming coverage and claiming nothing.
+
+**Test.** `scripts/review-api-surface.mjs`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 ## Low
 
@@ -817,5 +841,29 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Fix.** src/services/workflows/engine.ts — both branches removed. The remaining two reasons are the only reachable ones, and a comment records why the other two cannot be.
 
 **Test.** `docs/security/codeql-triage.md`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-062 — The enterprise SSO endpoints are served at a doubled /sso/sso/ path
+
+*Fixed in v3.5.1. Component: `sso`.*
+
+**Issue.** `oidcEnterpriseRoutes` is mounted at `/sso` in src/index.ts and its routes also declare `/sso/…`, so the public path is `/sso/sso/oidc/:connectionId`. `docs/API.md` documents it, which is how a mistake acquires the appearance of a decision: the documentation is not wrong, it is a faithful record of a wart. Found while writing the rate-limit test, where the served path had to be discovered rather than read off the route file. The same file's other routes — `/sso/saml/...` — are correct, because samlRoutes declares paths that do not repeat the prefix.
+
+**Fix.** src/routes/oidcEnterprise.ts — NOT FIXED, deliberately. The clean path `/sso/oidc/...` would be the right thing to serve, but this is a public endpoint on a released product: a customer who integrated enterprise SSO has `/sso/sso/oidc/...` in an IdP configuration this repository cannot see, and removing it is a breaking change requiring a deprecation window and a migration note. Adding the clean path as an alias is safe but needs care — both registrations must share one rate-limit prefix, or the alias silently doubles the budget and an attacker spends whichever they have not. Recorded so it is a decision with a name rather than a wart nobody mentions.
+
+**Test.** `src/tests/security/rateLimit/unauthenticatedSurface.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-063 — The TOTP secret helper carries a second legacy unauthenticated read path
+
+*Fixed in v3.5.1. Component: `secrets`.*
+
+**Issue.** `src/services/totp.ts` writes TOTP seeds as `v2.<iv>.<tag>.<ct>` with AES-256-GCM, and still reads a `v1` `iv:data` format with AES-256-CBC. The same defect in the same shape as SEC-059, in a second place, and recorded by nobody. Found by `scripts/verify-secrets-cipher.mjs` — the check written for SEC-059, widened to the whole of `src/services/secrets/` plus `totp.ts` — which is the argument for a general gate rather than a targeted fix: the targeted fix would have been one more place to remember.
+
+**Fix.** src/services/totp.ts — NOT FIXED, deliberately, for the same reason as SEC-059: a TOTP seed that cannot be decrypted is a seed nobody can log in with, so the read path has to stay. src/tests/security/secrets/ and scripts/verify-secrets-cipher.mjs — both legacy reads are now *counted* in ALLOWED_LEGACY_READS, so a new one fails the build and the last one going away is a visible, deliberate change rather than an accident nobody notices until a customer cannot log in.
+
+**Test.** `scripts/verify-secrets-cipher.mjs`
 
 **Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)

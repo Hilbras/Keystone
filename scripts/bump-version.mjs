@@ -73,8 +73,8 @@ function scalarOnLine(source, key, { tagOnly = false } = {}) {
   for (const line of source.split("\n")) {
     const code = line.replace(/^\s*#.*$/, "");
     const match = tagOnly
-      ? new RegExp(`^\\s*${key}:\\s*\\S+:(\\S+)`).exec(code)
-      : new RegExp(`^\\s*${key}:\\s*(\\S+)`).exec(code);
+      ? new RegExp(`^\\s*${escapeRegExp(key)}:\\s*\\S+:(\\S+)`).exec(code)
+      : new RegExp(`^\\s*${escapeRegExp(key)}:\\s*(\\S+)`).exec(code);
     if (match) return match[1];
   }
   return null;
@@ -143,14 +143,29 @@ function replaceYamlScalar(source, key, value, { keepPrefix = false } = {}) {
       // first version replaced the entire reference with the bare version number,
       // leaving the manifest saying `image: 3.5.0`, which the gate caught.
       const match = keepPrefix
-        ? new RegExp(`^(\\s*${key}:\\s*\\S+:)(\\S+)`).exec(code)
-        : new RegExp(`^(\\s*${key}:\\s*)(\\S+)`).exec(code);
+        ? new RegExp(`^(\\s*${escapeRegExp(key)}:\\s*\\S+:)(\\S+)`).exec(code)
+        : new RegExp(`^(\\s*${escapeRegExp(key)}:\\s*)(\\S+)`).exec(code);
       if (!match) return line;
       changed++;
       return `${match[1]}${value}${line.slice(code.length)}`;
     })
     .join("\n");
   return { out, changed };
+}
+
+/**
+ * Escape a string for use inside a `RegExp`.
+ *
+ * The keys interpolated below come from a literal array in this file, so nothing
+ * untrusted reaches the pattern and this is defence in depth rather than a fix for
+ * a live hole. It is here because CodeQL's `detect-non-literal-regexp` is right
+ * that a non-literal pattern is a pattern nobody can read, and because a key that
+ * happened to contain `.` or `(` would silently match more than intended — which is
+ * the shape of bug this same file already shipped once, when the version bump
+ * rewrote a comment instead of a value.
+ */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 for (const [file, key, keepPrefix] of [

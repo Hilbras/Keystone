@@ -155,12 +155,29 @@ const PUBLIC_BY_DESIGN = new Map([
   ["/auth/sms-otp/verify", "authenticated by the SMS code"],
   ["/auth/oauth/:provider", "federation initiation"],
   ["/oauth2/token", "the client authenticates in the request"],
-  ["/sso/saml/login", "SAML AuthnRequest initiation"],
+  // **These three keys named paths the server does not serve**, so the reasons
+  // were inert — `PUBLIC_BY_DESIGN.get(url)` returned undefined for the routes they
+  // were written about, and `--strict` reported those routes as unguarded. Caught
+  // only because adding a `preHandler` array made the routes visible to the
+  // parser at all; before that they were not flagged and nobody knew the entries
+  // were doing nothing.
+  //
+  //   "/sso/saml/login"                      -> no such route; the real one is below
+  //   "/sso/saml/metadata/:connectionId"     -> the real path is /sso/saml/:connectionId/metadata
+  //   "/sso/oidc/callback"                   -> the real path is /sso/sso/oidc/:connectionId/callback
+  //                                             (a plugin at /sso whose routes also begin /sso — SEC-062)
+  ["/sso/saml/:connectionId", "IdP-initiated SSO start; the user has no session yet, which is the point of it"],
   ["/sso/saml/acs", "SAML assertion consumer, authenticated by the signed assertion"],
-  ["/sso/saml/metadata/:connectionId", "IdP metadata fetch"],
-  ["/sso/oidc/login", "OIDC initiation"],
-  ["/sso/oidc/callback", "OIDC callback, authenticated by the state cookie and code"],
-  ["/setup", "first-run provisioning; loopback-bound and origin-restricted"],
+  ["/sso/saml/:connectionId/metadata", "IdP metadata fetch; a document, and it leaks nothing that is not already in the SAML metadata"],
+  ["/sso/sso/oidc/:connectionId/callback", "OIDC callback, authenticated by the state cookie and the code the IdP returns"],
+  ["/federation/:provider/callback", "federation callback; the provider token and the state cookie are the authentication"],
+  ["/auth/callback/:provider", "as above, the other federation callback"],
+  ["/auth/webauthn/authenticate/options", "mints a challenge for a user who is not yet authenticated — that is what makes a WebAuthn login work"],
+  ["/auth/webauthn/authenticate/verify", "completes a WebAuthn login, authenticated by the single-use challenge this route issued"],
+  // There is deliberately **no** `/setup` entry. The setup plugin is mounted at
+  // `/setup` and serves `/setup/status`, `/setup/init` and the validators — there is
+  // no `/setup` route, so an entry naming it was inert. The routes that do exist are
+  // authenticated by `assertSetupToken`, which the tool recognises separately.
   ["/health", "liveness probe"],
   ["/ready", "readiness probe"],
 ]);
@@ -193,6 +210,10 @@ const routeFiles = [];
 })("src/routes");
 
 const routes = [];
+/** `PUBLIC_BY_DESIGN` keys that match no route. See the check below. */
+const publicKeyMisses = [];
+/** Keys whose route exists in a file the parser could not place. */
+const unverifiedReasons = [];
 for (const file of routeFiles) {
   const source = read(file);
   const prefix = MOUNT.get(file) ?? null;
@@ -367,6 +388,70 @@ if (strict) {
 if (asJson) {
   console.log(JSON.stringify({ routes, concerns, strictFailures }, null, 2));
 } else {
+  // Every `PUBLIC_BY_DESIGN` key must name a route the server actually serves.
+  //
+  // An entry that names a path which does not exist is **inert**: `get()` returns
+  // undefined for the route it was written about, and the reason reads as if it were
+  // doing work. Three entries were inert for exactly this reason — `/sso/saml/login`,
+  // `/sso/saml/metadata/:connectionId` and `/sso/oidc/callback` all name paths that
+  // do not exist, and nothing noticed until an unrelated change made those routes
+  // visible to the parser at all.
+  //
+  // Checked in both directions, and only the missing-key direction was checked
+  // before. The same shape as every other finding in this registry: a control that
+  // looks like it covers something and does not.
+  //
+  // The two failures are different and the difference matters. An entry whose path
+  // appears **nowhere in the source** is inert: the reason is written about a route
+  // that does not exist. An entry whose path exists in a file the parser could not
+  // place is merely unverified — the route is real, and the reason may well be
+  // correct, but this tool cannot see it. Reporting the second as the first would be
+  // its own kind of false report.
+  const allSource = routeFiles.map((file) => read(file)).join("\n");
+  const unresolvedFiles = routeFiles.filter((file) => !MOUNT.has(file));
+  for (const key of PUBLIC_BY_DESIGN.keys()) {
+    if (routes.some((other) => other.url === key)) continue;
+    // Progressively drop leading segments, keeping at least the last two, because a
+    // path parameter in the final segment defeats a single-tail comparison:
+    // `/sso/saml/:connectionId/metadata` has a tail of `/:connectionId/metadata`,
+    // and the source says `"/saml/:connectionId/metadata"` — so a tail check calls
+    // a real route inert. Two segments is the floor because a single segment
+    // (`/setup`) matches too much to mean anything.
+    //
+    // The plugin's prefix is not in the file, so `/auth/refresh` is declared as
+    // `app.post("/refresh", …)` in a file mounted at `/auth`. Comparing the whole
+    // key therefore finds nothing for a route that plainly exists, and the fix is
+    // to compare on the trailing segments — the part the file actually declares.
+    //
+    // A heuristic, and a documented one: a single trailing segment is weak evidence
+    // (`/setup` would match any `"/setup"` route), so the full key and two trailing
+    // segments are tried first and the single segment is the last resort. A key that
+    // matches none of them appears in no route file at all, which is what an inert
+    // reason looks like.
+    const segments = key.split("/").filter(Boolean);
+    const forms = [
+      `"${key}"`,
+      ...[2, 3, 4]
+        .filter((take) => segments.length >= take)
+        .map((take) => `"/${segments.slice(-take).join("/")}"`),
+      ...(segments.length >= 1 ? [`"/${segments[segments.length - 1]}"`] : []),
+    ];
+    const present = forms.some((form) => allSource.includes(form));
+    if (present) unverifiedReasons.push(key);
+    else publicKeyMisses.push(key);
+  }
+  if (publicKeyMisses.length > 0) {
+    console.log("PUBLIC_BY_DESIGN entries naming a route that does not exist (inert reasons):");
+    for (const key of publicKeyMisses) console.log(`    ${key}`);
+    console.log("");
+  }
+  if (unverifiedReasons.length > 0) {
+    console.log("PUBLIC_BY_DESIGN entries in route files this tool cannot place (unverified, not inert):");
+    for (const key of unverifiedReasons) console.log(`    ${key}`);
+    console.log(`    (${unresolvedFiles.length} route file(s) have no resolved prefix — see SEC-064)`);
+    console.log("");
+  }
+
   console.log(`Routes enumerated: ${routes.length} across ${new Set(routes.map((r) => r.file)).size} files`);
   console.log(`  authenticated:         ${routes.filter((r) => r.auth).length}`);
   console.log(`  with authorization:    ${routes.filter((r) => r.authorization).length}`);

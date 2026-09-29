@@ -176,6 +176,92 @@ rules:
     severity: WARNING
     languages: [javascript, typescript]
 
+  # SEC-059 — a secrets provider encrypting with a non-AEAD cipher.
+  #
+  # Four of the five locally-encrypting providers used AES-256-GCM and the fifth
+  # used AES-256-CBC, which is malleable and unauthenticated: someone with write
+  # access to the stored ciphertext can flip plaintext bits without the key, which
+  # is the position encrypting secrets at rest exists to defend against.
+  #
+  # It survived every review and every gate, because nothing checked the *class*.
+  # Four siblings doing it right is evidence, not a control — the same shape as
+  # every other finding in this file. CodeQL's `gcm-no-tag-length` eventually
+  # pointed at it, but only by accident: that rule wants a 12-byte tag, 12 bytes
+  # is the IV length, and obeying it would have weakened all four GCM sites.
+  #
+  # So the rule is on the algorithm, not on the parameters: an AEAD or nothing.
+  # `not-inside` is deliberately absent — a function called `legacyDecrypt` in a
+  # migration tool is a legitimate place for CBC, and the provider that *writes*
+  # is distinguished from the one that only *reads* by
+  # `keystone-secrets-aead-only` vs `keystone-secrets-may-read-cbc` below.
+  - id: keystone-secrets-aead-only
+    patterns:
+      # **Writes only.** `createDecipheriv` is deliberately absent: a fixture
+      # covering all seven ciphers showed the two rules contradicting each other.
+      # This one fired on the legacy *read* that
+      # `keystone-secrets-legacy-cbc-is-named` exists to permit, so a correct
+      # migration could not pass both.
+      #
+      # The division that works: **never write an unauthenticated cipher, and any
+      # code that reads one must say so in its function name.** Reading the old
+      # format is required; writing it is not.
+      - pattern-either:
+          - pattern: crypto.createCipheriv($ALGO, ...)
+          - pattern: createCipheriv($ALGO, ...)
+      - metavariable-regex:
+          metavariable: $ALGO
+          # A string literal's metavariable value **carries its quotes**, so the
+          # pattern has to include them. Established by bisection against a scratch
+          # file rather than assumed:
+          #
+          #     ^.*$     -> 2 matches        ^aes.*$    -> 0
+          #     ^".*"$   -> 1 match         ^"aes.*"$ -> 1
+          #
+          # The first version of this rule omitted the quotes and matched nothing,
+          # which is the exact shape of every dead rule in this file: zero findings
+          # read identically to a codebase with no violations.
+          #
+          # YAML single quotes, because the pattern contains double quotes. The
+          # unquoted form parsed but did not match, and the double-quoted form
+          # needed escapes and matched nothing either.
+          regex: '^"(aes-\d+-(cbc|ecb)|des(-ede3)?|rc4|rc2|blowfish|cast5|idea|seed)"$'
+    # WHY THIS SCOPE — the secrets providers, and the TOTP helper, which encrypts
+    # per-user seeds. Anywhere else in the repository, `createCipheriv` is not
+    # used, so a wider scope would only add the cost of a wrong path.
+    paths:
+      include:
+        - "/src/services/secrets/**"
+        - "/src/services/totp.ts"
+    message: >-
+      Encrypt with an AEAD, not a bare block cipher. AES-256-CBC and its relatives
+      are malleable and unauthenticated, so anyone who can write to the stored
+      ciphertext can change the plaintext without the key — which is the position
+      encrypting secrets at rest exists to defend against. Use AES-256-GCM: the tag
+      is what makes tampering an error rather than a silent edit. (SEC-059)
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  # The counterpart to the rule above is **not expressed here**, and the reason is
+  # worth more than a rule would have been.
+  #
+  # The intent: a legacy unauthenticated *read* is required during a migration, but
+  # only in a function whose name says it is temporary — so that "have we finished
+  # migrating" is a property of the source rather than something to remember.
+  #
+  # Semgrep has no `metavariable-pattern-not-regex`, and the workaround —
+  # `pattern-not-inside: function $NAME(...)` paired with a sibling
+  # `metavariable-regex` on the same `$NAME` — **silently matches nothing**.
+  # `$NAME` is bound only inside the negative pattern, so the conjunction can
+  # never be satisfied. Verified in isolation against a scratch file: three CBC
+  # reads, two of which should have fired, and zero findings.
+  #
+  # A rule that cannot fire is worse than no rule, because zero findings is
+  # indistinguishable from a clean codebase. So this is enforced by
+  # `scripts/verify-secrets-cipher.mjs` instead, which asserts the thing
+  # mechanically: no non-AEAD `createCipheriv` anywhere, and a *recorded count* of
+  # legacy `createDecipheriv` sites, so both "a new one appeared" and "the last one
+  # was deleted" are visible changes rather than accidents.
+
   # The layering rule, which AGENTS.md states and nothing enforced.
   #
   # `AGENTS.md`: "Routes must not import from `../db/index.js` directly — use

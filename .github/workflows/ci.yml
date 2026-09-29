@@ -172,6 +172,13 @@ jobs:
         # registry turns that into a build failure instead of a blank graph at 3am.
         run: node scripts/generate-auth-dashboard.mjs
 
+      - name: Gate — no secrets provider writes an unauthenticated cipher, and the legacy reads are counted
+        # Four of the five providers used AES-256-GCM and the fifth used AES-256-CBC. Four siblings
+        # doing it right is evidence, not a control, and no gate covered the class. This also counts
+        # the legacy unauthenticated *reads* that must survive the migration, so a new one fails and
+        # the last one going away is a deliberate change.
+        run: node scripts/verify-secrets-cipher.mjs
+
       - name: Gate — the Node version is stated once and everything agrees
         # The runtime version was written out in ten places, with no engines field
         # and no .nvmrc — even though benchmark.yml already pointed setup-node at
@@ -194,6 +201,15 @@ jobs:
         # at all until release. This runs the context half on every PR; the
         # built-image half needs a docker build and stays in release.yml.
         run: node scripts/verify-image-hygiene.mjs
+
+      - name: Gate — every `npm run` the documentation names exists
+        # A comment in secrets/azureKeyVault.ts told a reader to run
+        # `npm run db:reencrypt-oidc`. The real script is
+        # `db:reencrypt-oidc-secrets`, and a reader who follows the instruction
+        # gets "Missing script" — which reads as a broken script rather than a
+        # documentation error. The registry checker already does this for its fix
+        # and test fields; this is the same check for prose.
+        run: node scripts/verify-doc-scripts.mjs
 
       - name: Gate — every documentation sample compiles, and its imports resolves
         # A sample is documentation, and documentation is not executed. A renamed

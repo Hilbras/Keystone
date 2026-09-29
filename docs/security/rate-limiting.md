@@ -138,6 +138,72 @@ operational situations, and a degraded in-process control is a reason to go and
 look at Redis. Recording it as if it were the healthy path would hide exactly
 the thing worth knowing.
 
+## What is deliberately not limited (3.5.1)
+
+CodeQL's `js/missing-rate-limiting` names 21 routes. Making the judgement per route
+corrected the number in **both** directions, and the corrections matter more than
+the total.
+
+### The 9 that were already limited
+
+`auth.ts` token-login ×2, `oauth2` authorize and token, `smsOtp` verify, `totp` ×4.
+
+The rule looks for a `rateLimit` call in a route's own options and misses it in two
+ordinary shapes: a limiter inside a `preHandler` array declared on a preceding
+line, and a limiter behind a named helper — `factorRateLimit("totp-verify")` is how
+this file has always done it. **Nine of 21 alerts were routes that were already
+protected**, and a number that wrong in that direction trains people to dismiss the
+tool.
+
+### The 8 that were not, and now are
+
+| route | what an attacker supplies |
+|---|---|
+| `GET /federation/:provider/callback` | a provider token, completing a login |
+| `GET /auth/callback/:provider` | as above, the other federation route |
+| `GET /sso/sso/oidc/:connectionId/callback` | an enterprise SSO authorization code |
+| `GET /auth/magic-link/verify` | **a token in the query string** |
+| `GET /sso/saml/:connectionId` | a connection id, starting IdP-initiated SSO |
+| `POST /sso/saml/acs` | **a signed assertion**, verified for you |
+| `POST /auth/webauthn/authenticate/options` | an email address, minting a challenge |
+| `POST /auth/webauthn/authenticate/verify` | a challenge, completing a login |
+
+The two in bold are the ones that were worth the most attention. The magic-link
+verifier is the most brute-forceable route in the system — the token is in the URL,
+so there is no body and no header, just a link. And the SAML ACS is an
+unauthenticated endpoint that accepts an attacker-supplied assertion and runs
+signature verification on it: a CPU cost chosen by whoever is calling, which is the
+classic SAML DoS shape.
+
+Each is keyed on its **own** prefix, so a flood against one cannot deny service to
+another, and each has `emergencyLocalLimit: true`, so a Redis outage degrades to a
+bounded per-process budget rather than removing the limit at the moment an attacker
+would most like it gone.
+
+`src/tests/security/rateLimit/unauthenticatedSurface.test.ts` drives each route 60
+times and requires a 429 with a `Retry-After`. Verified by deleting the magic-link
+verifier's limiter and watching that one test fail.
+
+### The 3 that stay unlimited, on purpose
+
+- **`GET /sdk/keystone-dropin.js` and `GET /sdk/keystone-dropin.js.sri`** — a
+  static file and its integrity hash. A browser and a CDN fetch these; limiting
+  them breaks caching and protects nothing.
+- **`POST /setup/init`** — guarded by `assertSetupToken`, one-shot, and an
+  operator's *first* request to a new installation. A rate limit here can lock
+  somebody out of their own deploy, which is a support incident **caused by a
+  security control**.
+
+Written down because an omission nobody recorded looks exactly like an oversight,
+and the next person to read `js/missing-rate-limiting` will find these three and
+have no way to tell they were decided.
+
+### One that is authenticated
+
+`POST /auth/webauthn/register/verify` sits behind `app.authenticate`, so an attacker
+already holds a credential. Bounded by the session rather than by an IP budget,
+which is the right boundary for it.
+
 ## Related
 
 A failed login is audited as `user_login_failed`, and a refresh token presented
