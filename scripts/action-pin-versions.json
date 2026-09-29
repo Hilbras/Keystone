@@ -40,10 +40,10 @@
     },
     {
       "repo": "anchore/sbom-action",
-      "sha": "e22c389904149dbc22b58101806040fa8d37a610",
-      "tag": "v0.24.0",
+      "sha": "3ad7283483fc7af8ff2b4ea19663c2d5ca935e26",
+      "tag": "v0.24.2",
       "matches": true,
-      "annotated": false
+      "annotated": true
     },
     {
       "repo": "aquasecurity/trivy-action",
@@ -89,8 +89,8 @@
     },
     {
       "repo": "google/osv-scanner-action",
-      "sha": "40a8940a65eab1544a6af759e43d936201a131a2",
-      "tag": "v2.0.3",
+      "sha": "a345acffa64b0eaede81a3d9aae6141214d9c8fc",
+      "tag": "v2.6.0",
       "matches": true,
       "annotated": false
     },

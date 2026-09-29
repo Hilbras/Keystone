@@ -39,6 +39,44 @@ the commit while annotating `v4` gives a reader the one thing the annotation exi
 provide and then takes it away: "which release is this?" has no answer, because `v4`
 is whatever `v4` points at today.
 
+### The gate caught a wrong annotation in an already-merged change
+
+Written, wired, and then it immediately found a real defect — **on `main`, from a PR
+merged minutes earlier.**
+
+`#71` bumped `osv-scanner-action` from `40a8940a` to `a345acff` and left the comment
+saying `# v2.0.3`. The commit it actually pins is **`v2.6.0`**:
+
+```
+repos/google/osv-scanner-action/tags
+  v2.6.0  a345acffa6     <- what the pin is
+  v2.0.3  40a8940a65     <- what the comment says
+```
+
+So `main` was running a six-minor-versions-newer scanner while claiming to run v2.0.3.
+Nothing was compromised and nothing was broken — the **commit** is the pin and the
+comment is only a note — but the note was false, and the note is what a reviewer reads
+when deciding whether a bump is safe. The SHA is authoritative, so the practical risk
+was that someone comparing this pin against the v2.0.3 release would be comparing
+against a lie.
+
+It went unnoticed because Dependabot writes the trailing comment from the version it
+*believes* it is pinning to, and nothing checked.
+
+The fix here is one character. The durable part is the gate:
+
+```
+wrong version annotation           -> fails, "which is a different commit"
+a pin changed without a --refresh  -> fails, "has no record"
+the record dated a year ago        -> fails, "636 days old"
+```
+
+**And the subpath trap, demonstrated rather than described.** Querying
+`repos/google/osv-scanner-action/osv-scanner-action/tags` 404s — the second segment is
+a *directory inside* the repository, not the repository itself. The script asks about
+`repos/google/osv-scanner-action`, which is why it found this at all; a check written
+the obvious way would have reported a 404 and been read as "no tags, nothing to check".
+
 All nine now name the release they actually name:
 
 | action | was | is |
