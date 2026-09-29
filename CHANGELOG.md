@@ -5,6 +5,83 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.3] - 2026-09-30
+
+*An alert that moved instead of closing, and the four line-anchoring rules that went with it.*
+
+### The filesystem race did not close. It moved.
+
+3.5.2 rewrote `configWriter.write` to go through a descriptor and said the two
+`js/file-system-race` alerts would close. They did not — they **moved** to
+`safeFile.ts`, where `openExistingOrNew` answered "did this file already exist" with
+an `lstat` before opening it.
+
+CodeQL was right about that code too. An `lstat` followed by an `open` on the same name
+is a check followed by a use, which is the shape the rule reports. The probe was not the
+check — the check is entirely in the open's flags — but it was still a **second
+resolution of the path**, which is the exact thing `safeFile.ts` exists to remove. So
+the fix was to delete the probe, not to explain it.
+
+It was also a field nothing read. `OpenFile.existed` was consulted by exactly one thing:
+the test asserting that it was correct. A field that exists in order to be asserted is
+circular, and it had been given a name and a doc comment in the meantime.
+
+Two lessons worth keeping:
+
+- **"Will clear when it is pushed" is a prediction, and 3.5.2 got it wrong.** The
+  triage recorded it that way rather than as done, which is the only reason the
+  correction is visible.
+- **A fix that relocates a finding has not necessarily solved it.** The alert moving
+  files is what exposed the second resolution; treating "the original file is clean"
+  as done would have left it.
+
+`keystone-config-no-pre-open-lstat` now stops the probe being added back. The one
+legitimate `lstat` — inside the `EEXIST` branch, called *after* the open has already
+failed, to say which refusal occurred — is suppressed with a reason rather than left to
+become the one finding that teaches people to ignore the rule.
+
+### Four dynamic regexes replaced with string comparisons
+
+`bump-version.mjs` built a `RegExp` per call from a key read out of a literal table. No
+untrusted input reaches it, but a key containing `.` or `(` would have matched more than
+intended, and it made a reader reason about escaping in a script whose previous version
+once shipped a bug by writing the wrong thing to a manifest.
+
+A trimmed line either starts with `key:` or it does not. That is a string comparison,
+and it removes the hazard rather than escaping it:
+
+```js
+const trimmed = line.trimStart();
+if (!trimmed.startsWith(`${key}:`)) return null;
+```
+
+The `YAML key ends at the colon` guard is new and worth naming: without it, `version:`
+would also match `versionOverride:`. The old pattern had the same behaviour by
+accident, from `\s*` after the colon; the new one has it on purpose.
+
+Verified against the two bugs this file has already shipped — a comment naming the key
+and a version stays untouched, and `keepPrefix` still keeps `ghcr.io/…/name` when
+rewriting only the tag:
+
+```
+comment line untouched:       true
+real image updated:           true
+comment newTag untouched:     true
+real newTag updated:          true
+```
+
+### And one unused import
+
+`examples/login-form-react/backend-example.ts` had two. 3.5.1 removed `type JWTPayload`
+and the alert simply moved to the next import. That is what a moving alert looks like,
+and it is the second time this release has been told one by an alert that did not
+disappear.
+
+### CodeQL
+
+**63 alerts, 0 open.** All 63 are either dismissed with a stated reason or fixed. The
+last six were: one filesystem race that moved rather than closed, four dynamic regexes,
+and one unused import.
 ## [3.5.2] - 2026-09-29
 
 *The last two open CodeQL alerts, and the symlink the rule was not asking about.*

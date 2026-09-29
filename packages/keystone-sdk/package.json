@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone-sdk",
-  "version": "3.5.2",
+  "version": "3.5.3",
   "description": "Drop-in JavaScript SDK for Hilbras Keystone identity platform",
   "type": "module",
   "main": "dist/keystone-sdk.cjs",

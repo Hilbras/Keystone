@@ -76,8 +76,6 @@ export interface OpenFile {
   handle: fs.FileHandle;
   /** `fstat` on the **handle**, so it describes the file that will be written. */
   stats: Stats;
-  /** Whether the file already existed when it was opened. */
-  existed: boolean;
 }
 
 /**
@@ -132,9 +130,15 @@ async function refusalFor(filePath: string, error: unknown): Promise<Error | nul
   if (code === "EISDIR") return new NotAFileError(filePath);
   if (code === "EEXIST") {
     // O_EXCL reports a name that already exists as EEXIST whether what is there is
-    // a file or a link, and the two deserve different messages. lstat is the one
-    // call here that is *meant* to see a symlink; it decides nothing about whether
-    // to follow one.
+    // a file or a link, and the two deserve different messages.
+    //
+    // This is the **one** legitimate `lstat` in the module, and it is legitimate
+    // because it is not a pre-open probe: the open has already happened and already
+    // failed, so there is no window left to race. It answers *which* refusal
+    // occurred and decides nothing about whether to follow anything. Suppressed with
+    // a reason rather than left to become the one finding that teaches people to
+    // ignore the rule.
+    // nosemgrep: keystone-config-no-pre-open-lstat
     const existing = await fs.lstat(filePath).catch(() => null);
     if (existing?.isSymbolicLink()) return new SymlinkError(filePath);
     return new AlreadyExistsError(filePath);
@@ -154,17 +158,23 @@ export async function openExistingOrNew(
 ): Promise<OpenFile> {
   const { mode = 0o600, excl = false } = options;
 
-  // Whether the file is already there, answered with `lstat` so that "does this
-  // exist" is asked the same way the open will be asked. This is reported, never
-  // used to decide anything: the decision is the open's.
-  const existed = await fs
-    .lstat(filePath)
-    .then(() => true)
-    .catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    });
-
+  // **No `lstat` probe before the open**, and that is a correction rather than a
+  // refinement.
+  //
+  // The first version answered "did this file already exist" with an `lstat` and
+  // reported it on `OpenFile.existed`. Two problems, and the second is the one that
+  // mattered:
+  //
+  //   1. Nothing read it except its own test, so it was a field that existed in
+  //      order to be asserted — circular, and the security decision never consulted
+  //      it. The decision is entirely in the open's flags.
+  //   2. It was a **second resolution of the path**, which is the exact shape this
+  //      module exists to remove. CodeQL read the `lstat` as a check and the `open`
+  //      as the use, and reported `js/file-system-race` on `safeFile.ts` — so fixing
+  //      the race in `configWriter.ts` **moved** the alert rather than clearing it.
+  //
+  // Removing the probe is the fix, not a suppression: there is now one resolution of
+  // the name and nothing to race against.
   let handle: fs.FileHandle;
   try {
     handle = await fs.open(filePath, C.O_RDWR | (excl ? C.O_EXCL : C.O_CREAT) | NOFOLLOW, mode);
@@ -175,7 +185,7 @@ export async function openExistingOrNew(
   try {
     const stats = await handle.stat();
     if (!stats.isFile()) throw new NotAFileError(filePath);
-    return { handle, stats, existed };
+    return { handle, stats };
   } catch (error) {
     await handle.close().catch(() => {});
     throw error;
@@ -196,7 +206,7 @@ export async function openExistingOrNull(filePath: string): Promise<OpenFile | n
   try {
     const stats = await handle.stat();
     if (!stats.isFile()) throw new NotAFileError(filePath);
-    return { handle, stats, existed: true };
+    return { handle, stats };
   } catch (error) {
     await handle.close().catch(() => {});
     throw error;
