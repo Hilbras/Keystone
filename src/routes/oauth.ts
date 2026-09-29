@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../config.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 import { buildConnector, listSupportedProviders } from "../services/connectors/registry.js";
 import { findIdentityProviderByType, upsertOAuthUser } from "../services/users.js";
 import { createTokenSet } from "../services/tokens.js";
@@ -143,7 +144,21 @@ export default async function oauthRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/callback/:provider", async (request, reply) => {
+  app.get("/callback/:provider", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "oauth-callback",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // As above, for the other federation route.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request, reply) => {
     const { provider } = request.params as { provider: string };
     if (!isProvider(provider)) {
       return reply.status(400).send({ error: "Unsupported provider" });

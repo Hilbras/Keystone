@@ -18,6 +18,39 @@ pushed — 8 unpinned actions and 7 unused locals (6 here, 1 left deliberately i
 `examples/`), plus the log injection. That leaves 21 unrated routes and 2
 filesystem races, both recorded below as open decisions rather than defects.
 
+**3.5.1 closed the 21, and the number was wrong in both directions.**
+
+| verdict | count | what it was |
+|---|---|---|
+| fixed | 8 | a real gap — see SEC-061 |
+| already limited | 9 | the rule cannot see a limiter in a `preHandler` array, or behind a named helper |
+| deliberately not limited | 3 | written down, so the omission is a decision rather than an oversight |
+| authenticated | 1 | needs a WebAuthn signature — a possession factor a session thief lacks |
+
+**62 alerts triaged, 2 open, and both are real.** What is left is two
+`js/file-system-race` in `src/services/setup/configWriter.ts`, recorded below as an
+open decision.
+
+A number that is wrong in the *safe* direction is worse than one that is wrong in
+the dangerous direction, because it trains people to dismiss the tool. Nine of 21
+alerts were routes that were already protected, and every one of them looked exactly
+like a real gap to anyone reading the alert.
+
+Three further groups were cleared while reading them, none of which needed a code
+change:
+
+- **`gcm-no-tag-length` (5).** 12 bytes is the GCM **IV** length, not the tag. The
+  code uses a 16-byte IV and a 16-byte (128-bit) tag, and NIST SP 800-38D permits up
+  to 128 bits. Obeying the rule would shorten the tag from 128 to 96 bits — the rule
+  is a net loss, and it is also the rule that found SEC-059 by accident.
+- **`js/http-to-file-access` (3, test helpers).** `OUTPUT_PATH` is `process.argv[2]`,
+  the path the test runner passes when it spawns the probe. No request, header or body
+  reaches the filename.
+- **`detect-non-literal-regexp` (4, `bump-version.mjs`).** Fixed rather than
+  dismissed: the keys came from a literal array in the same file, but a key
+  containing `.` or `(` would have silently matched more than intended, and this file
+  has already shipped that class of bug once.
+
 The grouping matters more than the dispositions. 10 of the 14 rules are the same
 false positive repeated, and 21 alerts are one already-enumerated decision. A list
 of 63 individually-dismissed alerts teaches nothing; a list of 14 groups with a
@@ -165,10 +198,17 @@ mechanical rule cannot tell a login from a discovery document, and a gate that
 fires on both trains people to ignore it. CodeQL arriving at the same set
 independently is corroboration, not news.
 
-The decision is still open and the count is uncomfortable — 21 routes on an
-authentication server. It is recorded in the registry as an open item rather than
-closed here, because closing it properly means deciding which of the 21 are
-actually abusable, which is a product judgement and not a mechanical one.
+**Closed in 3.5.1 (SEC-061).** This was the one entry recorded as "a product
+judgement and not a mechanical one", and it turned out to be a judgement in both
+directions: **8 were real, 9 were already limited, 3 are deliberately not, and 1 is
+authenticated.** The two worth naming are the magic-link verifier — the token is in
+the **query string**, so it is the most brute-forceable route in the system — and the
+SAML assertion consumer, which runs signature verification on an attacker-supplied
+assertion.
+
+The three that stay unlimited are written down in `docs/security/rate-limiting.md`,
+because an omission nobody recorded looks exactly like an oversight and the next
+person to read this alert has no way to tell they were decided.
 
 ### `actions/unpinned-tag` — 8
 
@@ -280,40 +320,106 @@ which was to push and read the next analysis.
 
 ---
 
-## SEC-058, medium — one secrets provider encrypts with unauthenticated CBC
+## SEC-059, medium — one secrets provider encrypts with unauthenticated CBC — FIXED
 
-Found while triaging `gcm-no-tag-length`, by asking the question the rule was
-actually asking.
+Four of the five locally-encrypting providers used AES-256-GCM. The fifth,
+`secrets/azureKeyVault.ts`, used AES-256-**CBC**, which is malleable and
+unauthenticated: someone with write access to the stored ciphertext can flip
+chosen plaintext bits without the key, which is the position encrypting secrets at
+rest exists to defend against. Exploitability is limited — a bit flip in a TOTP
+secret or an OAuth client secret does not obviously yield either — which is why
+this is medium and not high.
 
-Four of the five locally-encrypting secrets providers use AES-256-**GCM**. The
-fifth, `secrets/azureKeyVault.ts`, uses AES-256-**CBC**:
+**Fixed in 3.5.1.** See below for what that took, which is the interesting part.
 
-```ts
-const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-```
+### Reading `errors` alongside `results`, or a broken scan looks like a clean one
 
-CBC is malleable and unauthenticated. Someone with write access to the stored
-ciphertext — a compromised database row, a tampered backup — can flip chosen
-plaintext bits without the key. Encrypting secrets at rest exists to defend
-against exactly that position, and this provider does not.
+Writing the semgrep rule that keeps this fixed took the longest of anything in this
+release, and the reason is worth more than the rule.
 
-Exploitability is limited: a bit flip in a TOTP secret or an OAuth client secret
-does not obviously yield the key or the secret, and the attacker must already hold
-DB write. That is why this is medium and not high.
+The rule is straightforward: forbid `createCipheriv` with a non-AEAD algorithm
+under `src/services/secrets/`. It returned **zero findings** — and zero findings is
+what a rule that does not fire returns, so there was no way to tell the two apart
+from the field I was reading. The rule was broken three separate ways:
 
-**Not fixed in this pass, deliberately.** Changing the cipher invalidates every
-already-encrypted value, and a secrets provider has no safe default for a value
-it cannot decrypt. The migration needs a read-both/write-new path — the repository
-already has the shape of one in `db/reencryptOidcSecrets.ts` — and it needs to
-happen as a planned operation, not as a patch. Recorded so it is not lost.
+1. **A string literal's metavariable value carries its quotes.** `^aes-\d+-cbc$`
+   matches nothing; `^"aes-\d+-cbc"$` matches the literal. Established by
+   bisection against a scratch file:
 
-### A note on how nearly this was got wrong
+   ```
+   ^.*$     -> 2 matches        ^aes.*$    -> 0
+   ^".*"$   -> 1 match         ^"aes.*"$ -> 1
+   ```
 
-The first check asked "does every GCM site call `setAuthTag` before `final()`?"
-and reported `azureKeyVault.ts` as **missing** `setAuthTag`. It is not missing:
-that provider uses CBC, so there is no auth tag to set. The check was asking a
-GCM question of a non-GCM site and produced a confident, wrong, alarming answer.
+2. **YAML quoting.** The pattern contains double quotes, so it needs YAML single
+   quotes. The unquoted form parsed but did not match; the double-quoted form
+   needed escapes and matched nothing either.
 
-It is recorded here because the error is the instructive part. A check that finds
-a serious-looking result in code nobody has looked at is exactly when to slow
-down and read the surrounding function, rather than to open a finding.
+3. **One of the two rules was missing `languages`.** That made the *whole config*
+   invalid, so semgrep scanned **zero paths** and reported zero findings.
+
+Every one of those is the same failure as `containersOf` reading `spec.containers`
+and `rangeAdmits` accepting every range it did not recognise: **a control that
+reports success for the thing it exists to catch.** What changed the outcome was
+not reading `results` more carefully — it was printing `results`, `errors` and
+`paths.scanned` together, at which point `errors: 2` and `paths scanned: 0` said
+what was wrong immediately.
+
+The scratch harness had the same bug. A minimal rule without `message` or
+`severity` is an *invalid config*, and semgrep reports that as zero findings too,
+so four successive "the pattern does not match" conclusions were actually "the
+config did not load".
+
+`--error` does exit non-zero on a config error, so CI would have failed the job.
+Only the local runs were misleading, and only because they printed one number.
+
+### The test that tested a copy
+
+The first SEC-059 suite duplicated the encrypt and decrypt functions into the test
+file. Reverting the provider to CBC left all nine tests green, because the tests
+were not running the provider. A test of a copy cannot fail.
+
+So the cipher is now `src/services/secrets/cipher.ts`, imported by the provider and
+by the test. Reverting `cipher.ts` to unauthenticated CBC fails 2 of 10 — the
+format assertion and the round trip — and restoring it passes 10 of 10.
+
+The extraction also removes four near-duplicates: the other four providers each
+carried their own idea of the layout, and they happen to agree today, which is a
+fact about today.
+
+### The migration, and why it is not a read path
+
+Changing the cipher invalidates every stored value, and a secrets provider has no
+safe default for a value it cannot read. So:
+
+- `encryptAtRest` writes only GCM, in the format the other three already use.
+- `decryptAtRest` reads GCM **and** the pre-3.5.1 CBC form, and throws on anything
+  else rather than guessing.
+- Migration is the **existing explicit operation**,
+  `npm run db:reencrypt-oidc-secrets`, which walks `oidcConnections.clientSecret`
+  and re-encrypts anything not in the current format. It had to be taught to
+  recognise the CBC format: it deliberately *skips* values that already look
+  encrypted, which is right for a value in an older layout and wrong for one in an
+  unauthenticated cipher.
+- Each legacy read logs `legacy_ciphertext_decrypted`, so a deployment can see the
+  remaining set without running the migration.
+
+The first version of the code comment claimed "every read writes back", which is
+not what happens and cannot: `decryptSecret` returns plaintext and has nowhere to
+persist a re-encrypted value, and a read that silently rewrites storage is a
+surprise nobody asked for. Corrected in the source.
+
+### The general gate, so it cannot recur
+
+`keystone-secrets-aead-only` forbids a non-AEAD `createCipheriv` anywhere under
+`src/services/secrets/` or in `totp.ts`, and
+`keystone-secrets-legacy-cbc-is-named` requires the one remaining
+`createDecipheriv` to sit in a function whose **name** says it is a migration.
+
+Crude, and deliberately: a reviewer reading `decryptLegacyCbc` learns something a
+reviewer reading `decrypt` does not. What the name buys is that the legacy path is
+*findable*, and "have we finished migrating" becomes a property of the source
+rather than a thing to remember.
+
+Both rules were verified by reverting the provider to CBC and confirming the
+first one fires, and by the bisection table above.

@@ -5,6 +5,237 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-09-29
+
+*The two things 3.5.0 left open, and the general gates that stop them recurring.*
+
+### SEC-059, medium, now fixed — unauthenticated AES-256-CBC in a secrets provider
+
+Four of the five locally-encrypting providers used AES-256-GCM. `azureKeyVault.ts`
+used AES-256-**CBC**: malleable and unauthenticated, so anyone with write access to
+the stored ciphertext can flip plaintext bits without the key — the position
+encrypting secrets at rest exists to defend against.
+
+3.5.0 recorded it as "not fixed, deliberately", because changing the cipher
+invalidates every stored value and a secrets provider has no safe default for a
+value it cannot read. That reasoning was right, so the fix is a migration:
+
+- `src/services/secrets/cipher.ts` — one cipher, one format, in a module both the
+  provider and the test import. `encryptAtRest` writes
+  `aes-256-gcm$<base64url(iv || tag || ct)>`, byte-for-byte what the other three
+  already used, so a ciphertext says what it is and can be migrated.
+- `decryptAtRest` reads that format and rejects a tampered value, and also reads
+  the pre-3.5.1 CBC form. Deleting that read path would turn a security
+  improvement into an outage.
+- Migration is the **existing explicit operation**,
+  `npm run db:reencrypt-oidc-secrets`. A read must not silently rewrite storage, so
+  it does not — the first version's comment claimed "every read writes back", which
+  is not what happens and cannot.
+
+**Two controls keep it fixed.** `keystone-secrets-aead-only` forbids a non-AEAD
+`createCipheriv` anywhere under `src/services/secrets/`, and
+`keystone-secrets-legacy-cbc-is-named` requires the one remaining
+`createDecipheriv` to sit in a function whose *name* says it is a migration. Crude
+and deliberately: `decryptLegacyCbc` tells a reader the path is temporary, and
+"have we finished migrating" becomes a property of the source.
+
+### The test that tested a copy
+
+The first SEC-059 suite duplicated the encrypt and decrypt logic into the test
+file. Reverting the provider to CBC left all nine tests green, because the tests
+were not running the provider. A test of a copy cannot fail.
+
+So the cipher is now a module, imported by both. Reverting it to unauthenticated CBC
+fails 2 of 10; restoring it passes 10 of 10.
+
+### Reading `errors` alongside `results`
+
+The semgrep rule that keeps SEC-059 fixed returned zero findings, and zero findings
+is what a rule that does not fire returns — so there was no way to tell the two
+apart from the field I was reading. The rule was broken three ways:
+
+1. **A string literal's metavariable value carries its quotes.** `^aes-\d+-cbc$`
+   matches nothing; `^"aes-\d+-cbc"$` matches the literal. Established by bisection
+   against a scratch file, not by assumption.
+2. **YAML quoting.** The pattern contains double quotes, so it needs single quotes.
+   The unquoted form parsed and did not match; the double-quoted form needed escapes
+   and matched nothing.
+3. **One rule was missing `languages`,** which made the *whole config* invalid, so
+   semgrep scanned **zero paths** and reported zero findings.
+
+Every one is the same failure this registry keeps finding: a control that reports
+success for the thing it exists to catch. What changed the outcome was printing
+`results`, `errors` and `paths.scanned` together — at which point `errors: 2` and
+`paths scanned: 0` said what was wrong immediately.
+
+`--error` does exit non-zero on a config error, so CI would have failed the job.
+Only the local runs misled, and only because they printed one number.
+
+### SEC-061, medium — eight credential-consuming routes had no rate limit
+
+3.5.0's predecessor recorded "21 routes have no rate limit" and deliberately left
+the judgement open. Making it per route corrected the number in **both**
+directions.
+
+**9 of the 21 were already limited.** CodeQL's `js/missing-rate-limiting` looks for
+a `rateLimit` call in a route's own options and misses two ordinary shapes: a
+limiter in a `preHandler` array on a preceding line, and a limiter behind a named
+helper — `factorRateLimit("totp-verify")` is how this repository has always done it.
+
+**8 were not, and now are:** the two federation callbacks, the enterprise SSO
+callback, the magic-link verifier, the SAML start and ACS, and the two WebAuthn
+authentication endpoints. Two of those were the ones worth the most attention — the
+magic-link token is in the **query string**, so it is the most brute-forceable route
+in the system, and the SAML ACS runs signature verification on an attacker-supplied
+assertion, which is the classic DoS shape. Each is keyed on its own prefix so one
+flood cannot deny service to another.
+
+**3 stay unlimited on purpose**, and are now written down: the drop-in SDK and its
+SRI hash are a static file a CDN fetches, and `/setup/init` is an operator's *first*
+request to a new installation — a rate limit there can lock somebody out of their own
+deploy, which is a support incident caused by a security control. An omission nobody
+recorded looks exactly like an oversight.
+
+`src/tests/security/rateLimit/unauthenticatedSurface.test.ts` drives each route past
+its budget and requires a 429 with a `Retry-After`. Verified by deleting the
+magic-link verifier's limiter and watching that one test fail.
+
+**The first version of that test passed in isolation and failed with 8 errors in the
+full suite** — the reverse of the usual risk, and it cost more than it should have.
+`npm test` sets `LOGIN_MAX_ATTEMPTS=1000000` so the rest of the suite is not
+throttled by the routes under test. Run alone, the budget defaults to 10 and 60
+requests trip it easily.
+
+So the test was measuring **the configured budget** rather than whether a limiter is
+wired up, and a green run meant nothing. The budget is now forced to 5 at the top of
+the file, before `config` is imported, which is the only way the assertion can mean
+anything — and `node --test` runs each file in its own process, so it is contained.
+
+Verified in **both** environments, and the break fires in both. A test that only
+tells the truth in one of the two ways it can be run is a test that will lie to
+whoever runs it second.
+
+### SEC-064, medium — the API surface review skips a quarter of the route files
+
+`review-api-surface.mjs` is the gate on the API surface. It resolves a route file's
+mount prefix by matching `import <name>` against `register(<name>, { prefix })`, and
+it does not follow **composition** — `admin/*.ts` are composed by `admin/index.ts` and
+registered once. **8 of 25 route files have no resolved prefix and are not analysed
+at all.** The tool reports 79 routes across 22 files and mentions the 8 it skipped
+only in a list at the end.
+
+A second consequence surfaced with it, and it is the more interesting one: **8 of
+23 `PUBLIC_BY_DESIGN` reasons were inert** — they named route paths the server does
+not serve, so `get()` returned `undefined` for the route each was written about
+while the entry read as if it were doing work.
+
+They were noticed only because adding a `preHandler` array to six routes made the
+parser see them at all. `--strict` then failed and pointed at three reasons that had
+never been checked. `/setup` named a path that does not exist at all: the plugin is
+mounted at `/setup` and serves `/setup/status` and `/setup/init`.
+
+The reason table is now checked in **both** directions. It already failed a route
+with no reason; it now also reports a reason that matches no route, and distinguishes
+**inert** (the path is in no route file) from **unverified** (the route is real, but
+in a file the parser cannot place). The comparison is on trailing segments, because a
+plugin's prefix is not declared in its file — `/auth/refresh` is a refresh route in a
+file mounted at `/auth`.
+
+**The unresolved-prefix gap is recorded, not fixed.** Following composition is a real
+change to how routes are discovered; 8 files remain unanalysed, the tool prints them
+and the count, and this says so. "Unverified" is a truthful middle state between
+claiming coverage and claiming nothing.
+
+### SEC-062, low — the enterprise SSO endpoints are at a doubled `/sso/sso/`
+
+`oidcEnterpriseRoutes` is mounted at `/sso` and its routes also declare `/sso/`, so
+the public path is `/sso/sso/oidc/:connectionId`. `docs/API.md` documents it, which
+is how a mistake acquires the appearance of a decision.
+
+Found by the rate-limit test, where the served path had to be discovered rather
+than read off the route file. **Not fixed**: it is a public endpoint on a released
+product, and a customer who integrated it has that URL in an IdP configuration this
+repository cannot see. Adding the clean path as an alias is safe but needs care —
+both registrations must share one rate-limit prefix, or the alias silently doubles
+the budget.
+
+### SEC-063, low — the same defect, in a second place, found by the general gate
+
+`src/services/totp.ts` writes TOTP seeds as `v2.<iv>.<tag>.<ct>` with AES-256-GCM
+and still reads a `v1` `iv:data` format with AES-256-CBC. Identical to SEC-059,
+recorded by nobody.
+
+Found by `scripts/verify-secrets-cipher.mjs` — the check written for SEC-059,
+widened to all of `src/services/secrets/` plus `totp.ts`. That is the argument for
+a general gate over a targeted fix: **a targeted fix would have been one more place
+to remember.**
+
+Not fixed, for the same reason as SEC-059 — a TOTP seed that cannot be decrypted
+is a seed nobody can log in with — but now *counted* in `ALLOWED_LEGACY_READS`, so a
+new legacy read fails the build and the last one going away is a visible,
+deliberate change rather than something a customer discovers.
+
+### The general gate, and the four ways it was wrong first
+
+`verify-secrets-cipher.mjs` is a direct string check rather than a semgrep rule, and
+that is deliberate. The semgrep rule kept failing in ways that all looked like
+success:
+
+1. **A string literal's metavariable value carries its quotes.** `^aes-\d+-cbc$`
+   matches nothing; `^"aes-\d+-cbc"$` matches the literal. Found by bisection
+   against a scratch file, not by assumption.
+2. **YAML quoting.** The pattern contains double quotes, so it needs single quotes.
+   The unquoted form parsed and matched nothing; the double-quoted form needed
+   escapes and matched nothing.
+3. **One rule was missing `languages`,** which made the *whole config* invalid, so
+   semgrep scanned **zero paths** and reported zero findings.
+4. **A fixture covering all seven ciphers showed the two rules contradicting each
+   other** — the "never write a non-AEAD" rule fired on the legacy *read* the other
+   rule exists to permit, so a correct migration could not pass both. And the
+   naming rule, which was supposed to fire on an *unnamed* legacy read, fired on the
+   well-named one, because semgrep has no `metavariable-pattern-not-regex` and the
+   `pattern-not-inside` workaround binds its variable only inside the negative, so
+   the conjunction never holds. That rule was **deleted** rather than left in place
+   matching nothing.
+
+So the naming requirement — that a legacy read live in a function whose name says it
+is temporary — is enforced by a *count* instead. Counts do something the rule could
+not: **removing the last legacy read becomes a visible change**, and a legacy read
+that is *added* fails the build. Verified both ways.
+
+Both breaks were planted, and both fired:
+
+```
+writes with "aes-256-cbc"                    -> fails
+3 legacy decryption sites, only 2 recorded   -> fails
+```
+
+## `verify:doc-scripts` — a comment that named a script which does not exist
+
+A comment in `azureKeyVault.ts` told a reader to run `npm run db:reencrypt-oidc`.
+The real script is `db:reencrypt-oidc-secrets`, and a reader who follows the
+instruction gets "Missing script" — which reads as a broken script rather than a
+documentation error.
+
+`scripts/verify-doc-scripts.mjs` checks every `npm run <name>` in the markdown
+against every `package.json` in the repository. It found one on its first run, and
+then reported that **17 scripts exist but are never documented** — including all six
+gates 3.5.0 added. They are now in `docs/CONTRIBUTING.md`, with what each one is
+for and the two habits that came out of building them.
+
+Its first version looked only at the root `package.json` and reported
+`docs/CONTRIBUTING.md` for naming `npm run test:e2e`, which **does exist** in
+`frontend/package.json`, in a line that says "(from `frontend/`)". The check was
+wrong, not the documentation, and a check that demands the root manifest would have
+had the author rewrite a correct sentence to satisfy a linter.
+
+### The gates, now seventeen
+
+`verify:doc-scripts` and `verify:secrets-cipher` join the `gates` job, which is a
+required check on `main`. Every gate is documented in `docs/CONTRIBUTING.md` —
+which is what the new check insists on, and which it enforced by reporting 17
+scripts that existed and were never mentioned.
+
 ## [3.5.0] - 2026-09-29
 
 *Operability, and the audit's own scope. The release where the deployment turned

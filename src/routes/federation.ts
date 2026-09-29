@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../config.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 import { listSupportedProviders, listConfiguredProviders } from "../services/connectors/registry.js";
 import { getSdk } from "../sdk/index.js";
 import { setSessionCookies, clearSessionCookies } from "../plugins/auth.js";
@@ -99,7 +100,22 @@ export default async function federationRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/:provider/callback", async (request, reply) => {
+  app.get("/:provider/callback", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "federation-callback",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // Completes a federated login with an attacker-supplied provider token, so it is
+        // a brute-force target exactly like a password check.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request, reply) => {
     const { provider } = request.params as { provider: string };
     if (!isProvider(provider)) {
       return reply.status(400).send({ error: "Unsupported federation provider" });

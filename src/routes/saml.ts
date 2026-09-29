@@ -11,6 +11,7 @@ import { setSessionCookies } from "../plugins/auth.js";
 import { fingerprintFromRequest, recordDevice } from "../services/devices.js";
 import { toSelfUser } from "../types.js";
 import { config } from "../config.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 import { isMfaRequiredError } from "../lib/errors.js";
 import { escapeXml } from "./helpers.js";
 import { redis } from "../services/redis.js";
@@ -275,7 +276,21 @@ function sanitizeSamlError(error: unknown): { statusCode: number; body: { error:
 }
 
 export default async function samlRoutes(app: FastifyInstance) {
-  app.get("/saml/:connectionId", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get("/saml/:connectionId", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "saml-start",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // IdP-initiated SSO start. Unauthenticated, and every request does real work.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
     const orgId = (request.query as { orgId?: string }).orgId;
     if (!orgId) return reply.status(400).send({ error: "orgId is required" });
@@ -328,7 +343,23 @@ export default async function samlRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/saml/acs", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/saml/acs", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "saml-acs",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // The assertion consumer service: an unauthenticated endpoint that accepts an
+        // attacker-supplied assertion and runs signature verification on it. That is a
+        // CPU cost chosen by whoever is calling, and it is the classic SAML DoS shape.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as { SAMLResponse?: string; RelayState?: string };
     if (!body.SAMLResponse) {
       clearTransactionCookie(reply);

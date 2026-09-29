@@ -3,7 +3,7 @@
   "engines": {
     "node": ">=22"
   },
-  "version": "3.5.0",
+  "version": "3.5.1",
   "license": "MIT",
   "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
@@ -61,6 +61,8 @@
     "verify:k8s": "node scripts/verify-k8s-manifests.mjs",
     "dashboard:auth": "node scripts/generate-auth-dashboard.mjs",
     "verify:doc-samples": "node scripts/verify-doc-samples.mjs",
+    "verify:doc-scripts": "node scripts/verify-doc-scripts.mjs",
+    "verify:secrets-cipher": "node scripts/verify-secrets-cipher.mjs",
     "verify:sdk": "node scripts/verify-sdk-packages.mjs",
     "verify:action-pins": "node scripts/verify-action-pins.mjs",
     "verify:node": "node scripts/verify-node-version.mjs",
