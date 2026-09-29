@@ -68,17 +68,41 @@ async function writeIfUnchanged(file, before, after) {
   await writeFile(file, after, "utf8");
 }
 
-/** The scalar on a `key:` line, ignoring comments — the same anchoring as the writer. */
-function scalarOnLine(source, key, { tagOnly = false } = {}) {
-  for (const line of source.split("\n")) {
-    const code = line.replace(/^\s*#.*$/, "");
-    const match = tagOnly
-      ? new RegExp(`^\\s*${escapeRegExp(key)}:\\s*\\S+:(\\S+)`).exec(code)
-      : new RegExp(`^\\s*${escapeRegExp(key)}:\\s*(\\S+)`).exec(code);
-    if (match) return match[1];
+  /**
+   * The value of the `key:` line in `source`, ignoring comments.
+   *
+   * **No regex.** This used to build one per call from the key, which meant a key
+   * containing `.` or `(` matched more than intended, and made a reader reason about
+   * escaping in a script whose previous version once shipped a bug by writing the
+   * wrong thing to a manifest. A trimmed line either starts with `key:` or it does
+   * not, and that is a string comparison.
+   */
+  function scalarOnLine(source, key, { tagOnly = false } = {}) {
+    for (const line of source.split("\n")) {
+      const code = line.replace(/^\s*#.*$/, "");
+      const value = valueOnKeyLine(code, key);
+      if (value === null) continue;
+      if (!tagOnly) return value;
+      // `image: registry/name:tag` — the tag is the last colon-separated segment.
+      const lastColon = value.lastIndexOf(":");
+      return lastColon === -1 ? null : value.slice(lastColon + 1);
+    }
+    return null;
   }
-  return null;
-}
+
+  /**
+   * The value on a `key:` line, or null. Leading whitespace is left in place, because
+   * the writer needs to reproduce it.
+   */
+  function valueOnKeyLine(line, key) {
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith(`${key}:`)) return null;
+    const rest = trimmed.slice(key.length + 1);
+    // A YAML key ends at the colon, so `key:` must be followed by whitespace or the
+    // end of the line. Without this, `version:` would also match `versionOverride:`.
+    if (rest !== "" && !/^\s/.test(rest)) return null;
+    return rest.trimStart();
+  }
 
 if (process.argv.includes("--show")) {
   const pkg = await read("package.json");
@@ -142,30 +166,25 @@ function replaceYamlScalar(source, key, value, { keepPrefix = false } = {}) {
       // `image: registry/name:tag` — rather than the whole value. Without it the
       // first version replaced the entire reference with the bare version number,
       // leaving the manifest saying `image: 3.5.0`, which the gate caught.
-      const match = keepPrefix
-        ? new RegExp(`^(\\s*${escapeRegExp(key)}:\\s*\\S+:)(\\S+)`).exec(code)
-        : new RegExp(`^(\\s*${escapeRegExp(key)}:\\s*)(\\S+)`).exec(code);
-      if (!match) return line;
-      changed++;
-      return `${match[1]}${value}${line.slice(code.length)}`;
+        const current = valueOnKeyLine(code, key);
+        if (current === null) return line;
+        changed++;
+        // `keepPrefix` rewrites only the last colon-separated segment — the tag of
+        // `image: registry/name:tag` — rather than the whole value. Without it the
+        // first version replaced the entire reference with the bare version number,
+        // leaving the manifest saying `image: 3.5.0`, which the gate caught.
+        if (keepPrefix) {
+          const lastColon = current.lastIndexOf(":");
+          if (lastColon === -1) return line;
+          return line.replace(current, `${current.slice(0, lastColon + 1)}${value}`);
+        }
+        // Replace only the value, leaving the indentation and `key:` exactly as they
+        // were. Rebuilding the line from a regex match is what let an earlier version
+        // rewrite a comment instead of a value.
+        return `${line.slice(0, line.length - current.length)}${value}`;
     })
     .join("\n");
   return { out, changed };
-}
-
-/**
- * Escape a string for use inside a `RegExp`.
- *
- * The keys interpolated below come from a literal array in this file, so nothing
- * untrusted reaches the pattern and this is defence in depth rather than a fix for
- * a live hole. It is here because CodeQL's `detect-non-literal-regexp` is right
- * that a non-literal pattern is a pattern nobody can read, and because a key that
- * happened to contain `.` or `(` would silently match more than intended — which is
- * the shape of bug this same file already shipped once, when the version bump
- * rewrote a comment instead of a value.
- */
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 for (const [file, key, keepPrefix] of [
