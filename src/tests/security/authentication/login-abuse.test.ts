@@ -132,6 +132,19 @@ async function auditRows(type: string, userId?: string) {
   return all.filter((row) => row.userId === userId);
 }
 
+/**
+ * The event's own payload detail, as recorded in `metadata.event`.
+ *
+ * The audit subscriber nests every non-column payload key under `event` so it
+ * cannot collide with a caller's own `metadata`. `user_login_failed` carries its
+ * `reason` and the submitted address this way, from
+ * `AuthenticationDomainService` (SEC-053).
+ */
+function eventDetail(row: { metadata?: unknown }): Record<string, unknown> {
+  const metadata = (row.metadata ?? {}) as Record<string, unknown>;
+  return (metadata.event ?? {}) as Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // SEC-037 — a failed login was unaudited
 // ---------------------------------------------------------------------------
@@ -154,26 +167,51 @@ describe("Failed logins are recorded", () => {
       added.length > 0,
       "a rejected login must leave a record; before 2.8.0 it produced a 401 and nothing else"
     );
+    // The submitted address now reaches the row through the event's own payload
+    // (`event.email`), nested by the audit subscriber so it cannot collide with a
+    // caller's `metadata`. It used to arrive via a second, duplicate event emitted
+    // by the route; SEC-053 removed that duplicate, so the domain service's single
+    // event has to carry it.
     assert.ok(
-      added.some((row) => rowMetadata(row).email === email),
-      "the record must identify the address that was attempted"
+      added.some(
+        (row) => rowMetadata(row).email === email || eventDetail(row).email === email
+      ),
+      `the record must identify the address that was attempted; metadata was ${JSON.stringify(
+        added.map((r) => rowMetadata(r))
+      )}`
+    );
+    assert.ok(
+      added.some((row) => eventDetail(row).reason === "invalid_password"),
+      "and the record must say why the login failed, so a spray and a forgotten " +
+        "password are distinguishable in the log"
     );
   });
 
-  it("does not attribute the failure to a user, because the address may match none", async () => {
-    const { email } = await createUser();
-    await app.inject({
+  it("records the submitted address even when it matches no account", async () => {
+    // The unknown-user path. There is no user id to record, so the address is the
+    // only thing that makes the attempt identifiable at all — and a spray against
+    // addresses that do not exist is precisely the case where that matters.
+    const email = `ghost-${crypto.randomBytes(6).toString("hex")}@example.test`;
+    const response = await app.inject({
       method: "POST",
       url: "/auth/login",
       payload: { email, password: "wrong" },
     });
+    assert.ok(response.statusCode >= 400, `expected a rejection, got ${response.statusCode}`);
 
-    const [row] = (await auditRows("user_login_failed")).filter((r) => rowMetadata(r).email === email);
-    assert.ok(row, "the attempt must be identifiable by the submitted address");
+    const rows = (await auditRows("user_login_failed")).filter(
+      (r) => rowMetadata(r).email === email || eventDetail(r).email === email
+    );
+    assert.ok(rows.length > 0, "an attempt against an unknown address must still be recorded");
     assert.equal(
-      row.userId,
+      rows[0].userId,
       null,
-      "a failure must not be attributed to a user id: at that point no credential has been proven"
+      "there is no user to attribute it to, and inventing one would be wrong"
+    );
+    assert.equal(
+      eventDetail(rows[0]).reason,
+      "unknown_user",
+      "and the reason must distinguish 'no such account' from 'wrong password'"
     );
   });
 

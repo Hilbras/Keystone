@@ -26,6 +26,7 @@ import { webhookSubscriber } from "./services/events/subscribers/webhook.js";
 import { webhookDispatchSubscriber } from "./services/events/subscribers/webhookDispatch.js";
 import { startWebhookWorker } from "./services/webhooks.js";
 import { anomalySubscriber } from "./services/events/subscribers/anomaly.js";
+import { metricsSubscriber } from "./services/events/subscribers/metrics.js";
 import { queue } from "./services/queue/index.js";
 import { cache } from "./services/cache.js";
 import { emailProvider } from "./services/email.js";
@@ -166,6 +167,10 @@ export async function buildApp() {
   subscribeAll(webhookSubscriber);
   subscribeAll(webhookDispatchSubscriber);
   subscribe("user_login_failed", anomalySubscriber);
+  // Registered unconditionally, like the other bus subscribers. It was the one
+  // series that existed and never moved; a counter that is only wired up in some
+  // deployments is worse than one that is absent, because it looks present.
+  subscribeAll(metricsSubscriber);
   subscribe("new_device_detected", anomalySubscriber);
 
   // Register background job processors.

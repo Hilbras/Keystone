@@ -78,9 +78,30 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
     return undefined;
   }
 
+  /**
+   * Cannot rotate. Throws, deliberately.
+   *
+   * The key material is supplied by the environment, so there is nothing in this
+   * process to rotate: the previous implementation nulled the cache and
+   * re-imported `JWT_PRIVATE_KEY`, returning the same key under the same `keyId`
+   * — and `keystone secrets:rotate` printed "Rotated signing key. New key id:
+   * env". An operator running that during a suspected key compromise would
+   * believe they had rotated, and would not have (SEC-055).
+   *
+   * Generating a fresh pair here would be worse, not better: every instance reads
+   * the same environment variable, so each would mint a *different* key and the
+   * cluster would stop agreeing on who signed what.
+   *
+   * So it fails loudly, and says what to do instead. A destructive-sounding
+   * command that cannot do its job must not exit 0.
+   */
   async rotateSigningKeys(): Promise<SigningKeyPair> {
-    envKeyPair = null;
-    return this.getActiveSigningKey();
+    throw new Error(
+      "The environment secrets provider cannot rotate signing keys: they come from " +
+        "JWT_PRIVATE_KEY and JWT_PUBLIC_KEY, so rotation is an operator action outside " +
+        "this process. Generate a new pair with `keystone keys:create`, update the " +
+        "environment on every instance, and restart. Restarting also re-reads them."
+    );
   }
 
   async listActiveSigningKeys(): Promise<{ keyId: string; createdAt: Date; expiresAt?: Date | null }[]> {

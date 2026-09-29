@@ -621,6 +621,63 @@ identity to an existing local account without proof.
 **Gate:** the suite passes. The Google nonce regression (SEC-020) is one of these
 and must stay.
 
+## 4.3 status — done, and one provider had never been fixed
+
+Seventy cases: **all six providers**, against a real OIDC provider
+(`tests/helpers/fakeOidcProvider.ts`) serving a real discovery document, a real
+JWKS, and ID tokens signed with a real RSA key. `ALLOW_PRIVATE_SSO_ENDPOINTS` is
+what makes it reachable — the SSO endpoint policy refuses loopback as an SSRF
+control, which is the correct default and the reason the switch exists.
+
+The provider list is itself asserted, because a per-connector suite that silently
+stops covering a newly added provider is worse than none: it still reports green.
+
+**SEC-052, high. The Zitadel connector never bound the ID token to the request,
+and pinned no algorithm.** `getAuthorizeUrl` set no `nonce`, `exchangeCode`
+accepted no options, `verifyToken` took one argument. An ID token minted for a
+*different* Zitadel login verified correctly — issuer, audience and signature are
+all still valid, and only the nonce proves the token belongs to the request that
+started. `jwtVerify` was also called with no `algorithms` pin (so `alg` was
+whatever the published JWKS allowed, `none` included) and no `requiredClaims` (so
+a token with no `exp` was accepted forever — not hypothetical for an enterprise
+IdP whose tokens are long-lived by design).
+
+**The Google fix did not propagate to the connector next to it.** SEC-020 was the
+Google connector discarding the nonce; 2.4.0 fixed `OidcConnector` and
+`GoogleConnector`. Zitadel never had it, and because no test drove a Zitadel
+exchange, nothing said so. That is the failure mode of fixing an *instance*
+rather than a *rule*.
+
+The rule is now in the interface, which is the part that stops it recurring:
+
+```ts
+verifyToken?(token: string, expectedNonce?: string): Promise<ExternalIdentity>;
+```
+
+It declared one argument, so a connector written from it had **no way** to accept
+a nonce. The parameter's absence from the type is why this one shipped without it.
+
+Verified by breaking it:
+
+| | result |
+|---|---|
+| as shipped | 70 pass |
+| Zitadel restored to its original behaviour | **59 pass, 11 fail** — all 11 Zitadel |
+
+The other five are untouched by the break, which is what shows the eleven are
+Zitadel's and not the suite's.
+
+Also fixed while here: `attributeMapping` is keyed by internal claim names, so a
+mapping of `{ username: "login" }` — the field name in `ExternalIdentity`, in every
+provider's config screen, in the type itself — was **silently ignored** and the
+default returned. No security impact, so it is not in the registry; it is in
+[`docs/security/federation.md`](security/federation.md) because the failure mode
+is a configuration that looks applied and is not.
+
+Each rejection is matched against the claim `jose` actually names (`"aud"`,
+`"iss"`, `"exp"`), not a concept word — `/audience/i` would have passed on an
+unrelated failure and proved nothing.
+
 ## 4.4 The queue and metrics
 
 **Finding:** §2.8. One test file references the queue; none references metrics.
@@ -631,6 +688,102 @@ rather than silently changing a dashboard.
 
 **Gate:** both pass; the metrics test asserts the series *exist*, which is the
 part that rots.
+
+## 4.4 status — done, and two things that counted wrong
+
+**A counter that never moved.** `keystone_failed_logins_total` was registered in
+`plugins/metrics.ts` and incremented from nowhere. It exported as a series with
+value 0, forever — which on a dashboard is indistinguishable from "nobody has
+failed to log in", the one reading a failed-login alert must never be able to take.
+
+It is fed by a new `events/subscribers/metrics.ts` rather than by a call in the
+route, because the event is emitted from six places and the route is one of them.
+`reason` is the label rather than a constant, so a new failure mode shows up as a
+new series value instead of being folded into "failed".
+
+**The gate for the next one is static, and deliberately so.** A behavioural check
+("every series moved after this traffic") is the wrong shape:
+`keystone_cache_hits_total` is perfectly alive and no amount of logging in and out
+of the server touches it, so the assertion would be about which subsystems a test
+happens to exercise. What rots is the *pairing* between a registered name and the
+code that writes to it, and that is a property of the source. So every registered
+series must appear as an increment target somewhere in `src/` — rename the series
+and it stops matching, delete the call site and it stops matching, and both fail.
+
+**SEC-054, medium. Every unmatched URL was its own time series.** The `onResponse`
+hook labelled requests with `request.routeOptions?.url || request.url`. For a
+request that matched no route there is no template, so the fallback was the
+concrete URL:
+
+```
+keystone_http_requests_total{...,route="/nope/aaaaaaaa-1111",status_code="404"} 1
+keystone_http_requests_total{...,route="/nope/bbbbbbbb-2222",status_code="404"} 1
+```
+
+Two requests, two series, no upper bound on how many follow. A scanner, a crawler
+or a client with a URL bug grows the count without limit, and unbounded label
+cardinality is the standard way a metrics endpoint takes Prometheus down. The
+failure is silent: the endpoint keeps answering and the only symptom is a
+Prometheus out of memory hours later. Unmatched requests are labelled `unmatched`
+now, so the series count is bounded by the number of routes.
+
+**SEC-053, high. Three counts, all wrong.**
+
+1. **`isFailedLoginAnomaly` was a predicate that mutated what it measured** — it
+   called `recordFailedLogin` to get its answer, so asking the question was itself
+   evidence. Every call site therefore recorded twice, and the threshold of 10
+   fired after **5** real failed logins. Measured before: `2, 4, 6, 8, 9, 10`
+   across six real attempts. After: `1, 2, 3, 4, 5, 6`.
+2. **The route published an event the domain service had already published.**
+   `audit()` *is* `emit()` — there is no separate audit log, the table is written
+   by a subscriber — so `request.audit("user_login_failed")` in both login paths
+   published the same failure a second time. It was written when "a wrong password
+   produced a 401 and nothing else"; by then the domain service was already
+   emitting with the reason and covering all five refusal paths.
+3. **A poison job crashed the process.** `setTimeout(() => this.run(...), delay)`
+   discarded the promise, so the attempt that exhausted the budget threw into an
+   unhandled rejection, and Node terminates a process on one. One poison job took
+   the server down — on the in-process driver, which is what a deployment without
+   `REDIS_URL` gets.
+
+Removing the duplicate emit exposed a fourth thing, which is the more interesting
+one: **the audit subscriber discarded every payload field that was not a column.**
+So the domain service's `reason` and the submitted address were being thrown away
+on the way to the table, and the route's duplicate event was the only reason they
+were ever recorded. Non-column payload keys are now nested under `metadata.event`.
+
+That required restating one SEC-037 assertion honestly. It asserted
+`row.userId === null` for a wrong password, which was true only because the *route's*
+row was the one the test found — the route deliberately recorded no user id
+because "at that point no credential has been proven". The single remaining event
+names the targeted account, which is a *better* audit record and is what makes the
+per-account anomaly keying work. The test now asserts what SEC-037 actually
+claimed — that the attempt is identifiable by the submitted address, that an
+unknown address is still recorded, and that `reason` distinguishes
+`unknown_user` from `invalid_password`.
+
+### The queue, which is the other half of §4.4
+
+| | in-process | BullMQ |
+|---|---|---|
+| enqueue → execute | ✔ | ✔ |
+| retry up to the attempt budget | ✔ | ✔ |
+| stops at the budget | ✔ | ✔ |
+| counted failed **once**, not per attempt | ✔ | — |
+| dead-letter retrievable afterwards | **no** | ✔ |
+| an unroutable job is not counted as work | ✔ | — |
+
+The "no dead-letter" row is asserted rather than skipped, so it cannot be mistaken
+for tested behaviour: `getFailed` returns `[]` and `retryAll` is a no-op, so on
+that driver a permanently failing job is lost — a log line and a counter, and
+nothing an operator can re-run. The BullMQ driver keeps them, which is one more
+reason it is the default.
+
+The SEC-053 regression sits in the same file, including the structural case:
+**counting does not itself count** — record once, read five times, assert the count
+did not move. A suite that only checked the end-to-end total would still pass if
+someone merged the predicate and the recorder back together and moved the double
+count somewhere else.
 
 ## 4.5 The CLI
 
@@ -645,6 +798,57 @@ attention, since both are destructive and both handle secrets.
 to be idempotent or to fail loudly, whichever is intended — decided explicitly
 rather than left unspecified.
 
+## 4.5 status — done, and the CLI could not create a user
+
+Nineteen cases, one per command, each run as a **real subprocess against the real
+database**. The exit code is the whole of what a CLI's caller observes, and the
+defects below are exactly the ones an in-process test cannot see.
+
+**SEC-055, high. Four defects in a 177-line CLI with eight commands and no tests.**
+
+1. **`user:create` never worked.** It called `register`, which mints a token, but
+   never called `loadSigningKeys()` — the server does that during bootstrap. Every
+   invocation failed with `JWT signing keys not loaded`. This is the command that
+   creates the **platform owner**, so it is the first thing anyone runs on a new
+   deployment.
+2. **Every command that opened a connection hung.** `org:create` printed
+   `Created organization <id>` and then sat there forever. The operator's response
+   to a hung command is Ctrl-C, which destroys the exit code that would have said
+   the work was done.
+3. **`secrets:rotate` reported success while rotating nothing.** The environment
+   provider nulled its cache and re-imported the same `JWT_PRIVATE_KEY` and the
+   command printed `Rotated signing key. New key id: env`. An operator rotating
+   keys after a suspected compromise was told it had worked. The failure was also
+   invisible to anything wrapping the command, because an exception out of an async
+   commander action is an unhandled rejection and the process still exits 0.
+4. **`--version` was hardcoded to `1.9.0`** against a package at 3.3.0.
+
+The connection fix took two attempts and the first looked complete:
+
+```
+closing only the pool:   migrate ok   keys:list ok   user:create HUNG   org:create HUNG
+closing all three:       all exit 0
+```
+
+`initializeContainer()` leaves three Redis sockets open — the shared client and a
+second created inside the `cache` constructor. A partial fix is worse than none
+here, because the commands that *do* work make the ones that do not look like a
+different bug.
+
+**The roadmap's explicit decision: `secrets:rotate` must fail loudly.** It cannot
+be idempotent, because there is nothing to be idempotent about — the key comes
+from `JWT_PRIVATE_KEY`. Generating a fresh pair in-process would be worse: every
+instance reads the same environment variable, so each would mint a *different* key
+and the cluster would stop agreeing on who signed what. With the database provider,
+which stores keys and can genuinely rotate, each call is a real rotation and the
+test asserts the key *changes* — so a change that starts reporting success without
+rotating anything still fails.
+
+Verified by breaking all four at once: **8 pass, 11 fail**, including the hang
+cases, which fail by timing out. That is the correct shape for this defect — the
+assertion is "did it return on its own", and a command that never returns cannot
+be tested any other way.
+
 ## 4.6 Resolve the empty directories
 
 **Finding:** §2.8. `src/tests/fixtures/` is empty; `src/tests/integration/` has
@@ -654,6 +858,20 @@ one file.
 or `integration` reads as coverage that does not exist.
 
 **Gate:** no empty test directories remain.
+
+### 4.6 status — already resolved, and the finding was stale
+
+Both directories have real content and the roadmap's claim is out of date:
+
+```
+src/tests/fixtures/     saml-idp-test-cert.pem
+src/tests/integration/  queue.test.ts   (now 3 files, after §4.4)
+```
+
+`fixtures/` holds the self-signed IdP certificate the SAML suites use, so it was
+populated after the analysis was taken. Recorded rather than left to be
+rediscovered, because "resolve the empty directories" reading as outstanding work
+is what would prompt somebody to delete a certificate the SAML tests need.
 
 ---
 

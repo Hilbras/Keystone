@@ -35,10 +35,32 @@ function splitServiceAccountId(value: string | null | undefined): {
   return { userId: null, serviceAccountId: value.slice(SERVICE_ACCOUNT_PREFIX.length) };
 }
 
+/**
+ * The payload fields that have their own column.
+ *
+ * Everything else in the payload is recorded in `metadata`, which is what makes
+ * an event's own detail survive into the audit log. Before this, only
+ * `payload.metadata` was persisted and every other top-level key was **dropped**:
+ * so `AuthenticationDomainService` emitting `{ reason: "invalid_password",
+ * userId, email }` produced a row with the user id and no reason and no address.
+ * The information was in the event and was being thrown away on the way to the
+ * table, and the route had been emitting a *second* event to carry it (SEC-053).
+ */
+const COLUMN_FIELDS = ["userId", "orgId", "appId", "requestId", "ip", "userAgent", "metadata"] as const;
+
 export async function auditLogSubscriber(event: KeystoneEvent): Promise<void> {
   try {
     const { userId: rawUserId, orgId, appId, requestId, ip, userAgent, metadata } = event.payload;
     const { userId, serviceAccountId } = splitServiceAccountId(rawUserId);
+
+    // The event's own detail: every payload key that is not one of the columns
+    // above. Reshaped from `{ reason, email }` to `{ reason, email }` nested
+    // under `event`, so it cannot collide with a caller's own `metadata`.
+    const detail: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(event.payload)) {
+      if ((COLUMN_FIELDS as readonly string[]).includes(key)) continue;
+      if (value !== undefined) detail[key] = value;
+    }
 
     await db.insert(auditLog).values({
       userId,
@@ -49,6 +71,7 @@ export async function auditLogSubscriber(event: KeystoneEvent): Promise<void> {
       ipAddress: ip ?? null,
       userAgent: userAgent ?? null,
       metadata: {
+        ...(Object.keys(detail).length > 0 ? { event: detail } : {}),
         ...metadata,
         ...(serviceAccountId ? { serviceAccountId } : {}),
         eventVersion: event.version,

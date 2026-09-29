@@ -31,7 +31,16 @@ export interface IdentityConnector {
    * login attempt rather than to any other.
    */
   exchangeCode(code: string, redirectUri: string, opts?: { nonce?: string }): Promise<ExternalIdentity>;
-  verifyToken?(token: string): Promise<ExternalIdentity>;
+  /**
+   * Verify an ID token.
+   *
+   * `expectedNonce` is the value sent in the authorization request. When supplied,
+   * the token must carry it — that is what binds the token to this login attempt
+   * rather than to any other, and it is the parameter's absence from this
+   * signature that let one connector ship without nonce verification for years
+   * while the others were fixed (SEC-052).
+   */
+  verifyToken?(token: string, expectedNonce?: string): Promise<ExternalIdentity>;
 }
 
 export interface ConnectorConfig {

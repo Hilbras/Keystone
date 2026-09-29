@@ -23,7 +23,26 @@ export const failedLoginsTotal = new Counter({
 
 export default fp(async function metricsPlugin(app: FastifyInstance) {
   app.addHook("onResponse", async (request: FastifyRequest, reply: FastifyReply) => {
-    const route = (request as unknown as { routeOptions?: { url?: string } }).routeOptions?.url || request.url;
+    /**
+     * The route *template*, never the concrete URL.
+     *
+     * For an unmatched request there is no template, and the obvious fallback is
+     * `request.url` — which is a cardinality bomb. A scanner probing random paths,
+     * or a client with a bug in a URL, makes one new time series per request, and
+     * `keystone_http_requests_total` grows without bound until Prometheus falls
+     * over. Measured before this line changed:
+     *
+     *   keystone_http_requests_total{...,route="/nope/aaaaaaaa-1111",status_code="404"} 1
+     *   keystone_http_requests_total{...,route="/nope/bbbbbbbb-2222",status_code="404"} 1
+     *
+     * Two requests, two series, and no upper bound on how many follow.
+     *
+     * So an unmatched request gets a single constant label. 404 volume is still
+     * visible and still alertable — that is what `status_code` is for — and the
+     * series count is bounded by the number of routes.
+     */
+    const template = (request as unknown as { routeOptions?: { url?: string } }).routeOptions?.url;
+    const route = template ?? "unmatched";
     const labels = {
       method: request.method,
       route,
