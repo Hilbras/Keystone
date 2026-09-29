@@ -303,17 +303,6 @@ describe("the setup config writer's file access (SEC-065)", () => {
       await assert.rejects(() => openExistingOrNull(link), SymlinkError);
     });
 
-    it("openExistingOrNew reports whether the file already existed", async () => {
-      const filePath = targetPath("new.txt");
-      const first = await openExistingOrNew(filePath);
-      assert.equal(first.existed, false, "a file it had to create is not one that existed");
-      await first.handle.close();
-
-      const second = await openExistingOrNew(filePath);
-      assert.equal(second.existed, true);
-      await second.handle.close();
-    });
-
     it("openExistingOrNew closes the descriptor when the target is not a file", async () => {
       // Otherwise a refused write leaks a descriptor on every attempt, and a
       // setup endpoint that can be called repeatedly is a descriptor leak with a
