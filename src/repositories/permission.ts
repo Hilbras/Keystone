@@ -2,6 +2,12 @@ import { eq, and, notInArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { permissions, rolePermissions, orgMemberships, type Permission } from "../db/schema.js";
 import type { PermissionRepository } from "./types.js";
+import {
+  getCachedRolePermissions,
+  setCachedRolePermissions,
+  invalidateRolePermissions,
+  invalidateAllRolePermissions,
+} from "../services/permissionCache.js";
 
 const ORGANIZATION_ROLES = new Set(["owner", "admin", "member"]);
 
@@ -79,6 +85,9 @@ export class DrizzlePermissionRepository implements PermissionRepository {
 
     if (toInsert.length > 0) {
       await db.insert(permissions).values(toInsert);
+      // A new permission changes the key set of any role it is granted to, and
+      // the grant may already exist, so every cached set is potentially stale.
+      await invalidateAllRolePermissions();
     }
   }
 
@@ -99,6 +108,9 @@ export class DrizzlePermissionRepository implements PermissionRepository {
           .values({ role, permissionId })
           .onConflictDoNothing({ target: [rolePermissions.role, rolePermissions.permissionId] });
       }
+      // Once per role rather than once per row: `owner` has twenty-two, and
+      // twenty-two round trips to publish one answer is twenty-one too many.
+      await invalidateRolePermissions(role);
     }
   }
 
@@ -125,11 +137,18 @@ export class DrizzlePermissionRepository implements PermissionRepository {
       .values({ resource: input.resource, action: input.action, description: input.description ?? null })
       .onConflictDoNothing({ target: [permissions.resource, permissions.action] })
       .returning();
+    // Even when the insert was a no-op: an idempotent create is still a caller
+    // asking about permissions, and the admin UI refetches the role afterwards.
+    await invalidateAllRolePermissions();
     return created;
   }
 
   async remove(id: string): Promise<Permission | undefined> {
     const [removed] = await db.delete(permissions).where(eq(permissions.id, id)).returning();
+    // A deleted permission cascades to `role_permissions`, so every role's set
+    // may have shrunk. Invalidating only the affected role is not knowable here
+    // without reading the join first, and a miss would leave a permission alive.
+    await invalidateAllRolePermissions();
     return removed;
   }
 
@@ -142,9 +161,32 @@ export class DrizzlePermissionRepository implements PermissionRepository {
     return rows.map((r) => r.permission);
   }
 
+  /**
+   * The permission keys a role holds. The hottest read in the system.
+   *
+   * This runs on every organization-scoped request, and it is two queries — a
+   * scan of `role_permissions` filtered by role, and a join to `permissions`.
+   * At the catalogue's real size that is about 0.29ms and five buffers, so the
+   * database was never slow; the cost was paying it again per request for an
+   * answer that changes about once a deployment.
+   *
+   * Cached in Redis, and only in Redis. A miss or an error reads the database —
+   * never an in-process copy, because a fallback copy has no invalidation path
+   * and a revoked permission would keep being honoured by whichever instance
+   * happened to hold it. See `../services/permissionCache.ts`.
+   */
   async listKeysForRole(role: string): Promise<Set<string>> {
+    const cached = await getCachedRolePermissions(role);
+    if (cached) return new Set(cached);
+
     const perms = await this.listForRole(role);
-    return new Set(perms.map((p) => permissionKey(p.resource, p.action)));
+    const keys = perms.map((p) => permissionKey(p.resource, p.action));
+    // An empty set is not cached. It is far more likely to be a role that does
+    // not exist than a role with no permissions, and caching "nothing" for it
+    // means a role that is later granted permissions keeps nothing until the TTL
+    // runs out — a grant that silently does not take effect.
+    if (keys.length > 0) await setCachedRolePermissions(role, keys);
+    return new Set(keys);
   }
 
   async assignToRole(role: string, permissionId: string): Promise<void> {
@@ -153,6 +195,10 @@ export class DrizzlePermissionRepository implements PermissionRepository {
       .insert(rolePermissions)
       .values({ role, permissionId })
       .onConflictDoNothing({ target: [rolePermissions.role, rolePermissions.permissionId] });
+    // After the write, not before: a read landing between the two would refill the
+    // cache from a database that no longer matches the answer being published, and
+    // nothing would invalidate it again.
+    await invalidateRolePermissions(role);
   }
 
   async removeFromRole(role: string, permissionId: string): Promise<void> {
@@ -160,6 +206,10 @@ export class DrizzlePermissionRepository implements PermissionRepository {
     await db
       .delete(rolePermissions)
       .where(and(eq(rolePermissions.role, role), eq(rolePermissions.permissionId, permissionId)));
+    // Revocation takes effect on the next request. A revoked permission that
+    // survives in a cache is a security defect, not a trade-off, so this one
+    // write cannot rely on the TTL.
+    await invalidateRolePermissions(role);
   }
 
   async hasPermission(role: string, resource: string, action: string): Promise<boolean> {

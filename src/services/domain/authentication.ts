@@ -8,12 +8,16 @@ import { revokeAllUserCredentials } from "../sessionRevocation.js";
 import { createHumanUser, verifyPassword as verifyZitadelPassword } from "../zitadel.js";
 import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
 import { isPasswordBreached } from "../hibp.js";
-import { recordFailedLogin, isFailedLoginAnomaly } from "../anomalyDetection.js";
+import { isFailedLoginAnomaly } from "../anomalyDetection.js";
+import { recordAuthentication } from "../../plugins/operationalMetrics.js";
 import { emit } from "../events/bus.js";
 import type { UserRepository, ApplicationRepository, OrganizationRepository, MfaFlow } from "../../repositories/types.js";
 import type { IssuedMfaChallenge, MfaFactor, MfaService } from "../mfa.js";
 import { ok, err, type Result } from "../../lib/result.js";
 import { hashPassword, verifyPassword } from "../secrets/index.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("auth");
 
 export interface AuthContext {
   app?: { id: string; clientId: string; orgId?: string };
@@ -112,7 +116,7 @@ export class AuthenticationDomainService {
           password: input.password,
         });
       } catch (err) {
-        console.warn("Zitadel user mirror failed; continuing with local user", err);
+        moduleLog.warn({ err }, "auth");
       }
     }
 
@@ -131,7 +135,7 @@ export class AuthenticationDomainService {
       try {
         const { sendVerificationEmail } = await import("../emailVerification.js");
         sendVerificationEmail(user).catch((err: unknown) => {
-          console.error("[auth] failed to send verification email:", err);
+          moduleLog.error({ err }, "auth");
         });
       } catch {
         // emailVerification module may not be available in all configurations
@@ -162,15 +166,55 @@ export class AuthenticationDomainService {
     return ok({ user, tokens, context });
   }
 
+  /**
+   * Authenticate, and count the outcome once.
+   *
+   * The counting lives here rather than at each `return` because `login` has ten
+   * of them, and instrumenting ten call sites is ten chances to add a new one and
+   * forget it — which would make a metric quietly wrong in exactly the direction
+   * that matters, since a failure nobody counts is a failure nobody sees.
+   *
+   * `outcome` and `reason` are separate labels because the question an operator
+   * asks is not "are logins failing" but "why". A sudden `invalid_credentials` is a
+   * spray; a sudden `mfa_failed` is a user with a broken second factor; a sudden
+   * `rate_limited` is a client with a bug. One label for all three reads as "logins
+   * are failing" and none of them is actionable.
+   */
   async login(input: LoginInput): Promise<Result<LoginResult>> {
+    const result = await this.loginInternal(input);
+    if (result.success) {
+      recordAuthentication(
+        "success",
+        result.data.status === "requires_mfa" ? "mfa_required" : "none"
+      );
+    } else {
+      // `TOO_MANY_ATTEMPTS` is a limiter decision rather than a credential
+      // problem, and the two want different responses, so it gets its own label
+      // rather than being folded into the failure it is not.
+      const rateLimited = result.error.code === "TOO_MANY_ATTEMPTS";
+      recordAuthentication(
+        rateLimited ? "rate_limited" : "failure",
+        rateLimited ? "too_many_attempts" : result.error.code.toLowerCase()
+      );
+    }
+    return result;
+  }
+
+  private async loginInternal(input: LoginInput): Promise<Result<LoginResult>> {
     const user = await this.users.findByEmail(input.email);
 
     if (!user) {
       if (isZitadelConfigured()) {
         await verifyZitadelPassword(input.email, input.password).catch(() => {});
       }
-      await recordFailedLogin(input.email);
-      await emit({ type: "user_login_failed", payload: { reason: "unknown_user" } });
+      // The emit is the record. `anomalySubscriber` counts every
+      // `user_login_failed` it sees, so an explicit `recordFailedLogin` here as
+      // well would count one failure twice — which is what pushed the spray
+      // threshold from 10 to 5 (SEC-053).
+      await emit({
+        type: "user_login_failed",
+        payload: { reason: "unknown_user", email: input.email, ip: input.ipAddress },
+      });
       if (await isFailedLoginAnomaly(input.email)) {
         return err({ code: "TOO_MANY_ATTEMPTS", message: "Too many failed attempts. Please try again later.", statusCode: 429 });
       }
@@ -178,17 +222,17 @@ export class AuthenticationDomainService {
     }
 
     if (!user.isActive) {
-      await emit({ type: "user_login_failed", payload: { reason: "account_deactivated", userId: user.id } });
+      await emit({ type: "user_login_failed", payload: { reason: "account_deactivated", userId: user.id, email: input.email, ip: input.ipAddress } });
       return err({ code: "ACCOUNT_DEACTIVATED", message: "This account is deactivated", statusCode: 403 });
     }
 
     if (user.accountReviewRequired) {
-      await emit({ type: "user_login_failed", payload: { reason: "account_review_required", userId: user.id } });
+      await emit({ type: "user_login_failed", payload: { reason: "account_review_required", userId: user.id, email: input.email, ip: input.ipAddress } });
       return err({ code: "ACCOUNT_REVIEW_REQUIRED", message: "This account is pending review.", statusCode: 403 });
     }
 
     if (user.lockedUntil && user.lockedUntil > new Date()) {
-      await emit({ type: "user_login_failed", payload: { reason: "account_locked", userId: user.id } });
+      await emit({ type: "user_login_failed", payload: { reason: "account_locked", userId: user.id, email: input.email, ip: input.ipAddress } });
       return err({ code: "ACCOUNT_LOCKED", message: "Account is temporarily locked due to too many failed attempts. Try again later.", statusCode: 403 });
     }
 
@@ -201,7 +245,15 @@ export class AuthenticationDomainService {
 
     if (!valid) {
       const updated = await this.users.recordFailedLogin(user.id);
-      await emit({ type: "user_login_failed", payload: { reason: "invalid_password", userId: user.id } });
+      await emit({
+        type: "user_login_failed",
+        // `email` as well as `userId`, because the submitted address is what makes
+        // the record match a spray across many accounts, and it is what SEC-037's
+        // regression test asserts. The route used to emit a second event carrying
+        // exactly this; SEC-053 removed the duplicate, so the domain service
+        // carries it now.
+        payload: { reason: "invalid_password", userId: user.id, email: input.email, ip: input.ipAddress },
+      });
 
       const attempts = updated?.failedLoginAttempts ?? 0;
       if (attempts >= config.ACCOUNT_LOCKOUT_THRESHOLD) {

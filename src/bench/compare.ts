@@ -45,8 +45,21 @@ export interface ScenarioReading {
   ms: number;
   /** Fastest sample. Recorded so a large spread stays visible. */
   fastest: number;
-  /** SQL statements sent. The number an N+1 regression is made of. */
+  /**
+   * SQL statements sent, median across the samples. The steady-state cost, and the
+   * number an N+1 regression moves.
+   */
   queries: number;
+  /**
+   * The most any single sample sent.
+   *
+   * Recorded rather than gated on. A cold cache makes the first request of a run
+   * cost more than the rest — with the permission cache in place, `/v1/authz/check`
+   * sends 7 statements cold and 5 warm — and gating on the maximum would report
+   * that as though every request paid it. A regression that affects every sample
+   * moves both numbers, so nothing is lost by comparing the median.
+   */
+  queriesMax: number;
   /** Wall-clock divided by the control measured just before this scenario. */
   relative: number;
   /** The control this scenario was divided by, so a reading can be re-derived. */

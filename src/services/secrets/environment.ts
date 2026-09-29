@@ -3,6 +3,9 @@ import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } fro
 import { config } from "../../config.js";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("secrets");
 
 let envKeyPair: SigningKeyPair | null = null;
 let envEncryptionKey: Buffer | null = null;
@@ -45,15 +48,26 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
       throw new Error("EnvironmentSecretsProvider requires JWT_PRIVATE_KEY and JWT_PUBLIC_KEY in production");
     }
 
+    // Outside production, and only when the environment supplies no keys, one is
+    // generated so a developer can start the server with nothing configured. It
+    // is ephemeral, and the two lines below exist so the developer can capture it:
+    // a key that only ever existed in this process's memory is a key that
+    // invalidates every token the next time the process restarts.
+    //
+    // Both PEMs are logged, including the private one. That is safe here and only
+    // here: the branch is unreachable when `NODE_ENV=production`, which throws
+    // above, and an operator who has a development key pair in their console has
+    // already published it by running a dev server with no keys configured.
     const pair = await generateKeyPair("RS256", { extractable: true });
     const privatePem = await exportPKCS8(pair.privateKey);
     const publicPem = await exportSPKI(pair.publicKey);
-    // eslint-disable-next-line no-console
-    console.warn("[secrets] Generated ephemeral JWT keys. Set JWT_PRIVATE_KEY/JWT_PUBLIC_KEY in production.");
-    // eslint-disable-next-line no-console
-    console.warn("[secrets] JWT_PRIVATE_KEY\n", privatePem);
-    // eslint-disable-next-line no-console
-    console.warn("[secrets] JWT_PUBLIC_KEY\n", publicPem);
+    moduleLog.warn(
+      {},
+      "Generated ephemeral JWT keys. Set JWT_PRIVATE_KEY/JWT_PUBLIC_KEY in production. " +
+        "The PEMs follow, in order private then public."
+    );
+    moduleLog.warn({}, `JWT_PRIVATE_KEY\n${privatePem}`);
+    moduleLog.warn({}, `JWT_PUBLIC_KEY\n${publicPem}`);
     envKeyPair = { keyId: "env-generated", privateKey: pair.privateKey, publicKey: pair.publicKey };
     return envKeyPair;
   }
@@ -64,9 +78,30 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
     return undefined;
   }
 
+  /**
+   * Cannot rotate. Throws, deliberately.
+   *
+   * The key material is supplied by the environment, so there is nothing in this
+   * process to rotate: the previous implementation nulled the cache and
+   * re-imported `JWT_PRIVATE_KEY`, returning the same key under the same `keyId`
+   * — and `keystone secrets:rotate` printed "Rotated signing key. New key id:
+   * env". An operator running that during a suspected key compromise would
+   * believe they had rotated, and would not have (SEC-055).
+   *
+   * Generating a fresh pair here would be worse, not better: every instance reads
+   * the same environment variable, so each would mint a *different* key and the
+   * cluster would stop agreeing on who signed what.
+   *
+   * So it fails loudly, and says what to do instead. A destructive-sounding
+   * command that cannot do its job must not exit 0.
+   */
   async rotateSigningKeys(): Promise<SigningKeyPair> {
-    envKeyPair = null;
-    return this.getActiveSigningKey();
+    throw new Error(
+      "The environment secrets provider cannot rotate signing keys: they come from " +
+        "JWT_PRIVATE_KEY and JWT_PUBLIC_KEY, so rotation is an operator action outside " +
+        "this process. Generate a new pair with `keystone keys:create`, update the " +
+        "environment on every instance, and restart. Restarting also re-reads them."
+    );
   }
 
   async listActiveSigningKeys(): Promise<{ keyId: string; createdAt: Date; expiresAt?: Date | null }[]> {
@@ -86,8 +121,11 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
       return envEncryptionKey;
     }
     envEncryptionKey = crypto.randomBytes(32);
-    // eslint-disable-next-line no-console
-    console.warn("[secrets] Generated ephemeral encryption key. Set KEYSTONE_ENCRYPTION_KEY in production.");
+    moduleLog.warn(
+      {},
+      "Generated an ephemeral encryption key. Set KEYSTONE_ENCRYPTION_KEY in " +
+        "production — without it, every encrypted secret becomes unreadable on restart."
+    );
     return envEncryptionKey;
   }
 

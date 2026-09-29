@@ -6,8 +6,11 @@ import type {
   auditLog,
   MfaChallenge,
   Permission,
+  Workflow,
   ScimConnection,
   ScimGroup,
+  organizations,
+  applications,
 } from "../db/schema.js";
 
 export class LastOwnerInvariantError extends Error {
@@ -204,6 +207,106 @@ export interface ScimGroupRepository {
   listMembersForGroups(orgId: string, groupIds: string[]): Promise<Map<string, { userId: string; email: string; name: string | null }[]>>;
   addMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
   removeMember(orgId: string, groupId: string, userId: string): Promise<boolean>;
+  /**
+   * Make the group's membership exactly `submittedUserIds`, atomically.
+   *
+   * `rejected` lists submitted users that are not members of `orgId`; when it is
+   * non-empty nothing was written. The caller decides what a rejection means.
+   */
+  reconcileMembers(
+    orgId: string,
+    groupId: string,
+    submittedUserIds: string[]
+  ): Promise<{ added: number; removed: number; rejected: string[] }>;
+}
+
+export interface WorkflowRepository {
+  listByOrg(orgId: string): Promise<Workflow[]>;
+  /** No `orgId` filter: the route guard has already established the tenancy. */
+  findById(id: string): Promise<Workflow | undefined>;
+  delete(id: string): Promise<Workflow | undefined>;
+}
+
+
+/**
+ * The columns `GET /platform/users` returns.
+ *
+ * Declared here rather than derived from the table so the projection is a
+ * deliberate list. `passwordHash` is absent, and it stays absent unless somebody
+ * adds it here on purpose.
+ */
+export interface PlatformUser {
+  id: string;
+  email: string;
+  username: string;
+  name: string | null;
+  role: string;
+  isActive: boolean;
+  accountReviewRequired: boolean | null;
+  emailVerified: boolean;
+  createdAt: Date;
+}
+
+export type PlatformOrganization = typeof organizations.$inferSelect;
+export type PlatformApplication = Pick<
+  typeof applications.$inferSelect,
+  | "id"
+  | "orgId"
+  | "clientId"
+  | "name"
+  | "redirectUris"
+  | "allowedOrigins"
+  | "allowedIps"
+  | "blockedIps"
+  | "branding"
+  | "isActive"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+export interface PlatformDailySeries {
+  date: string;
+  logins: number;
+  failedLogins: number;
+  signups: number;
+  dau: number;
+}
+
+export interface PlatformRecentAuthEvent {
+  id: string;
+  event: string;
+  userId: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: Date;
+}
+
+export interface PlatformSecuritySummary {
+  logins: number;
+  failedLogins: number;
+  activeSessions: number;
+  mfaUsers: number;
+  totalUsers: number;
+  newDeviceEvents: number;
+  recentLogins: PlatformRecentAuthEvent[];
+  recentFailedLogins: PlatformRecentAuthEvent[];
+}
+
+/**
+ * Platform-owner reads, deliberately unscoped by organization.
+ *
+ * Every other repository query in this codebase is filtered by an organization,
+ * and that filter is the tenancy guarantee. These are not, because a platform
+ * owner is asking about the whole installation. They are grouped under one
+ * interface so that the queries which are exempt from tenancy, and why, are
+ * visible in one place.
+ */
+export interface PlatformRepository {
+  listUsers(): Promise<PlatformUser[]>;
+  listOrganizations(): Promise<PlatformOrganization[]>;
+  listApplications(): Promise<PlatformApplication[]>;
+  dailySeries(since: Date): Promise<PlatformDailySeries[]>;
+  securitySummary(now: Date): Promise<PlatformSecuritySummary>;
 }
 
 export interface AuditRepository {

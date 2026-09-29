@@ -42,6 +42,24 @@ for (const severity of SEVERITY_ORDER) {
   out.push(`| ${severity} | ${bySeverity[severity].length} |`);
 }
 out.push("");
+if (registry.scope) {
+  out.push("## Scope");
+  out.push("");
+  out.push(registry.scope.decision);
+  out.push("");
+  out.push("**In scope**");
+  out.push("");
+  for (const item of registry.scope.in_scope) out.push(`- ${item}`);
+  out.push("");
+  out.push("**Excluded, each with its reason and its cost**");
+  out.push("");
+  for (const item of registry.scope.excluded) {
+    out.push(`- \`${item.what}\` — ${item.why}${item.cost ? ` **Cost:** ${item.cost}` : ""}`);
+  }
+  out.push("");
+  out.push(registry.scope.why_not_src_only);
+  out.push("");
+}
 out.push("## Mandatory attack classes");
 out.push("");
 out.push("The CI pipeline must exercise each of these. Every one is claimed by at least one entry above; the check is mechanical, not a convention.");

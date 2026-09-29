@@ -144,6 +144,25 @@ export const config = {
 
   RATE_LIMIT_ATTEMPTS: Number(getEnv("RATE_LIMIT_ATTEMPTS", "5")),
   RATE_LIMIT_WINDOW_SECONDS: Number(getEnv("RATE_LIMIT_WINDOW_SECONDS", "900")),
+  /**
+   * Budgets for `POST /auth/login` and `POST /auth/token-login`.
+   *
+   * Configurable because they now have to be. Until 3.2.0 the per-address budget
+   * was not enforced (SEC-047) and the submitted address was part of its key
+   * (SEC-048), so the numbers were decorative: raising them appeared to do nothing
+   * and lowering them broke nothing. Both are fixed, so the numbers are real, and
+   * a deployment legitimately needs to set them — a NAT, a corporate proxy, or a
+   * large tenant on one egress address.
+   *
+   * The per-account budget is deliberately much tighter than the per-address one.
+   * The address budget exists to bound spraying across many accounts, which is
+   * cheap for an attacker and expensive for a legitimate user who fat-fingers a
+   * password a few times; the account budget exists to stop guessing one account,
+   * which is what password reuse turns into a breach elsewhere.
+   */
+  LOGIN_MAX_ATTEMPTS: positiveInt("LOGIN_MAX_ATTEMPTS", "5"),
+  LOGIN_PER_ADDRESS_MAX: positiveInt("LOGIN_PER_ADDRESS_MAX", "30"),
+  LOGIN_WINDOW_SECONDS: positiveInt("LOGIN_WINDOW_SECONDS", "900"),
   GLOBAL_RATE_LIMIT_MAX: Number(getEnv("GLOBAL_RATE_LIMIT_MAX", "100")),
   GLOBAL_RATE_LIMIT_WINDOW: Number(getEnv("GLOBAL_RATE_LIMIT_WINDOW", "60")),
 

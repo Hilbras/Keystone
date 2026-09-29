@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
+import { rateLimitRedisErrors, recordEmergencyFallback } from "./operationalMetrics.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { redis, isRedisReady } from "../services/redis.js";
+import { redis } from "../services/redis.js";
 import { clientAddress } from "../services/trustedProxies.js";
 import { localRateLimit } from "../services/localRateLimit.js";
 import { emit } from "../services/events/bus.js";
@@ -15,6 +16,22 @@ interface RateLimitPluginOptions {
    * one noisy identity provider cannot exhaust the budget of every other tenant.
    */
   keyFrom?: (request: FastifyRequest) => string;
+  /**
+   * Whether the submitted address is part of the key.
+   *
+   * The key is the control, so it is worth being explicit about. This used to be
+   * unconditional — every limiter's key was `prefix:identifier:body.email` — and
+   * that silently gave every limiter the same shape regardless of what it was
+   * written to do. `login-per-address` is the case that matters: it exists to bound
+   * *spraying*, and the comment next to it says so, but because the submitted
+   * address was appended it was keyed on address **and** account, so an attacker
+   * varying the address on each attempt got a fresh budget every time and the
+   * control bounded nothing. See SEC-048.
+   *
+   * Defaults to `true` so no existing limiter's behaviour moves; set it to `false`
+   * where the budget is meant to be per address alone.
+   */
+  includeSubmittedAddress?: boolean;
   /**
    * Hold a local in-process budget while Redis is unavailable.
    *
@@ -66,25 +83,59 @@ return count
  */
 type LimitDecision = { allowed: boolean; limiter: "redis" | "local" | "none"; retryAfterSeconds?: number };
 
+/**
+ * The local fallback, for when Redis genuinely cannot be reached.
+ *
+ * Failing open removes the control exactly when an attacker would most like it
+ * gone, so sensitive endpoints fall back to a bounded in-process budget instead.
+ */
+function localDecision(
+  key: string,
+  maxAttempts: number,
+  windowSeconds: number,
+  useEmergencyLocal: boolean,
+  keyPrefix: string
+): LimitDecision {
+  if (!useEmergencyLocal) return { allowed: true, limiter: "none" };
+  const result = localRateLimit(key, maxAttempts, windowSeconds);
+  // **The fallback engaging is counted here, and nowhere else.**
+  //
+  // Before this, the catch below returned a local decision with no counter, no log
+  // line and no event, so a deployment could be running on per-process budgets —
+  // every instance limiting independently, which is the exact weakness the
+  // distributed limiter exists to remove — and nothing said so. A counter of
+  // *refusals* would not have caught it either: under per-process limits the
+  // refusal rate looks normal, because each instance is still enforcing a budget.
+  // Only the fallback engaging is anomalous, and that was the thing with no signal.
+  recordEmergencyFallback(keyPrefix, result.allowed ? "allowed" : "denied");
+  return result.allowed
+    ? { allowed: true, limiter: "local" }
+    : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
+}
+
 async function checkLimit(
   key: string,
   maxAttempts: number,
   windowSeconds: number,
-  useEmergencyLocal: boolean
+  useEmergencyLocal: boolean,
+  keyPrefix: string
 ): Promise<LimitDecision> {
-  if (!isRedisReady()) {
-    // Redis is the primary control and is unavailable. Failing open removes the
-    // control exactly when an attacker would most like it gone, so sensitive
-    // endpoints fall back to a bounded in-process budget instead.
-    if (!useEmergencyLocal) {
-      return { allowed: true, limiter: "none" };
-    }
-    const result = localRateLimit(key, maxAttempts, windowSeconds);
-    return result.allowed
-      ? { allowed: true, limiter: "local" }
-      : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
-  }
-
+  // No readiness check before the command, and the reason is worth recording.
+  //
+  // The shared client is created with `lazyConnect`, so on a fresh process its
+  // status is `"wait"` — and `isRedisReady()` is false. A guard here therefore
+  // returned the local budget *without ever issuing a command*, so the client
+  // stayed lazy, so the next request made the same decision, and the distributed
+  // limiter never activated at all. Whether rate limiting was shared across the
+  // fleet depended on whether some unrelated code path — the queue, anomaly
+  // detection — happened to touch Redis first. In a deployment where nothing did,
+  // every instance limited independently, which is the exact weakness the
+  // distributed limiter exists to remove.
+  //
+  // A lazily-connecting client connects on its first command, so the command is
+  // simply attempted. A real outage rejects, the catch runs, and the local
+  // budget applies — which is the behaviour that was wanted, arrived at with one
+  // fewer branch and no guess about the client's state.
   try {
     const now = Date.now();
     const member = `${now}:${cryptoRandom()}`;
@@ -103,20 +154,23 @@ async function checkLimit(
       retryAfterSeconds: windowSeconds,
     };
   } catch {
-    // A Redis error mid-request is the same situation as Redis being down.
-    if (!useEmergencyLocal) {
-      return { allowed: true, limiter: "none" };
-    }
-    const result = localRateLimit(key, maxAttempts, windowSeconds);
-    return result.allowed
-      ? { allowed: true, limiter: "local" }
-      : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
+    // A Redis error is the same situation as Redis being down, which is the only
+    // thing that should reach the local budget.
+    //
+    // Counted separately from the fallback below, because the two answer different
+    // questions. "Redis was unreachable" says something is broken; "the fallback
+    // engaged" says protection is degraded. A limiter configured *without*
+    // `emergencyLocalLimit` fails open on a Redis outage, and that is the more
+    // serious event of the two — so it gets its own series rather than being
+    // folded into a counter that only moves when a fallback happens to be enabled.
+    rateLimitRedisErrors.inc({ key_prefix: keyPrefix });
+    return localDecision(key, maxAttempts, windowSeconds, useEmergencyLocal, keyPrefix);
   }
 }
 
 /** Kept for callers that only need a yes/no, such as a pre-authentication budget. */
 async function isAllowed(key: string, maxAttempts: number, windowSeconds: number): Promise<boolean> {
-  const decision = await checkLimit(key, maxAttempts, windowSeconds, false);
+  const decision = await checkLimit(key, maxAttempts, windowSeconds, false, "pre-auth");
   return decision.allowed;
 }
 
@@ -183,12 +237,17 @@ async function reportLimited(
 export function rateLimit(options: RateLimitPluginOptions) {
   return async function preHandler(request: FastifyRequest, reply: FastifyReply) {
     const id = options.keyFrom ? options.keyFrom(request) : clientIdentifier(request);
-    const key = `${options.keyPrefix}:${id}:${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
+    const subject =
+      options.includeSubmittedAddress === false
+        ? ""
+        : `${(request.body as Record<string, string> | undefined)?.email ?? ""}`;
+    const key = `${options.keyPrefix}:${id}:${subject}`;
     const decision = await checkLimit(
       key,
       options.maxAttempts,
       options.windowSeconds,
-      options.emergencyLocalLimit === true
+      options.emergencyLocalLimit === true,
+      options.keyPrefix
     );
     if (!decision.allowed) {
       await reportLimited(request, options, decision);
@@ -208,7 +267,7 @@ export function globalRateLimit(options: GlobalRateLimitOptions = {}) {
   return async function onRequest(request: FastifyRequest, reply: FastifyReply) {
     const id = clientIdentifier(request);
     const key = `${keyPrefix}:${id}`;
-    const decision = await checkLimit(key, maxRequests, windowSeconds, false);
+    const decision = await checkLimit(key, maxRequests, windowSeconds, false, keyPrefix);
     if (!decision.allowed) {
       await reportLimited(request, { keyPrefix, maxAttempts: maxRequests, windowSeconds }, decision);
       return reply

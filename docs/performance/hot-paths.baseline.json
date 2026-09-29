@@ -1,135 +1,144 @@
 {
-  "recordedAt": "2026-09-27T22:46:45.230Z",
+  "recordedAt": "2026-09-28T07:48:05.452Z",
   "node": "v24.21.0",
   "control": {
-    "medianMs": 59.5,
-    "minMs": 50.7
+    "medianMs": 44.9,
+    "minMs": 44.4
   },
   "tolerance": 0.4,
   "scenarios": {
     "scim-group-list-50": {
-      "ms": 68.223,
-      "fastest": 49.287,
+      "ms": 19.546,
+      "fastest": 16.944,
       "queries": 5,
+      "queriesMax": 5,
       "samples": [
-        86.258,
-        70.422,
-        65.184,
-        49.287,
-        68.223
+        29.03,
+        17.766,
+        19.546,
+        16.944,
+        20.519
       ],
-      "relative": 0.5548,
-      "controlMs": 123
+      "relative": 0.4331,
+      "controlMs": 45.1
     },
     "scim-group-list-200": {
-      "ms": 60.277,
-      "fastest": 33.7,
+      "ms": 19.825,
+      "fastest": 17.877,
       "queries": 5,
+      "queriesMax": 5,
       "samples": [
-        64.95,
-        60.277,
-        60.79,
-        40.212,
-        33.7
+        22.57,
+        19.56,
+        21.656,
+        17.877,
+        19.825
       ],
-      "relative": 0.7211,
-      "controlMs": 83.6
+      "relative": 0.4414,
+      "controlMs": 44.9
     },
     "scim-group-list-1000": {
-      "ms": 226.232,
-      "fastest": 167.258,
+      "ms": 46.488,
+      "fastest": 44.404,
       "queries": 10,
+      "queriesMax": 10,
       "samples": [
-        275.65,
-        280.321,
-        222.448,
-        167.258,
-        226.232
+        47.122,
+        53.096,
+        44.514,
+        44.404,
+        46.488
       ],
-      "relative": 0.9073,
-      "controlMs": 249.3
+      "relative": 1.0098,
+      "controlMs": 46
     },
     "scim-group-reconcile-10": {
-      "ms": 570.299,
-      "fastest": 445.256,
-      "queries": 70,
+      "ms": 29.319,
+      "fastest": 28.183,
+      "queries": 15,
+      "queriesMax": 15,
       "samples": [
-        472.124,
-        445.256,
-        570.299,
-        579.736,
-        670.479
+        29.789,
+        29.319,
+        28.183,
+        30.885,
+        28.687
       ],
-      "relative": 4.6856,
-      "controlMs": 121.7
+      "relative": 0.6231,
+      "controlMs": 47.1
     },
     "scim-group-reconcile-100": {
-      "ms": 2076.378,
-      "fastest": 1136.488,
-      "queries": 610,
+      "ms": 57.397,
+      "fastest": 54.558,
+      "queries": 15,
+      "queriesMax": 15,
       "samples": [
-        2907.645,
-        2076.378,
-        2526.982,
-        1512.846,
-        1136.488
+        57.397,
+        60.397,
+        56.804,
+        81.259,
+        54.558
       ],
-      "relative": 40.92,
-      "controlMs": 50.7
+      "relative": 1.2701,
+      "controlMs": 45.2
     },
     "scim-group-reconcile-1000": {
-      "ms": 15437.058,
-      "fastest": 14098.458,
-      "queries": 6010,
+      "ms": 316.988,
+      "fastest": 304.03,
+      "queries": 15,
+      "queriesMax": 15,
       "samples": [
-        15437.058,
-        14098.458,
-        17736.806
+        338.74,
+        316.988,
+        304.03
       ],
-      "relative": 259.43,
-      "controlMs": 59.5
+      "relative": 7.1255,
+      "controlMs": 44.5
     },
     "login": {
-      "ms": 506.613,
-      "fastest": 407.697,
+      "ms": 133.474,
+      "fastest": 126.945,
       "queries": 9,
+      "queriesMax": 9,
       "samples": [
-        761.33,
-        589.494,
-        506.613,
-        495.727,
-        407.697
+        141.07,
+        133.923,
+        127.979,
+        133.474,
+        126.945
       ],
-      "relative": 9.1299,
-      "controlMs": 55.5
+      "relative": 2.9771,
+      "controlMs": 44.8
     },
     "refresh": {
-      "ms": 26.526,
-      "fastest": 17.363,
+      "ms": 27.971,
+      "fastest": 19.591,
       "queries": 9,
+      "queriesMax": 9,
       "samples": [
-        26.526,
-        23.482,
-        17.363,
-        38.917,
-        51.193
+        29.531,
+        27.971,
+        19.591,
+        20.588,
+        30.038
       ],
-      "relative": 0.4625,
-      "controlMs": 57.3
+      "relative": 0.6238,
+      "controlMs": 44.8
     },
     "authz-check": {
-      "ms": 16.708,
-      "fastest": 15.569,
-      "queries": 7,
+      "ms": 11.415,
+      "fastest": 9.418,
+      "queries": 6,
+      "queriesMax": 6,
       "samples": [
-        16.708,
-        18.347,
-        15.569,
-        15.88,
-        17.1
+        12.203,
+        11.415,
+        10.851,
+        12.315,
+        9.418
       ],
-      "relative": 0.297,
-      "controlMs": 56.3
+      "relative": 0.2569,
+      "controlMs": 44.4
     }
   }
 }

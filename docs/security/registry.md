@@ -4,14 +4,34 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**44 findings.**
+**63 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
-| high | 25 |
-| medium | 12 |
-| low | 1 |
+| high | 33 |
+| medium | 18 |
+| low | 6 |
+
+## Scope
+
+The registry covers **everything the repository publishes or runs**, not `src/` alone.
+
+**In scope**
+
+- src/ — the server
+- packages/ — five packages published to npm, which handle tokens, cookies, PKCE verifiers and nonces
+- scripts/ — the security control suite: every gate in this repository is a file here
+- k8s/ — the deployment, including the probe routing and the image tag
+- .github/workflows/ — the pipeline, including third-party action pins
+
+**Excluded, each with its reason and its cost**
+
+- `frontend/` — The admin dashboard and setup wizard. It is the only tree that receives no security analysis, so this is the honest gap in the decision rather than a claim that it is clean. It is excluded for one mechanical reason: it is 69 `.tsx` files, and Semgrep's TypeScript support trips over TSX generics versus JSX ambiguity in a way that aborts a whole scan rather than skipping one file. The exclusion is `frontend/`, not TSX — `packages/keystone-react/src/index.tsx` parses at 100% and is scanned. **Cost:** No lint, no semgrep, no registry coverage. CodeQL's `js/remote-property-injection` alert on `frontend/src/hooks/useHashRoute.ts` is the one place this has produced a finding, and it was dismissed as crossing no security boundary — which is a statement about that one finding, not about the tree.
+- `node_modules/` — Third-party code, owned and fixed upstream. Covered by `npm audit` and the `dependency-review-action` in supply-chain.yml, not by a registry of this project's findings.
+- `examples/` — Sample applications. Not shipped and not reachable in a deployment. `examples/login-form-react` does hold one live CodeQL finding (an unused local), which was left in place deliberately: it is an example, and fixing it would make the example less representative of the code a reader will actually write.
+
+The `src/`-only scope was an assumption rather than a decision, and it was the same shape as the others this programme has been correcting: a boundary that looked deliberate and covered 1,107 lines of published credential-handling code and 2,924 lines of security controls without either. The test of the boundary is whether anything falls outside it for a reason, and `src/` failed that test — `packages/` and `scripts/` fell outside it because nobody decided they should, not because anyone decided they should not.
 
 ## Mandatory attack classes
 
@@ -446,7 +466,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Fix.** package.json — one pattern per directory depth, with no overlap
 
-**Test.** `src/tests/security/registry.test.ts`
+**Test.** `src/tests/security/process/registry.test.ts`
 
 **Documentation.** [docs/security/registry.md](registry.md)
 
@@ -461,6 +481,102 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Test.** `src/tests/security/service-accounts/audit-attribution.test.ts`
 
 **Documentation.** [docs/security/audit.md](audit.md)
+
+### SEC-047 — The distributed rate limiter was never running; every limit was per-instance
+
+*Fixed in v3.2.0. Component: `rate-limiting`.*
+
+**Issue.** checkLimit opened with `if (!isRedisReady()) return <local decision>`. The shared Redis client is created with `lazyConnect`, so on a fresh process its status is `"wait"` and isRedisReady() is false. The guard therefore returned the in-process budget **without ever issuing a command** — so the client stayed lazy, so the next request reached the same verdict, and the Redis limiter was never reached on any request. Whether rate limiting was shared across a fleet depended entirely on whether some unrelated code path happened to touch Redis first: the queue, anomaly detection, or — as of 3.2.0 — the new permission cache. In a deployment where nothing did, every instance limited independently, which is the precise weakness the distributed limiter exists to remove: a client multiplies its budget by the instance count. Three controls were inert as a result. The emergency local limit on `POST /auth/token-login` and `/auth/mfa/verify` meant a brute-force budget per instance rather than per deployment. The pre-authentication budget on `/scim/v2/*` (`scim-auth:<address>`, 60 a minute) was never enforced at all, because it is called with `useEmergencyLocal: false` and so failed open on every request — an unauthenticated surface with no budget whatsoever. And the global `onRequest` limiter did the same. Found while adding the permission cache: the cache issues a command on the same client, which connected it, which switched the limiter from per-instance to shared, and the security suites' aggregate request count then exceeded a budget that had never applied to them.
+
+**Fix.** src/plugins/rateLimit.ts — the readiness guard is gone. checkLimit attempts the command, because a lazily-connecting client connects on its first command, and selects the local path only when the command actually fails. The pre-auth budget on /scim/v2 now has a working backend and is a real control rather than a failing-open no-op
+
+**Test.** `src/tests/security/rate-limiting/backend-choice.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-048 — The anti-spraying login budget was keyed on address and account, so it bounded nothing
+
+*Fixed in v3.2.0. Component: `rate-limiting`.*
+
+**Issue.** `rateLimit()` built every key as `prefix:identifier:body.email`, appending the submitted address whether or not the limiter wanted it. `POST /auth/token-login` carries two budgets: `login` at 5 per 15 minutes keyed on address and submitted address, and `login-per-address` at 30 per 15 minutes, which exists specifically because the first is the wrong shape for spraying — the comment beside it says an attacker who varies the submitted address gets a fresh budget per attempt and can guess across a thousand accounts from one host. The second budget was keyed on address **and** account, so it had exactly the shape the comment describes as the problem, and thirty distinct accounts from one address each received a full budget of thirty. The control bounded nothing. The code, the comment beside it, and docs/security/rate-limiting.md all disagreed with each other; the documentation described the intended behaviour, and no test asserted it. Every other limiter inherited the same key shape, so this was a property of the helper rather than of this one route.
+
+**Fix.** src/plugins/rateLimit.ts — the key composition is now an explicit option, `includeSubmittedAddress`, defaulting to the previous behaviour so no other limiter moves. Both `login-per-address` budgets set it to false. The regression test sprays rather than inspecting the key, because a test written against the key format would have been written against whatever the format happened to be
+
+**Test.** `src/tests/security/rate-limiting/spraying.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-050 — WebAuthn registration and sign-in could never complete
+
+*Fixed in v3.4.0. Component: `webauthn`.*
+
+**Issue.** The ceremony challenge was stored under a different value than the one the client was given. `createChallenge()` returned a random base64url string, stored it in a Map, and passed it to `generateRegistrationOptions` as `challenge`. `@simplewebauthn/server` re-encodes a string challenge — `isoBase64URL.fromBuffer(isoUint8Array.fromUTF8String(c))` — so `options.challenge` is the base64url encoding of the *ASCII bytes* of the string that was passed in, which is a different string. The route put `options.challenge` in the cookie and looked it up in the store on the way back, so `consumeChallenge` missed on every request. Every passkey registration and every passkey sign-in returned 400 `Invalid challenge`. The feature did not work at all. Nothing caught it because the only WebAuthn test asserted a *refusal* — `POST /register/verify` with a TOTP account and no password — and that refusal happens in `requireStepUp`, before the challenge is ever read.
+
+**Fix.** src/services/webauthn.ts — the challenge is no longer generated in Keystone and passed in. SimpleWebAuthn generates it and `storeChallenge` is keyed on `options.challenge` verbatim, so there is no second value that can drift out of step with the first. The store write is awaited rather than fired and forgotten, so a client is never handed a challenge whose record may not exist yet.
+
+**Test.** `src/tests/security/mfa/webauthn.test.ts`
+
+**Documentation.** [docs/security/webauthn.md](webauthn.md)
+
+### SEC-051 — The WebAuthn challenge store was per-process, so it failed behind a load balancer
+
+*Fixed in v3.4.0. Component: `webauthn`.*
+
+**Issue.** Challenges lived in a module-level `Map`. `docs/DEPLOYMENT.md` recommends running 'multiple Keystone containers behind a load balancer' and `docs/ARCHITECTURE.md` lists 'support horizontal scaling through Redis-backed state' as a principle. A `Map` is per-process, so a challenge minted on one container could not be redeemed on another: with two containers roughly half of all ceremonies failed, intermittently, and only in a multi-instance deployment — never in development, where a single process always agrees with itself. Consumption was also a read-then-delete, the same race `singleUse.ts` exists to remove.
+
+**Fix.** src/services/webauthn.ts — the store is Redis, keyed under the configured cache prefix, with a five-minute TTL. Redemption is `GETDEL`: one command, so two simultaneous ceremonies presenting the same challenge cannot both win, and the win is shared by every container. A failed write propagates rather than being swallowed, because handing out a challenge that provably cannot be redeemed is worse than refusing to start the ceremony.
+
+**Test.** `src/tests/security/mfa/webauthn.test.ts`
+
+**Documentation.** [docs/security/webauthn.md](webauthn.md)
+
+### SEC-052 — The Zitadel connector did not bind the ID token to the request, and pinned no algorithm
+
+*Fixed in v3.4.0. Component: `federation`.*
+
+**Issue.** `ZitadelConnector` was the odd one out of six providers in three ways. (1) `getAuthorizeUrl` never set a `nonce`, `exchangeCode` accepted no options, and `verifyToken` took one argument — so an ID token minted for a *different* Zitadel login verified correctly, because issuer, audience and signature are all still valid and only the nonce proves the token belongs to the request that started. The OIDC connector gained all three in 2.4.0 after SEC-020; Zitadel never had them and, because no test drove a Zitadel exchange, nothing reported it. (2) `jwtVerify` was called with no `algorithms` pin, so the accepted algorithm was whatever the published JWKS happened to allow — the algorithm-confusion surface. (3) No `requiredClaims`, so a token carrying no `exp` was accepted forever, which is not hypothetical for an enterprise IdP whose tokens are long-lived by design. Separately, the connector read `config.ZITADEL_DOMAIN` through `zitadelBaseUrl()` and ignored the `ConnectorConfig` it was constructed with, so it could not be pointed at a per-organization `identity_providers` row even though that table has one issuer per organization.
+
+**Fix.** src/services/connectors/zitadel.ts — the base URL comes from the connector's own `cfg.issuer`; the nonce is sent, threaded through `exchangeCode`, and compared in `verifyToken`; `algorithms` is pinned to RS256/ES256/PS256 so `none` cannot be presented as a signed token; and `exp`, `iat`, `iss`, `aud`, `sub` are required. src/services/connectors/types.ts — `IdentityConnector.verifyToken` now declares `expectedNonce`, so the next connector written from the interface cannot drop it as this one did. src/services/connectors/registry.ts — `buildConnector` merges `overrides` after the environment, so a caller supplying an issuer wins.
+
+**Test.** `src/tests/security/federation/connectors.test.ts`
+
+**Documentation.** [docs/security/federation.md](federation.md)
+
+### SEC-053 — One failed login was recorded three times, and a poison background job crashed the process
+
+*Fixed in v3.4.0. Component: `anomaly-detection`.*
+
+**Issue.** Three separate problems, all in the accounting around a failed sign-in, found by §4.4 asking for job retry and dead-letter coverage and getting an unhandled rejection instead. (1) `isFailedLoginAnomaly` called `recordFailedLogin` to obtain its answer, so asking the question was itself evidence. Every call site therefore recorded the failure twice — once through the `user_login_failed` subscriber and once by asking — and with a threshold of 10 the spray signal fired after 5 real failed logins. Measured: 2, 4, 6, 8, 9, 10 across six real attempts. (2) `routes/auth.ts` called `request.audit("user_login_failed")` on both login paths, and `audit()` is `emit()`, so the same failure was published to the bus twice: once by `AuthenticationDomainService` (which carries the reason and covers all five refusal paths) and once by the route (which carries the request id). Every subscriber saw two events. (3) `InProcessQueue.run` scheduled retries with `setTimeout(() => this.run(...))`, discarding the returned promise, so the attempt that exhausted the budget threw into an unhandled rejection. Node terminates a process on an unhandled rejection, so one poison job took the server down. The in-process driver is what a deployment without `REDIS_URL` gets.
+
+**Fix.** src/services/anomalyDetection.ts — `countFailedLogins` is a read and `isFailedLoginAnomaly` uses it, so a predicate no longer mutates what it measures; `isNewDeviceAnomaly` fixed the same way. src/services/domain/authentication.ts — the explicit `recordFailedLogin` on the unknown-user path is gone, because the emit right below it is already the record, and the five emits now carry the client address. src/routes/auth.ts — the two duplicate `request.audit("user_login_failed")` calls are removed; the domain service owns the event. src/services/queue/inProcess.ts — the retry's promise is caught, so an exhausted job is logged and dropped instead of terminating the process.
+
+**Test.** `src/tests/integration/queue.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
+
+### SEC-055 — The CLI could not create a user, hung after doing its work, and reported a rotation that never happened
+
+*Fixed in v3.4.0. Component: `cli`.*
+
+**Issue.** Four defects in the 177-line CLI that had 8 commands and no tests, found by §4.5. It is the interface an operator reaches for when something has already gone wrong. (1) `user:create` never worked. The CLI built the authentication service and called `register`, which mints a token, but never called `loadSigningKeys()` — the server calls it during bootstrap, the CLI never did. Every invocation failed with "JWT signing keys not loaded". This is the command that creates the platform owner, so it is the first thing anyone runs on a new deployment. (2) Every command that opened a connection hung. `db` is a module-level postgres pool and the process never closed it; an open socket is a live handle, so the event loop never emptied and the process never exited. `org:create` printed "Created organization <id>" and then sat there forever, and an operator's response to a hung command is Ctrl-C, which destroys the exit code that would have said the work was done. (3) `secrets:rotate` reported success while rotating nothing. `EnvironmentSecretsProvider.rotateSigningKeys` nulled its cache and re-imported the same `JWT_PRIVATE_KEY`, returning the same key under the same key id, and the command printed "Rotated signing key. New key id: env". An operator rotating keys after a suspected compromise was told it had worked. The failure was also invisible to anything wrapping the command, because an exception out of an async commander action is an unhandled rejection and the process still exits 0. (4) `program.version("1.9.0")` was a hardcoded literal against a package at 3.3.0, so `keystone --version` — the first thing anyone runs when filing a bug report — answered with a version two minor majors and two years out of date.
+
+**Fix.** src/cli.ts — `user:create` loads the signing keys before minting; every database-touching command runs inside `withReleasedConnections`, which closes the pool, the shared Redis client and the cache's own Redis client in a `finally`; `secrets:rotate` catches, prints `Signing key was NOT rotated: …` and sets a non-zero exit code; the version is read from package.json. src/services/secrets/environment.ts — `rotateSigningKeys` throws with instructions, because there is nothing in the process to rotate. src/services/redis.ts — new `closeRedis()`. Releasing the pool alone was not enough: `migrate` and `keys:list` then exited while `user:create` and `org:create` still hung, and the difference was `initializeContainer()` leaving three Redis sockets open — one shared, one owned by the cache.
+
+**Test.** `src/tests/integration/cli.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
+
+### SEC-056 — The deployment advertised a readiness probe that could not fail
+
+*Fixed in v3.5.0. Component: `health`.*
+
+**Issue.** `/ready` did not exist. `README.md` documented `GET /health` and `GET /ready` as probe endpoints, and `k8s/base/deployment.yaml` pointed its `readinessProbe` at `/health` — the only one of the two that was real. `/health` returns `{status: "ok"}` unconditionally and touches nothing external, so it answers 200 whenever the process is listening. A pod with no database was therefore reported ready, kept in the load balancer's rotation, and every authenticated request it received failed. The traffic was sent to a pod that could serve none of it, which is the failure a readiness probe exists to prevent.
+
+**Fix.** src/routes/health.ts and src/services/health.ts — `/ready` checks PostgreSQL with `select 1` and Redis with `ping`, each bounded at 2s and run in parallel, and answers 503 only when PostgreSQL is unreachable. Redis alone is `degraded` and answers 200, because a deployment with no Redis falls back to the in-process queue and the local rate limiter and can still authenticate. `/health` is unchanged and still answers 200 with no database, so a transient blip does not fail liveness and cause a restart loop. The route holds no queries — the §3.1 layering rule fired on the first version, correctly, and the checking moved to a service. k8s/base/deployment.yaml — readinessProbe now points at `/ready`.
+
+**Test.** `src/tests/integration/readiness.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
 
 ## Medium
 
@@ -614,9 +730,81 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Fix.** src/routes/admin/platform.ts — a value with a formula prefix in first position is prefixed with an apostrophe before quoting
 
-**Test.** `src/tests/security/audit-export.test.ts`
+**Test.** `src/tests/security/configuration/audit-export.test.ts`
 
 **Documentation.** [docs/security/audit.md](audit.md)
+
+### SEC-049 — The email-verification token was not single-use under concurrency
+
+*Fixed in v3.4.0. Component: `tokens`.*
+
+**Issue.** `consumeVerificationToken` read the row with `usedAt IS NULL`, then updated it. That is a read that hopes, not a claim: two requests arriving together both pass the read before either writes, both update, and both are told the token was valid. `src/services/singleUse.ts` exists for exactly this and already served magic links, password resets and SMS OTP codes atomically; email verification was the fourth token type and the only one not routed through it. The file was named once in the whole test suite, in a list of rate-limit prefixes, so nothing exercised the path. Found by writing the end-to-end lifecycle suite §4.1 asked for, and specifically by the concurrency case in it — the sequential replay test passes against the broken implementation, because the second request arrives after the first has written. Measured: 2 of 8 simultaneous requests through `GET /auth/email-verification/verify` were each told the token was valid.
+
+**Fix.** src/services/emailVerification.ts — the consume path now calls `consumeEmailVerificationTokenRow`, the same atomic claim the other three token types use. `usedAt` is written by the claim's WHERE clause rather than by a second statement
+
+**Test.** `src/tests/security/authentication/email-verification.test.ts`
+
+**Documentation.** [docs/security/tokens.md](tokens.md)
+
+### SEC-054 — Every unmatched URL became its own Prometheus time series
+
+*Fixed in v3.4.0. Component: `metrics`.*
+
+**Issue.** The `onResponse` hook labelled `keystone_http_requests_total` with `request.routeOptions?.url || request.url`. For a request that matched no route there is no template, so the fallback was the concrete URL — and every distinct 404 became a permanent, individually-labelled time series. Measured: two probes produced `route="/nope/aaaaaaaa-1111"` and `route="/nope/bbbbbbbb-2222"`, with no upper bound on how many followed. A scanner, a crawler, or a client with a URL bug grows the series count without limit, and unbounded label cardinality is the standard way a metrics endpoint takes a Prometheus server down. The failure is silent: the endpoint keeps answering, and the only symptom is a Prometheus that runs out of memory hours later.
+
+**Fix.** src/plugins/metrics.ts — an unmatched request is labelled with the constant `unmatched` instead of its URL. 404 volume is still visible and still alertable through `status_code`, and the series count is now bounded by the number of routes.
+
+**Test.** `src/tests/integration/metrics.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
+
+### SEC-057 — A Redis outage made the readiness probe unable to report the Redis outage
+
+*Fixed in v3.5.0. Component: `health`.*
+
+**Issue.** Both probe endpoints sat behind the global rate limiter, which is an `onRequest` hook and so runs **before** the route handler. The limiter uses Redis. With PostgreSQL and Redis both unreachable, measured over a real socket: the handler reported its verdict in 2.0s every time, and the HTTP responses took 8.1s, then 20.3s and 20.4s. The time was spent in the limiter. Against `timeoutSeconds: 5` in k8s/base/deployment.yaml the kubelet would have recorded a **timeout** rather than the 503, during precisely the outage the probe exists to report. With Redis healthy the same call took 31ms, which is what identified the limiter as the cause. A probe that cannot report the outage is worse than no probe, because it looks like one.
+
+**Fix.** src/index.ts — the global rate limit skips `/health` and `/ready`. They are called by the kubelet, not by a client: two requests per pod per 40 seconds, with nothing to abuse. Measured after: 576ms, 2.0s, 2.0s on repeat calls with both dependencies down.
+
+**Test.** `src/tests/integration/readiness.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
+
+### SEC-059 — One secrets provider encrypted with unauthenticated AES-256-CBC
+
+*Fixed in v3.5.0. Component: `secrets`.*
+
+**Issue.** Four of the five locally-encrypting secrets providers use AES-256-GCM. `secrets/azureKeyVault.ts` uses AES-256-CBC, which is malleable and unauthenticated. Someone with write access to the stored ciphertext — a compromised database row, a tampered backup — can flip chosen plaintext bits without the key. Encrypting secrets at rest exists to defend against exactly that position, and this provider does not. Exploitability is limited: a bit flip in a TOTP secret or an OAuth client secret does not obviously yield either, and the attacker must already hold database write, which is why this is medium and not high. Found by asking the question `gcm-no-tag-length` was actually asking while triaging it.
+
+**Fix.** src/services/secrets/cipher.ts (new) — one cipher, one format, tested directly. `encryptAtRest` writes `aes-256-gcm$<base64url(iv || tag || ct)>`, byte-for-byte the shape `database.ts`, `environment.ts` and `vault.ts` already used, so a ciphertext says what it is and can be migrated. `decryptAtRest` reads that format and rejects a tampered value, and also reads the pre-3.5.1 `base64(iv):base64(ct)` CBC form, because deleting that read path would turn a security improvement into an outage: every stored value would become undecryptable. src/services/secrets/azureKeyVault.ts now delegates both directions, and logs `legacy_ciphertext_decrypted` when it reads a CBC value. Migration is the existing explicit operation `npm run db:reencrypt-oidc-secrets` — a read must not silently rewrite storage, so it does not. Two controls keep it fixed: `keystone-secrets-aead-only` in .semgrep.yml forbids a `createCipheriv` with a non-AEAD algorithm anywhere under src/services/secrets/ (verified by reverting the provider to CBC, which it catches), and src/tests/security/secrets/azureCipher.test.ts exercises the shared module rather than a copy of it.
+
+**Test.** `src/tests/security/secrets/azureCipher.test.ts`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-061 — Eight unauthenticated routes that consume an attacker-supplied credential had no rate limit
+
+*Fixed in v3.5.1. Component: `rate-limiting`.*
+
+**Issue.** §3.6 enumerated 21 routes with no rate limit and deliberately left the decision open, because a mechanical rule cannot tell a login from a discovery document. Making the judgement per route corrected the number in both directions. TRUE POSITIVES, now limited (8): GET /federation/:provider/callback and GET /auth/callback/:provider (a federated login completing on an attacker-supplied provider token), GET /sso/sso/oidc/:connectionId/callback (the enterprise SSO code), GET /auth/magic-link/verify (the token is in the query string, so it is the most brute-forceable route in the system — no body, no header, just a URL), GET /sso/saml/:connectionId and POST /sso/saml/acs (the assertion consumer service accepts an attacker-supplied assertion and runs signature verification on it, which is the classic SAML DoS shape), and POST /auth/webauthn/authenticate/options and /verify (challenge minting and challenge consumption). FALSE POSITIVES (9): auth.ts token-login x2, oauth2 authorize and token, smsOtp verify, and totp x4. CodeQL's js/missing-rate-limiting looks for a rateLimit call in a route's own options and misses it in two ordinary shapes — a limiter inside a preHandler array declared on a preceding line, and a limiter behind a named helper (factorRateLimit("totp-verify")). Both are how this repository writes limiters, so 9 of the 21 alerts were routes that were already protected. DELIBERATELY NOT LIMITED (3): GET /sdk/keystone-dropin.js and its .sri are a static file and its integrity hash, which a browser and a CDN fetch — limiting them breaks caching and protects nothing. POST /setup/init is guarded by assertSetupToken, is one-shot, and is an operator's FIRST request to a new installation; a rate limit there can lock somebody out of their own deploy, which is a support incident caused by a security control. AUTHENTICATED, LOWER PRIORITY (1): POST /auth/webauthn/register/verify sits behind app.authenticate, so the attacker already holds a credential.
+
+**Fix.** src/routes/magicLinks.ts and src/routes/saml.ts, plus federation.ts, oauth.ts, oidcEnterprise.ts and webauthn.ts — a rateLimit in preHandler on each of the eight, keyed per route so one flood cannot deny service to another, with emergencyLocalLimit: true so a Redis outage degrades to a bounded per-process budget rather than failing open. The three deliberate non-limits are recorded in docs/security/rate-limiting.md, because an omission nobody wrote down looks like an oversight.
+
+**Test.** `src/tests/security/rateLimit/unauthenticatedSurface.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-064 — The API surface review does not analyse a quarter of the route files, and eight of its reasons were inert
+
+*Fixed in v3.5.1. Component: `tooling`.*
+
+**Issue.** `scripts/review-api-surface.mjs` is the gate on the API surface, and it resolves the mount prefix for a route file by matching `import <name> from "./routes/<file>.js"` against `register(<name>, { prefix })`. It does not follow **composition**: `src/routes/admin/*.ts` are composed by `admin/index.ts` and registered once at `/v1/admin`, and `health.ts`, `sso.ts` and others are not matched either. 8 of 25 route files therefore have no resolved prefix and are not analysed at all. The tool reports 79 routes across 22 files and does not say which 8 it skipped beyond a list at the end. A second consequence turned up with it: **8 of 23 PUBLIC_BY_DESIGN reasons were inert** — they named route paths the server does not serve, so `get()` returned undefined for the route each was written about while the entry read as if it were doing work. They were noticed only because adding a `preHandler` array to six routes made the parser see them at all, at which point `--strict` failed and pointed at three that had never been checked. `/setup` named a path that does not exist; the setup plugin is mounted at `/setup` and serves `/setup/status` and `/setup/init`.
+
+**Fix.** scripts/review-api-surface.mjs — the reason table is now checked in **both** directions. It already failed a route with no reason; it now also reports a reason that matches no route, distinguishing **inert** (the path appears in no route file) from **unverified** (the route is real, but in a file the parser cannot place). The comparison is on trailing segments, because a plugin's prefix is not declared in its file: `/auth/refresh` is declared as a refresh route in a file mounted at `/auth`. The genuinely-wrong `/setup` entry is removed. **The unresolved-prefix gap is recorded, not fixed**: 8 files remain unanalysed, the tool prints them and the count, and this entry says so. Following composition is a real change to how routes are discovered, and an entry marked 'unverified' is a truthful middle state between claiming coverage and claiming nothing.
+
+**Test.** `scripts/review-api-surface.mjs`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 ## Low
 
@@ -631,3 +819,65 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Test.** `src/tests/security/authorization/authorization.test.ts`
 
 **Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-058 — The console email provider wrote attacker-influenceable content into log lines unescaped
+
+*Fixed in v3.5.0. Component: `email`.*
+
+**Issue.** ConsoleEmailProvider printed `To:`, `Subject:` and the body on three separate lines with the values interpolated raw. A newline in an email subject or body therefore started a new log entry. Anyone who can influence an email — a display name, a subject line, a signup form — could forge log lines, and a forged log line is how log integrity gets quietly lost: an incident review reading a log that has attacker-written entries in it cannot tell which are real. Found by the CodeQL triage (js/log-injection, severity error).
+
+**Fix.** src/services/email.ts — one line with every field JSON-encoded. JSON rather than stripping, because it preserves the value while making its boundaries unambiguous.
+
+**Test.** `docs/security/codeql-triage.md`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-060 — Two provably dead branches in the workflow blocked-reason chain
+
+*Fixed in v3.5.0. Component: `workflows`.*
+
+**Issue.** `triggerWorkflowRun` builds `blockedReason` as a five-deep nested ternary, the last two branches being `triggerMismatch` and `isOutOfScope`. Both are provably false at that point: line 145 returns `undefined` when either is true, so control never reaches line 159 with either set. CodeQL's `js/trivial-conditional` reported it precisely — "This use of variable 'isOutOfScope' always evaluates to false" — and pointed at the right line. The security behaviour was never affected: the guard at 145 is what stops the run, and it works. What was wrong was the explanation. A workflow that did not run because the event was out of scope, or because the trigger did not match, left no run record and no reason at all, so an operator asking why a workflow did not fire got nothing. The dead branches read as an attempt to explain a decision the code had already made and returned.
+
+**Fix.** src/services/workflows/engine.ts — both branches removed. The remaining two reasons are the only reachable ones, and a comment records why the other two cannot be.
+
+**Test.** `docs/security/codeql-triage.md`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-062 — The enterprise SSO endpoints are served at a doubled /sso/sso/ path
+
+*Fixed in v3.5.1. Component: `sso`.*
+
+**Issue.** `oidcEnterpriseRoutes` is mounted at `/sso` in src/index.ts and its routes also declare `/sso/…`, so the public path is `/sso/sso/oidc/:connectionId`. `docs/API.md` documents it, which is how a mistake acquires the appearance of a decision: the documentation is not wrong, it is a faithful record of a wart. Found while writing the rate-limit test, where the served path had to be discovered rather than read off the route file. The same file's other routes — `/sso/saml/...` — are correct, because samlRoutes declares paths that do not repeat the prefix.
+
+**Fix.** src/routes/oidcEnterprise.ts — NOT FIXED, deliberately. The clean path `/sso/oidc/...` would be the right thing to serve, but this is a public endpoint on a released product: a customer who integrated enterprise SSO has `/sso/sso/oidc/...` in an IdP configuration this repository cannot see, and removing it is a breaking change requiring a deprecation window and a migration note. Adding the clean path as an alias is safe but needs care — both registrations must share one rate-limit prefix, or the alias silently doubles the budget and an attacker spends whichever they have not. Recorded so it is a decision with a name rather than a wart nobody mentions.
+
+**Test.** `src/tests/security/rateLimit/unauthenticatedSurface.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-063 — The TOTP secret helper carries a second legacy unauthenticated read path
+
+*Fixed in v3.5.1. Component: `secrets`.*
+
+**Issue.** `src/services/totp.ts` writes TOTP seeds as `v2.<iv>.<tag>.<ct>` with AES-256-GCM, and still reads a `v1` `iv:data` format with AES-256-CBC. The same defect in the same shape as SEC-059, in a second place, and recorded by nobody. Found by `scripts/verify-secrets-cipher.mjs` — the check written for SEC-059, widened to the whole of `src/services/secrets/` plus `totp.ts` — which is the argument for a general gate rather than a targeted fix: the targeted fix would have been one more place to remember.
+
+**Fix.** src/services/totp.ts — NOT FIXED, deliberately, for the same reason as SEC-059: a TOTP seed that cannot be decrypted is a seed nobody can log in with, so the read path has to stay. src/tests/security/secrets/ and scripts/verify-secrets-cipher.mjs — both legacy reads are now *counted* in ALLOWED_LEGACY_READS, so a new one fails the build and the last one going away is a visible, deliberate change rather than an accident nobody notices until a customer cannot log in.
+
+**Test.** `scripts/verify-secrets-cipher.mjs`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-065 — The setup config writer resolved its path twice, and followed a symlink in the steady state
+
+*Fixed in v3.5.2. Component: `setup`.*
+
+**Issue.** src/services/setup/configWriter.ts wrote .env and config/keystone.json by resolving the path twice. EnvFileConfigWriter.write did `fs.stat(path)`, checked the result was a regular file, and then called `fs.writeFile(path, …)`. Those are two resolutions of the same name with a window between them, which CodeQL flagged as js/file-system-race on two sites. The race is the NARROW half, and the wide half is worse: fs.writeFile follows a symbolic link by design, so a .env that is a link is not a race at all — it is the ordinary case. The writer would read the target, merge into it, and overwrite it with mode 0600. No timing required, and a fix that only closed the window would have left this untouched. The primitive handed over is 'write 0600 to any path this process can write'. Severity is low and deliberately not inflated: this writes inside the application directory, and anyone who can plant a symlink there can already achieve more than one stray write. It is also the last two open CodeQL alerts, both real. The JSON writer had the same shape without even the stat, and both writers' backup() did stat-then-copyFile.
+
+**Fix.** src/services/setup/safeFile.ts (new) — one descriptor per file, opened with O_NOFOLLOW, and every read and write goes through that one handle, so there is no second path resolution left to attack. `O_NOFOLLOW` is the part that removes the steady-state problem, and it is the part a stat-then-write fix misses. Both writers' read, write and backup are rewired onto it, and backups are created with O_EXCL so a name that already exists or a link planted at the backup path is refused rather than written through. src/services/setup/configWriter.ts — the merge behaviour is deliberately unchanged: routes/config.ts passes a fully merged set (it has already applied redaction and will not send back a secret it was shown as a bullet sequence), while routes/setup.ts passes only new values and relies on the merge to preserve the rest of the file. Unifying those would change what one of them writes. The refusals are mapped from codes measured on the platform rather than assumed: a directory is EISDIR, a final symlink is ELOOP, and with O_EXCL an existing name is EEXIST. A FIFO, a socket and a device node all OPEN successfully and are caught only by the fstat afterwards, so that branch is live rather than dead — which is not obvious from the EISDIR case and was assumed the wrong way round first. TWO LIMITS, STATED: O_NOFOLLOW covers the final path component only, and a symlink in a PARENT directory is still followed — closing that needs openat with O_NOFOLLOW on every component, which Node's fs does not expose. And O_NOFOLLOW is undefined on Windows, so the flag is omitted and the protection is genuinely gone; symlinkProtection reports which of the two a caller is getting rather than implying one. keystone-config-writes-by-descriptor in .semgrep.yml keeps a future writer from going back to the name.
+
+**Verified by breaking, and the more useful half is what the break showed.** 21 cases. The one that matters asserts the symlink target's content is unchanged, because every other assertion here can pass against the old code if it is weak enough. It is also not sufficient on its own, which is the more useful finding: with write() reverted but read() still hardened, the end-to-end test stayed GREEN, because read() refused first and the write was never reached. So the write is tested at the descriptor with nothing in front of it, and the semgrep rule is what catches a writer that stops using the primitive. Both were verified by reverting: the behavioural suite fails 2 of 21 and keystone-config-writes-by-descriptor reports the reverted site. Restored: 21 of 21.
+
+**Test.** `src/tests/security/setup/configWriterSymlink.test.ts`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)

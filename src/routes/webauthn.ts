@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { config } from "../config.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import {
   type RegistrationResponseJSON,
@@ -99,7 +100,7 @@ export default async function webauthnRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Challenge expired or missing" });
       }
 
-      const stored = consumeChallenge(challenge);
+      const stored = await consumeChallenge(challenge);
       if (!stored || stored.userId !== user.id) {
         clearChallengeCookie(reply);
         return reply.status(400).send({ error: "Invalid challenge" });
@@ -122,21 +123,52 @@ export default async function webauthnRoutes(app: FastifyInstance) {
     }
   );
 
-  app.post("/webauthn/authenticate/options", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/webauthn/authenticate/options", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "webauthn-authn-options",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // Mints a challenge and writes a cookie, so unbounded it is a cheap way to make
+        // the server issue and store challenges on demand.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const body = AuthenticateOptionsSchema.parse(request.body);
     const options = await buildAuthenticationOptions(body.email);
     setChallengeCookie(reply, options.challenge);
     return options;
   });
 
-  app.post("/webauthn/authenticate/verify", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/webauthn/authenticate/verify", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "webauthn-authn-verify",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // Consumes a challenge to complete a login, and the challenge arrives in the body.
+        // The challenge is single-use, so this bounds attempts rather than permitting
+        // reuse — which is the point.
+        //
+        // A Redis outage must not remove the limit on an endpoint worth
+        // brute-forcing, so this falls back to a bounded per-process budget
+        // rather than failing open.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const body = AuthenticateVerifySchema.parse(request.body);
     const challenge = getChallengeCookie(request);
     if (!challenge) {
       return reply.status(400).send({ error: "Challenge expired or missing" });
     }
 
-    const stored = consumeChallenge(challenge);
+    const stored = await consumeChallenge(challenge);
     if (!stored) {
       clearChallengeCookie(reply);
       return reply.status(400).send({ error: "Invalid challenge" });

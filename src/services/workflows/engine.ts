@@ -6,6 +6,9 @@ import { subscribe, emit } from "../events/bus.js";
 import type { KeystoneEvent } from "../events/types.js";
 import { queue } from "../queue/index.js";
 import { executeStep, isBlockedWorkflowStep, type WorkflowStep } from "./steps.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("workflows");
 
 export interface WorkflowDefinition {
   steps: WorkflowStep[];
@@ -153,15 +156,26 @@ export async function triggerWorkflowRun(workflow: Workflow, event: KeystoneEven
     });
     return undefined;
   }
+  // Only two reasons are reachable here.
+  //
+  // `triggerMismatch` and `isOutOfScope` were in this chain until 3.5.0, and both
+  // were **dead**: line 145 returns `undefined` when either is true, so by the time
+  // this expression is evaluated both are provably false. CodeQL's
+  // `js/trivial-conditional` caught it ("This use of variable 'isOutOfScope'
+  // always evaluates to false") and pointed at the right line.
+  //
+  // The security behaviour was never affected — the guard at 145 is what stops the
+  // run, and it works. What was wrong was the *explanation*: a workflow that did
+  // not run because the event was out of scope left no run record and no reason at
+  // all, so an operator asking "why didn't my workflow fire?" got nothing. That
+  // is a diagnosability gap rather than an authorization one, and the honest
+  // reading of the dead branches is that they were written to explain a decision
+  // the code had already made and returned.
   const blockedReason = inactiveWorkflow
     ? "Workflow is inactive"
     : hasBlockedStep
       ? "Workflow contains a blocked authorization step"
-      : triggerMismatch
-        ? "Workflow trigger does not match the emitted event"
-        : isOutOfScope
-          ? "Workflow event does not belong to the workflow organization"
-          : undefined;
+      : undefined;
   const now = new Date();
   const [run] = await db
     .insert(workflowRuns)
@@ -204,7 +218,7 @@ export async function executeRunById(runId: string, workflowId: string): Promise
     .limit(1);
   const [workflow] = await db.select().from(workflows).where(eq(workflows.id, workflowId)).limit(1);
   if (!run || !workflow) {
-    console.error(`[workflow-engine] run or workflow not found: ${runId}, ${workflowId}`);
+    moduleLog.error("workflows");
     return;
   }
   await executeRun(run, workflow);

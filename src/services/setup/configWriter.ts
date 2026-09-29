@@ -3,8 +3,38 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ok, err, type Result } from "../../lib/result.js";
 import type { ConfigWriter } from "./types.js";
+import {
+  NotAFileError,
+  SymlinkError,
+  createExclusive,
+  openExistingOrNew,
+  openExistingOrNull,
+  readViaHandle,
+  replaceViaHandle,
+} from "./safeFile.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The configuration writers.
+ *
+ * Every file access here goes through a single file descriptor opened with
+ * `O_NOFOLLOW` — see `./safeFile.ts` for why, and for what it does not cover.
+ *
+ * Before, `write()` did `fs.stat(path)`, checked the result was a regular file, and
+ * then called `fs.writeFile(path, …)`: two resolutions of the same name with a
+ * window between them, and a writer that followed a symlink in the steady state
+ * rather than only during one. CodeQL flagged the race twice as
+ * `js/file-system-race`, and it was right about the shape while the symlink half
+ * was the larger problem.
+ *
+ * The merge behaviour is deliberately unchanged. `write()` still merges plain
+ * `{ ...existing, ...values }`, because the two callers need different things from
+ * it: `routes/config.ts` passes a **fully merged** set — it has already applied
+ * redaction and will not send a secret it was shown as `••••` — while
+ * `routes/setup.ts` passes only the new values and relies on this merge to preserve
+ * the rest of the file. Unifying those would change what one of them writes.
+ */
 
 function formatEnvValue(value: string): string {
   // Quote values that contain whitespace or special characters.
@@ -32,6 +62,65 @@ function parseEnvLine(line: string): { key?: string; value?: string; comment?: b
   return { key: match[1], value };
 }
 
+function parseEnvValues(content: string): Record<string, string | undefined> {
+  const values: Record<string, string | undefined> = {};
+  for (const line of content.split(/\r?\n/)) {
+    const { key, value } = parseEnvLine(line);
+    if (key) values[key] = value;
+  }
+  return values;
+}
+
+/** Build the new file body, preserving comments and ordering from `raw`. */
+function buildEnvContent(raw: string, merged: Record<string, string | undefined>): string {
+  const lines = raw.split(/\r?\n/);
+  const seen = new Set<string>();
+  const updatedLines: string[] = [];
+
+  for (const line of lines) {
+    const { key } = parseEnvLine(line);
+    if (key && key in merged) {
+      updatedLines.push(`${key}=${formatEnvValue(merged[key]!)}`);
+      seen.add(key);
+    } else {
+      updatedLines.push(line);
+    }
+  }
+
+  // Append any new keys at the end.
+  const newKeys = Object.keys(merged).filter((k) => !seen.has(k));
+  if (newKeys.length > 0) {
+    if (updatedLines.length > 0 && updatedLines[updatedLines.length - 1] !== "") {
+      updatedLines.push("");
+    }
+    for (const key of newKeys) {
+      updatedLines.push(`${key}=${formatEnvValue(merged[key]!)}`);
+    }
+  }
+
+  return updatedLines.join("\n") + "\n";
+}
+
+/** A timestamped, collision-free-enough backup name beside the target. */
+function backupNameFor(filePath: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${filePath}.backup-${timestamp}`;
+}
+
+/** Map a refusal to the Result the routes already know how to answer. */
+function writeFailure(error: unknown): { code: string; message: string; statusCode: number } {
+  if (error instanceof SymlinkError) {
+    // 400, not 500: the request was refused because of what is at that path, and
+    // retrying will not change it. The message says what to do about it.
+    return { code: "SYMLINK_REFUSED", message: error.message, statusCode: 400 };
+  }
+  if (error instanceof NotAFileError) {
+    return { code: "NOT_A_FILE", message: error.message, statusCode: 400 };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return { code: "WRITE_FAILED", message, statusCode: 500 };
+}
+
 export class EnvFileConfigWriter implements ConfigWriter {
   private readonly filePath: string;
 
@@ -40,86 +129,61 @@ export class EnvFileConfigWriter implements ConfigWriter {
   }
 
   async read(): Promise<Record<string, string | undefined>> {
+    const open = await openExistingOrNull(this.filePath);
+    if (!open) return {};
     try {
-      const content = await fs.readFile(this.filePath, "utf-8");
-      const values: Record<string, string | undefined> = {};
-      for (const line of content.split(/\r?\n/)) {
-        const { key, value } = parseEnvLine(line);
-        if (key) values[key] = value;
-      }
-      return values;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return {};
-      }
-      throw error;
+      return parseEnvValues(await readViaHandle(open.handle));
+    } finally {
+      await open.handle.close().catch(() => {});
     }
   }
 
   async write(values: Record<string, string>): Promise<Result<void>> {
+    let open;
     try {
-      const stats = await fs.stat(this.filePath).catch(() => null);
-      if (stats && !stats.isFile()) {
-        return err({ code: "NOT_A_FILE", message: `${this.filePath} is not a regular file`, statusCode: 400 });
-      }
-
-      const existing = await this.read();
+      // One descriptor for the read and the write. There is no second resolution
+      // of the path, so there is no window between deciding what is there and
+      // replacing it.
+      open = await openExistingOrNew(this.filePath);
+    } catch (error) {
+      return err(writeFailure(error));
+    }
+    try {
+      const raw = (await readViaHandle(open.handle)).trimEnd();
+      const existing = parseEnvValues(raw);
       const merged = { ...existing, ...values };
-
-      // Preserve comments and ordering from existing file when possible.
-      let lines: string[] = [];
-      try {
-        const content = await fs.readFile(this.filePath, "utf-8");
-        lines = content.split(/\r?\n/);
-      } catch {
-        // File does not exist yet; start fresh.
-      }
-
-      const seen = new Set<string>();
-      const updatedLines: string[] = [];
-
-      for (const line of lines) {
-        const { key } = parseEnvLine(line);
-        if (key && key in merged) {
-          updatedLines.push(`${key}=${formatEnvValue(merged[key]!)}`);
-          seen.add(key);
-        } else {
-          updatedLines.push(line);
-        }
-      }
-
-      // Append any new keys at the end.
-      const newKeys = Object.keys(merged).filter((k) => !seen.has(k));
-      if (newKeys.length > 0) {
-        if (updatedLines.length > 0 && updatedLines[updatedLines.length - 1] !== "") {
-          updatedLines.push("");
-        }
-        for (const key of newKeys) {
-          updatedLines.push(`${key}=${formatEnvValue(merged[key]!)}`);
-        }
-      }
-
-      await fs.writeFile(this.filePath, updatedLines.join("\n") + "\n", { mode: 0o600 });
+      await replaceViaHandle(open.handle, buildEnvContent(raw, merged));
       return ok(undefined);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return err({ code: "WRITE_FAILED", message, statusCode: 500 });
+      return err(writeFailure(error));
+    } finally {
+      await open.handle.close().catch(() => {});
     }
   }
 
   async backup(): Promise<Result<string>> {
+    let open;
+    let content: string;
     try {
-      const stats = await fs.stat(this.filePath).catch(() => null);
-      if (!stats || !stats.isFile()) {
-        return ok("");
-      }
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const backupPath = `${this.filePath}.backup-${timestamp}`;
-      await fs.copyFile(this.filePath, backupPath);
+      open = await openExistingOrNull(this.filePath);
+      if (!open) return ok("");
+      content = await readViaHandle(open.handle);
+    } catch (error) {
+      await open?.handle.close().catch(() => {});
+      const failure = writeFailure(error);
+      return err({ ...failure, code: failure.code === "WRITE_FAILED" ? "BACKUP_FAILED" : failure.code });
+    }
+    try {
+      // `O_EXCL`, so a name that already exists — or a symlink planted at the
+      // backup path — is refused rather than written through.
+      const backupPath = backupNameFor(this.filePath);
+      await createExclusive(backupPath, content);
       return ok(backupPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return err({ code: "BACKUP_FAILED", message, statusCode: 500 });
+    } finally {
+      await open.handle.close().catch(() => {});
     }
   }
 }
@@ -132,51 +196,82 @@ export class JsonConfigWriter implements ConfigWriter {
   }
 
   async read(): Promise<Record<string, string | undefined>> {
+    const open = await openExistingOrNull(this.filePath);
+    if (!open) return {};
     try {
-      const content = await fs.readFile(this.filePath, "utf-8");
-      const parsed = JSON.parse(content);
+      const parsed = JSON.parse(await readViaHandle(open.handle));
       if (typeof parsed !== "object" || parsed === null) return {};
       const result: Record<string, string | undefined> = {};
       for (const [key, value] of Object.entries(parsed)) {
         result[key] = typeof value === "string" ? value : String(value);
       }
       return result;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return {};
-      }
-      throw error;
+    } finally {
+      await open.handle.close().catch(() => {});
     }
   }
 
   async write(values: Record<string, string>): Promise<Result<void>> {
+    let open;
     try {
-      const existing = await this.read();
-      const merged = { ...existing, ...values };
       await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-      await fs.writeFile(this.filePath, JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 });
+      open = await openExistingOrNew(this.filePath);
+    } catch (error) {
+      return err(writeFailure(error));
+    }
+    try {
+      const existing = parseJson(await readViaHandle(open.handle));
+      const merged = { ...existing, ...values };
+      await replaceViaHandle(open.handle, JSON.stringify(merged, null, 2) + "\n");
       return ok(undefined);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return err({ code: "WRITE_FAILED", message, statusCode: 500 });
+      return err(writeFailure(error));
+    } finally {
+      await open.handle.close().catch(() => {});
     }
   }
 
   async backup(): Promise<Result<string>> {
+    let open;
+    let content: string;
     try {
-      const stats = await fs.stat(this.filePath).catch(() => null);
-      if (!stats || !stats.isFile()) {
-        return ok("");
-      }
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const backupPath = `${this.filePath}.backup-${timestamp}`;
-      await fs.copyFile(this.filePath, backupPath);
+      open = await openExistingOrNull(this.filePath);
+      if (!open) return ok("");
+      content = await readViaHandle(open.handle);
+    } catch (error) {
+      await open?.handle.close().catch(() => {});
+      const message = error instanceof Error ? error.message : String(error);
+      return err({ code: "BACKUP_FAILED", message, statusCode: 500 });
+    }
+    try {
+      const backupPath = backupNameFor(this.filePath);
+      await createExclusive(backupPath, content);
       return ok(backupPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return err({ code: "BACKUP_FAILED", message, statusCode: 500 });
+    } finally {
+      await open.handle.close().catch(() => {});
     }
   }
+}
+
+function parseJson(content: string): Record<string, string | undefined> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    // A file that is not valid JSON is treated as empty rather than failing the
+    // write, which is what the previous `read()` did by returning `{}` on any
+    // parse error. Overwriting unparseable input is a separate decision.
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const result: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    result[key] = typeof value === "string" ? value : String(value);
+  }
+  return result;
 }
 
 export function createConfigWriter(): ConfigWriter {

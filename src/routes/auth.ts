@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger } from "fastify";
+import { config } from "../config.js";
 import { getSdk } from "../sdk/index.js";
 import {
   setSessionCookies,
@@ -20,7 +21,12 @@ import { findApplicationByClientId } from "../services/applications.js";
  * Emits a suspicious-login email when the user's previous login came from a
  * different IP within the anomaly window.
  */
-function detectImpossibleTravel(user: { id: string; email: string }, ip?: string, userAgent?: string): void {
+function detectImpossibleTravel(
+  user: { id: string; email: string },
+  log: FastifyBaseLogger,
+  ip?: string,
+  userAgent?: string
+): void {
   checkImpossibleTravel(user.id, ip)
     .then(async (suspicious) => {
       if (!suspicious) return;
@@ -32,7 +38,7 @@ function detectImpossibleTravel(user: { id: string; email: string }, ip?: string
       });
     })
     .catch((err: unknown) => {
-      console.error("[anomaly] impossible-travel check failed:", err);
+      log.error({ err }, "impossible-travel check failed");
     });
 }
 
@@ -89,8 +95,8 @@ export default async function authRoutes(app: FastifyInstance) {
       preHandler: [
         rateLimit({
           keyPrefix: "register",
-          maxAttempts: 5,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
           emergencyLocalLimit: true,
         }),
@@ -128,8 +134,8 @@ export default async function authRoutes(app: FastifyInstance) {
       preHandler: [
         rateLimit({
           keyPrefix: "login",
-          maxAttempts: 5,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           // A Redis outage must not remove the limit on an endpoint worth
           // brute-forcing.
           emergencyLocalLimit: true,
@@ -140,12 +146,18 @@ export default async function authRoutes(app: FastifyInstance) {
         // fresh budget per attempt and can enumerate or guess across a thousand
         // accounts from one host. This second budget is keyed on the address
         // alone, so spraying is capped no matter how many addresses are tried.
+        //
+        // `includeSubmittedAddress: false` is what makes that true. The key used
+        // to append the submitted address to *every* limiter's key, which left
+        // this one keyed on address **and** account — the same shape as the budget
+        // above it, and no control on spraying at all. SEC-048.
         rateLimit({
           keyPrefix: "login-per-address",
-          maxAttempts: 30,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_PER_ADDRESS_MAX,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           emergencyLocalLimit: true,
           keyFrom: (request) => request.ip,
+          includeSubmittedAddress: false,
         }),
       ],
     },
@@ -165,15 +177,24 @@ export default async function authRoutes(app: FastifyInstance) {
       });
 
       if (!result.success) {
-        // Previously unaudited: a wrong password produced a 401 and nothing
-        // else, so credential guessing was invisible except through the limiter.
-        // Deliberately records no user id, because the submitted address may not
-        // correspond to any account.
-        await request.audit("user_login_failed", {
-          email: body.email,
-          ip: request.ip,
-          reason: result.error.code,
-        });
+        // No `user_login_failed` audit here, and its absence is the fix rather
+        // than an omission (SEC-053).
+        //
+        // `AuthenticationDomainService.login` already emits `user_login_failed`
+        // for every refusal it can return — `unknown_user`, `invalid_password`,
+        // `account_deactivated`, `account_review_required`, `account_locked` —
+        // each carrying the reason, the user id where one exists, and the client
+        // address. This call site used to emit the same event a second time,
+        // because it was written when a wrong password produced a 401 and
+        // nothing else.
+        //
+        // Two events for one failure doubled every subscriber's count: the failed
+        // -login metric read twice the truth, and the anomaly detector reached its
+        // threshold of 10 after 5 real attempts.
+        //
+        // The domain service is the right owner: it covers all five paths,
+        // including the ones that return before this handler could audit, and it
+        // fires for the CLI and any future transport too.
         return sendResultError(reply, result);
       }
 
@@ -195,7 +216,7 @@ export default async function authRoutes(app: FastifyInstance) {
       const auth = result.data.data;
       request.state.auditUserId = auth.user.id;
       await request.audit("user_login", { userId: auth.user.id });
-      detectImpossibleTravel(auth.user, request.ip, request.headers["user-agent"]);
+      detectImpossibleTravel(auth.user, request.log, request.ip, request.headers["user-agent"]);
       setSessionCookies(reply, auth.accessToken, auth.refreshToken, body.client_id);
       return { user: toSelfUser(auth.user) };
     }
@@ -207,8 +228,8 @@ export default async function authRoutes(app: FastifyInstance) {
       preHandler: [
         rateLimit({
           keyPrefix: "login",
-          maxAttempts: 5,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           // A Redis outage must not remove the limit on an endpoint worth
           // brute-forcing.
           emergencyLocalLimit: true,
@@ -219,12 +240,18 @@ export default async function authRoutes(app: FastifyInstance) {
         // fresh budget per attempt and can enumerate or guess across a thousand
         // accounts from one host. This second budget is keyed on the address
         // alone, so spraying is capped no matter how many addresses are tried.
+        //
+        // `includeSubmittedAddress: false` is what makes that true. The key used
+        // to append the submitted address to *every* limiter's key, which left
+        // this one keyed on address **and** account — the same shape as the budget
+        // above it, and no control on spraying at all. SEC-048.
         rateLimit({
           keyPrefix: "login-per-address",
-          maxAttempts: 30,
-          windowSeconds: 900,
+          maxAttempts: config.LOGIN_PER_ADDRESS_MAX,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
           emergencyLocalLimit: true,
           keyFrom: (request) => request.ip,
+          includeSubmittedAddress: false,
         }),
       ],
     },
@@ -244,14 +271,8 @@ export default async function authRoutes(app: FastifyInstance) {
       });
 
       if (!result.success) {
-        // Same reasoning as /login: a failed token login is a guessing attempt
-        // and should be visible as one.
-        await request.audit("user_login_failed", {
-          email: body.email,
-          ip: request.ip,
-          reason: result.error.code,
-          flow: "token_login",
-        });
+        // Same reasoning as /login, and for the same reason: the domain service
+        // emitted `user_login_failed` for this refusal already (SEC-053).
         return sendResultError(reply, result);
       }
 
@@ -273,7 +294,7 @@ export default async function authRoutes(app: FastifyInstance) {
       const auth = result.data.data;
       request.state.auditUserId = auth.user.id;
       await request.audit("user_token_login", { userId: auth.user.id });
-      detectImpossibleTravel(auth.user, request.ip, request.headers["user-agent"]);
+      detectImpossibleTravel(auth.user, request.log, request.ip, request.headers["user-agent"]);
       return {
         accessToken: auth.accessToken,
         refreshToken: auth.refreshToken,
@@ -332,7 +353,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
       request.state.auditUserId = result.data.user.id;
       await request.audit("mfa_verified", { userId: result.data.user.id, factor: result.data.factor });
-      detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
+      detectImpossibleTravel(result.data.user, request.log, request.ip, request.headers["user-agent"]);
 
       if (result.data.flow === "login") {
         await request.audit("user_login", { userId: result.data.user.id, mfa: result.data.factor });

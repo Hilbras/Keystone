@@ -143,7 +143,11 @@ export function normalizePayload(
     emailVerified: get("email_verified") === true,
     name: get("name") ? String(get("name")) : undefined,
     picture: get("picture") ? String(get("picture")) : undefined,
-    username: get("preferred_username") ? String(get("preferred_username")) : undefined,
+    // `username` is accepted as a mapping key as well as `preferred_username`,
+    // because `username` is the field name in `ExternalIdentity` and in every
+    // provider's configuration screen, and a mapping of `{ username: "login" }`
+    // that is silently ignored is worse than one that is rejected.
+    username: get("username") ? String(get("username")) : get("preferred_username") ? String(get("preferred_username")) : undefined,
     raw: payload,
   };
 }

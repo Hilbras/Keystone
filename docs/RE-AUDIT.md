@@ -64,9 +64,13 @@ Suites that assert a property but do not correspond to a defect we can evidence.
   Positive-path coverage for the SAML validator. Not tied to a numbered finding: it asserts that a correct response is accepted, not that a previously-missing check was added.
 - `src/tests/security/saml/sso-endpoint.test.ts` — isPrivateAddress classifies loopback, private, link-local, carrier-grade NAT, benchmarking and both spellings of IPv4-mapped IPv6 as non-public.
   Coverage for the endpoint address policy in src/services/ssoEndpointPolicy.ts, which keeps operator-supplied SSO endpoint URLs from pointing at internal addresses. No defect was evidenced behind it, so it is not a numbered finding.
+- `src/tests/security/authorization/permissionCache.test.ts` — The Redis permission cache: a grant and a revocation are both visible on the next read with no TTL wait, a deleted permission cascades to every role, a Redis client that is disconnected or failing falls through to the database rather than to an in-process copy, an empty set is never cached, and a malformed cache entry is read as a miss rather than as an empty permission set.
+  Coverage for the permission cache added in 3.2.0. No defect was evidenced behind it: the cache is new, and the two failure modes it is shaped around — a stale in-process fallback, and a poisoned entry resolving to an empty set — are asserted as properties rather than as regressions against a numbered finding. The one real defect found alongside it, the SCIM group reconcile skipping its organization membership check, was introduced and fixed inside the unreleased 3.1.0 cycle and is covered in src/tests/security/scim/isolation.test.ts, a suite that is already registered — it is not a numbered finding because it never reached a release.
+- `src/tests/security/rate-limiting/backend-choice.test.ts` — The rate limiter selects its backend by attempting the Redis command rather than by inspecting the client: an unconnected but connectable client is used, and a disconnected one rejects so the local fallback is reachable. A budget spent through one 'instance' is seen by the next, which is the property a distributed limiter exists for.
+  The regression test for SEC-047. Registered separately from the finding because the backend-selection assertions are properties of the plugin rather than evidence of the defect, which the spraying and 3.1.0 suites also cover.
 
 ## Coverage
 
-- 44 findings recorded in `docs/security/registry.json`.
-- 44 of 44 verified to have a regression test present right now.
-- 6 critical, 25 high, 12 medium, 1 low.
+- 63 findings recorded in `docs/security/registry.json`.
+- 63 of 63 verified to have a regression test present right now.
+- 6 critical, 33 high, 18 medium, 6 low.

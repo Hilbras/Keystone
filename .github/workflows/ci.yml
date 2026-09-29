@@ -9,6 +9,19 @@ on:
   pull_request:
     branches: [main, "release/**"]
 
+# Declared rather than inherited, so a job added later cannot silently pick up
+# whatever the repository's default token happens to allow. Every job here only
+# reads the repository — the tests, the frontend build, the image hygiene check and
+# the gates — so `contents: read` is the whole of what is needed.
+#
+# `ci.yml` was the only workflow in `.github/workflows/` without this block, and
+# CodeQL's `actions/missing-workflow-permissions` said so. It is not a stylistic
+# point: the default token's permissions are a repository setting, so a workflow
+# with no block has whatever that setting happens to be, and a job that needs less
+# than the setting allows is one accidental `write` away from being a write.
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -37,12 +50,12 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install backend dependencies
@@ -70,15 +83,176 @@ jobs:
           KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
         run: npm test -- --test-timeout=60000
 
+  # The mechanical gates. Five checks that were in `release.yml` and nowhere else,
+  # which meant a pull request could merge with all of them red and they would
+  # first run after the tag existed — after the merge, with the release already in
+  # flight. §3.2 of v3.3.0 merged a real regression that way: a mangled multi-line
+  # call in `services/secrets/environment.ts` left `privatePem` and `publicPem`
+  # unused, `npm run lint` reported 6 warnings, and the only reason it was ever
+  # noticed is that §4.2 was writing a test in the same file.
+  #
+  # They live here rather than only in the release workflow because a gate's value
+  # is in what it stops. A gate that runs after the merge stops nothing; it
+  # annotates.
+  #
+  # None of these need PostgreSQL or Redis — they read the repository, not the
+  # database — so the job has no services and finishes in well under a minute.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      # Two gates below read the **compiled** output: the dashboard generator
+      # imports the real modules to learn which series are registered, and the
+      # documentation-sample check confirms each `exports` entry points at a file
+      # that is actually in the build. Both failed on the first run of this branch,
+      # in 13 seconds, because this job installed dependencies and then ran gates —
+      # it never built. A gate that depends on a build artefact needs the build.
+      - name: Build
+        run: npm run build
+
+      # The SDK packages each declare their own `typescript` and `@types/node`, and
+      # `verify:sdk` compiles them with their own compiler rather than the
+      # repository's — using the root's TypeScript 7 reported four of the five as
+      # broken, which was a toolchain mismatch and not a code defect. So they are
+      # installed properly here, rather than left as an assumption about what
+      # `npm ci` at the root happens to reach.
+      - name: Install SDK package dependencies
+        run: |
+          for pkg in packages/*/; do
+            echo "::group::$pkg"
+            npm ci --prefix "$pkg" --no-audit --no-fund
+            echo "::endgroup::"
+          done
+
+      - name: Gate — no lint warnings
+        # `--deny-warnings` exits non-zero. The warnings themselves are not the
+        # interesting part: an unused variable in a file that also does something
+        # else is nearly always a statement whose *value* was dropped, which is how
+        # the `environment.ts` regression announced itself.
+        run: npm run lint
+
+      - name: Gate — every security finding points at a test and a document
+        run: npm run registry:check
+
+      - name: Gate — the changelog describes the version being released
+        # 3.3.0 and 3.4.0 were both published with no entry at all: the file
+        # newest heading was [3.2.0] while the package was at 3.4.0. The existing
+        # release check verified the changelog *ships*; nothing checked that it was
+        # *current*. This also compares against the npm registry, so a version that
+        # reached the registry without a heading here fails the build.
+        run: node scripts/verify-changelog.mjs
+
+      - name: Gate — documentation links resolve
+        run: npm run check:docs
+
+      - name: Gate — the re-audit matrix regenerates and every claim verifies
+        run: npm run reaudit:check
+
+      - name: Gate — every route has an authentication guard, and every guard name resolves
+        # A misspelled guard is skipped at request time rather than rejected at
+        # load, so the route ships unauthenticated and every test that does not
+        # happen to call it still passes. Nothing else in the pipeline can see it.
+        run: node scripts/review-api-surface.mjs --strict
+
+      - name: Gate — the authentication dashboard names series that exist
+        # A dashboard is the one artefact in this repository that nobody runs, so a
+        # renamed series leaves its panels pointing at nothing and it fails
+        # silently — a panel with no data looks exactly like a panel with no
+        # incidents. Generating it and checking every series name against the live
+        # registry turns that into a build failure instead of a blank graph at 3am.
+        run: node scripts/generate-auth-dashboard.mjs
+
+      - name: Gate — no secrets provider writes an unauthenticated cipher, and the legacy reads are counted
+        # Four of the five providers used AES-256-GCM and the fifth used AES-256-CBC. Four siblings
+        # doing it right is evidence, not a control, and no gate covered the class. This also counts
+        # the legacy unauthenticated *reads* that must survive the migration, so a new one fails and
+        # the last one going away is a deliberate change.
+        run: node scripts/verify-secrets-cipher.mjs
+
+      - name: Gate — the Node version is stated once and everything agrees
+        # The runtime version was written out in ten places, with no engines field
+        # and no .nvmrc — even though benchmark.yml already pointed setup-node at
+        # one that did not exist. Dependabot PR #34 changes the Dockerfile one of
+        # those ten, which is how a release ends up running a different Node major
+        # from the one the suite passed on.
+        run: node scripts/verify-node-version.mjs
+
+      - name: Gate — every third-party action is pinned to a commit SHA
+        # Every "uses:" was pinned to a major version (actions/checkout@v4), which
+        # looks pinned and is not: @v4 is a mutable tag, so whoever owns the action
+        # can re-point the code that ships in a release after the review that
+        # approved it. CodeQL flagged 8 of them.
+        run: node scripts/verify-action-pins.mjs
+
+      - name: Gate — the Docker image context carries no credentials
+        # verify-image-hygiene ran only in release.yml, which fires on a tag push.
+        # So .dockerignore and the build context were never checked on the pull
+        # request that could have broken them, and the built image was not inspected
+        # at all until release. This runs the context half on every PR; the
+        # built-image half needs a docker build and stays in release.yml.
+        run: node scripts/verify-image-hygiene.mjs
+
+      - name: Gate — every `npm run` the documentation names exists
+        # A comment in secrets/azureKeyVault.ts told a reader to run
+        # `npm run db:reencrypt-oidc`. The real script is
+        # `db:reencrypt-oidc-secrets`, and a reader who follows the instruction
+        # gets "Missing script" — which reads as a broken script rather than a
+        # documentation error. The registry checker already does this for its fix
+        # and test fields; this is the same check for prose.
+        run: node scripts/verify-doc-scripts.mjs
+
+      - name: Gate — every documentation sample compiles, and its imports resolves
+        # A sample is documentation, and documentation is not executed. A renamed
+        # endpoint or a changed option leaves it looking exactly as authoritative
+        # as the day it was written, and the first person to find out is a user with
+        # a broken integration. This found the guide importing
+        # @hilbras/keystone/sdk, a subpath the published package did not serve.
+        run: node scripts/verify-doc-samples.mjs
+
+      - name: Gate — the five SDK packages share the server version and declare their range
+        # They were all at 1.0.0 against a 3.4.0 server, with nothing anywhere
+        # saying which server each supports. A user installing a package cannot tell
+        # whether it works with the server in front of them.
+        run: node scripts/verify-sdk-packages.mjs
+
+      - name: Gate — the Kubernetes manifests match the running software
+        # The readiness probe pointed at /health — liveness, which answers 200
+        # whenever the process is listening — because /ready did not exist. So a
+        # pod with no database was reported ready and every authenticated request
+        # it received failed. This renders the kustomizations and checks the probe
+        # routing, the image tag against package.json, resource limits, and that
+        # every variable config.ts insists on is reachable.
+        run: node scripts/verify-k8s-manifests.mjs
+
+      # `verify:release` is deliberately NOT here. It checks that `main`, `types`
+      # and `bin` point at files that exist in `dist/`, so it has to run after a
+      # build — and the `backend` job already builds and already runs it. Repeating
+      # it here without a build fails on the missing `dist/`, which is what
+      # happened the first time this job was pushed.
+      #
+      # That is a trap worth naming: the check is not wrong, the ordering is. A
+      # gate that fails for a reason unrelated to the change is a gate people learn
+      # to re-run.
+
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -93,7 +267,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build Docker image
         run: docker build -t hilbras-keystone:test .

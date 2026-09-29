@@ -213,45 +213,43 @@ catches the regressions worth catching exactly.
 ### The recorded baseline
 
 Statement counts, from `docs/performance/hot-paths.baseline.json`. These do not
-vary by machine, which is the point of recording them:
+vary by machine, which is the point of recording them. Recorded on v3.2.0:
 
-| Scenario | Statements | Note |
-|---|---|---|
-| `scim-group-list-50` | 5 | |
-| `scim-group-list-200` | 5 | **Same as 50.** Constant per page. |
-| `scim-group-list-1000` | 10 | Two pages, because the page cap is 500. |
-| `scim-group-reconcile-10` | 70 | 6 per member, plus a fixed 10 |
-| `scim-group-reconcile-100` | 610 | 6 per member, plus a fixed 10 |
-| `scim-group-reconcile-1000` | 6,010 | 6 per member, plus a fixed 10 |
-| `login` | 9 | Argon2id, and see below. |
-| `refresh` | 9 | |
-| `authz-check` | 7 | |
+| Scenario | Statements | | v3.1.0 | |
+| --- | --- | --- | --- | --- |
+| `scim-group-list-50` | 5 | | 5 | unchanged |
+| `scim-group-list-200` | 5 | | 5 | unchanged — **constant per page** |
+| `scim-group-list-1000` | 10 | | 10 | unchanged — two pages, the cap is 500 |
+| `scim-group-reconcile-10` | 15 | | 70 | |
+| `scim-group-reconcile-100` | 15 | | 610 | **now the same as 10 members** |
+| `scim-group-reconcile-1000` | 15 | | 6,010 | **now the same again** |
+| `login` | 9 | | 9 | argon2id |
+| `refresh` | 9 | | 9 | |
+| `authz-check` | 6 | | 7 | one statement saved by the permission cache |
 
-Three things fall out of that table, and each one corrects a claim that had been
-made by reading the code rather than by running it.
+**The reconcile no longer depends on group size.** 15 statements at 10 members, at
+100, and at 1,000. Wall-clock for the 1,000-member push went from **48,976ms to
+317ms** — 155×. It was not quadratic, as it had been described; it was linear with
+a 6× constant, because `addMember` opened a transaction and issued six statements
+per member. One set-difference, resolved in one transaction, replaced it.
 
-**The group list is already constant.** 5 statements at 50 groups, 5 at 200, 10
-for 1,000 across two pages. The plan had set a target of "2 queries"; that was a
-guess written before anything was measured, and the extra statements are SCIM
-credential resolution rather than the member fetch.
+The constant count is the property worth protecting, and
+`src/tests/performance/reconcileStatements.test.ts` asserts it: 10 members and 100
+members must produce the same number, and reverting to the per-member loop fails
+the test with the counts in the message.
 
-**The reconcile is not quadratic — it is linear with a 6× constant, which is
-worse than it sounds.** `addMember` opens a transaction per member: `BEGIN`, a
-group lookup, a membership lookup, an insert, `COMMIT`. Six statements and a
-commit, per member. A 1,000-member group push is 6,010 statements and takes about
-20–50 seconds. No individual query is slow; there are six thousand of them. The
-`keystone.scim.group.reconcile` span carries `members_submitted`, `members_added`
-and `members_removed` so a slow reconcile in production can be attributed to
-group size rather than guessed at.
+**The group list is constant, and was already fixed in 3.1.0.** 5 statements at 50
+groups, 5 at 200, 10 for 1,000 across two pages. The original plan set a target of
+"2 queries"; that was a guess written before anything was measured, and the extra
+statements are SCIM credential resolution rather than the member fetch.
 
-**Login is nine statements and roughly two seconds, and all of the time is
-argon2id.** The parameters are `memoryCost: 65536, timeCost: 3, parallelism: 4`
-— above the OWASP minimum, deliberately, and it costs about 2.2 seconds on the
-machine that recorded the baseline. Nothing about that is a query problem, and the
+**Login is nine statements and about 130ms, and all of the time is argon2id.** The
+parameters are `memoryCost: 65536, timeCost: 3, parallelism: 4` — above the OWASP
+minimum, deliberately. Nothing about that is a query problem, and the
 `keystone.token.issue` span separates the two: the span's duration is the whole
-issuance, and a `cpu` reading of 2.2s against 9 statements says the time is in
-the hash. Whether that trade is right is a security decision rather than a
-performance one, but it should be a decision made knowing the number.
+issuance, and 130ms over 9 statements says the time is in the hash. Whether that
+trade is right is a security decision rather than a performance one, but it should
+be a decision made knowing the number.
 
 ### Re-recording
 

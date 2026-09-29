@@ -15,8 +15,13 @@ resources:
   - pdb.yaml
 
 images:
+  # The authoritative image tag. A kustomization `images` entry *overrides*
+  # whatever tag the Deployment file carries, so this is the line that decides what a
+  # deployment actually runs — `newTag: latest` made the tag in deployment.yaml
+  # decorative. scripts/verify-k8s-manifests.mjs checks the rendered result against
+  # package.json, so this is bumped with each release.
   - name: ghcr.io/hilbras-dev/hilbras-keystone
-    newTag: latest
+    newTag: 3.5.3
 
 commonLabels:
   app.kubernetes.io/name: keystone

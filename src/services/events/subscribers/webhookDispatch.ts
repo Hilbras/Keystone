@@ -1,5 +1,8 @@
 import { dispatchEvent } from "../../webhooks.js";
 import type { KeystoneEvent } from "../types.js";
+import { serviceLogger } from "../../../lib/logger.js";
+
+const moduleLog = serviceLogger("events");
 
 /**
  * Fans every platform event out to registered webhook endpoints.
@@ -9,6 +12,6 @@ export async function webhookDispatchSubscriber(event: KeystoneEvent): Promise<v
   try {
     await dispatchEvent(event);
   } catch (err) {
-    console.error("[webhooks] dispatch failed:", err);
+    moduleLog.error({ err }, "events");
   }
 }

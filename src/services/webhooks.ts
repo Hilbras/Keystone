@@ -7,6 +7,9 @@ import { ATTR, SPAN, recordSpan } from "./spans.js";
 import { decryptSecret, encryptSecret } from "./totp.js";
 import { queue } from "./queue/index.js";
 import type { KeystoneEvent } from "./events/types.js";
+import { serviceLogger } from "../lib/logger.js";
+
+const moduleLog = serviceLogger("webhooks");
 
 const MAX_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 30_000;
@@ -230,7 +233,7 @@ export async function deliverNow(deliveryId: string): Promise<void> {
 async function retryLater(deliveryId: string): Promise<void> {
   setTimeout(() => {
     queue.enqueue({ type: "webhook-delivery", payload: { deliveryId } }).catch((err: unknown) => {
-      console.error("[webhooks] failed to re-enqueue delivery:", err);
+      moduleLog.error({ err }, "webhooks");
     });
   }, RETRY_DELAY_MS).unref();
 }

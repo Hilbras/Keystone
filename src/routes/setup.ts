@@ -1,12 +1,12 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { eq, count } from "drizzle-orm";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { db, initDb } from "../db/index.js";
-import { users } from "../db/schema.js";
+// Connection lifecycle, not the client. This route establishes the pool against a
+// configuration file the operator has just written, which is why it needs
+// `initDb` — and it is the only route that does. See src/db/lifecycle.ts.
+import { initDb, isDatabaseInitialized, runMigrations } from "../db/lifecycle.js";
 import { AuthenticationDomainService } from "../services/domain/authentication.js";
 import {
   DrizzleUserRepository,
@@ -77,18 +77,27 @@ function parseBody<T>(schema: z.ZodSchema<T>, body: unknown, reply: FastifyReply
   return result.data;
 }
 
+/**
+ * Whether the platform has an owner yet.
+ *
+ * Through the repository rather than a `count()` on the users table, so this route
+ * has no query of its own. The `catch` is unchanged and deliberate: this decides
+ * whether the setup wizard is allowed to run, and a database that cannot answer
+ * should not be read as "no owner, proceed" — except that it must, or an operator
+ * recovering from a bad configuration would be locked out. The wizard is
+ * protected by the setup token, so proceeding on an inconclusive read is the
+ * lesser risk, and that is the same trade the original made.
+ */
 async function hasNoOwners(): Promise<boolean> {
-  if (!db) return true;
   try {
-    const [result] = await db.select({ total: count() }).from(users).where(eq(users.role, "owner"));
-    return (result?.total ?? 0) === 0;
+    return (await new DrizzleUserRepository().countByRole("owner")) === 0;
   } catch {
     return true;
   }
 }
 
 async function ensureDbInitialized(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
-  if (db) return true;
+  if (isDatabaseInitialized()) return true;
   try {
     const writer = createConfigWriter();
     const values = await writer.read();
@@ -230,7 +239,7 @@ export default async function setupRoutes(app: FastifyInstance) {
     if (!assertSetupToken(request, reply)) return;
     if (!(await ensureDbInitialized(request, reply))) return;
     try {
-      await migrate(db, { migrationsFolder: path.resolve(__dirname, "../db/migrations") });
+      await runMigrations();
       return { ok: true };
     } catch (err) {
       request.log.error({ err }, "Migration failed");
@@ -262,14 +271,14 @@ export default async function setupRoutes(app: FastifyInstance) {
 
     // If a user with this email already exists (e.g. from an interrupted setup),
     // promote them to owner instead of failing with a duplicate-key error.
-    const [existing] = await db.select().from(users).where(eq(users.email, body.email)).limit(1);
+    const userRepository = new DrizzleUserRepository();
+    const existing = await userRepository.findByEmail(body.email);
 
     let ownerUser;
     let previousRole: string;
     if (existing) {
       previousRole = existing.role;
-      await db.update(users).set({ role: "owner" }).where(eq(users.id, existing.id));
-      ownerUser = existing;
+      ownerUser = (await userRepository.updateRole(existing.id, "owner")) ?? existing;
     } else {
       const authService = new AuthenticationDomainService(
         new DrizzleUserRepository(),
@@ -295,8 +304,7 @@ export default async function setupRoutes(app: FastifyInstance) {
       }
 
       previousRole = result.data.user.role;
-      await db.update(users).set({ role: "owner" }).where(eq(users.id, result.data.user.id));
-      ownerUser = result.data.user;
+      ownerUser = (await userRepository.updateRole(result.data.user.id, "owner")) ?? result.data.user;
     }
 
     await request.audit("platform_role_changed", {

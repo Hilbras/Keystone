@@ -223,56 +223,66 @@ change, not a behaviour change.
 reconcile is under 10 statements at **any** member count — not 3, which the
 measurement shows was never achievable with a per-member audit write.
 
-**Gate:** the §1.4 benchmark shows a **constant** query count for group list
-regardless of page size, asserted directly in a test (not inferred from timing).
-Plus the existing 55 SCIM isolation tests unchanged — this is a performance
-change, not a behaviour change.
+---
 
-## 2.2 Index the authorization path
+# v3.2.0 — status
 
-**Finding:** §2.3, carried from §1.2. Two tables, no indexes, on the hottest read
-in the system.
+All four items are done, and the release was supposed to be a schema migration.
+It did not contain one, because the migration was a pessimization (§2.2), and it
+produced two security findings that have nothing to do with databases (§2.3's
+cache work uncovered both).
 
-**Do:** the migration and composite indexes from §1.2. Permissions change rarely;
-this is the single highest-leverage index work in the codebase.
+**§2.1 — done, and the diagnosis improved.** `reconcileMembers` resolves the
+group, the current members and the organization memberships once, then applies the
+set-difference in two statements inside one transaction. **15 statements at 10
+members, at 100, and at 1,000** — the count no longer depends on group size, which
+is the property that matters. The 1,000-member push went from 48,976ms to 317ms.
 
-**Gate:** the sequential-scan assertion from §1.2, plus the authorization suite
-unchanged.
+The target above ("under 10 statements") was written before the work and is not
+met — 15, not 3 and not 10 — because the 5 statements are the route's own
+credential resolution, group load, update and audit, none of which is the
+reconcile. The gate is the constant, and the constant is what shipped. A rejected
+reconcile now applies nothing at all, which the per-member loop did not do.
 
-## 2.3 Cache role→permissions, invalidate on write
+**§2.2 — the migration was not written, deliberately.** Both tables already carry
+composite unique indexes on exactly the columns the query uses. At the catalogue's
+real size (150 and 302 rows) the planner picks a sequential scan at 0.291ms and 5
+buffers, and forcing the indexes costs 0.415ms — the index would have been 40%
+slower for the same answer, plus a write on every permission seed. The deliverable
+is a gate instead: it asserts the indexes exist, asserts the catalogue is under the
+size at which the scan was last measured, and names exactly what to re-measure when
+it is not. Verified by dropping the constraint and by inserting 5,200 probe rows.
 
-**Finding:** §2.7. `requirePermission` reads the database on every
-organization-scoped request. Permissions change on the order of once a deployment.
+**§2.3 — done, and it found two live security defects.** The cache is
+Redis-only with no in-process fallback, invalidated on every write, and never caches
+an empty set. Eight tests, each confirmed to fail against a version with the
+corresponding property removed.
 
-**Do:** cache the resolved permission set per role in Redis, with a key namespace
-under the existing `CACHE_KEY_PREFIX`, invalidated on any permission or
-role-permission write. Fail **open to the database** on a cache error — a cache
-outage must not become an authorization outage, and the reverse (serving a stale
-deny) is worse than a slow request.
+Adding it meant issuing a command on the shared Redis client — and that connected
+it, which switched the rate limiter from per-instance to shared and immediately
+exposed that **the distributed rate limiter had never been running** (SEC-047:
+`checkLimit` guarded on client readiness, and a `lazyConnect` client is not "ready"
+until something issues a command, so the guard returned the local budget without
+ever trying Redis). Three controls were inert, including a pre-authentication
+budget on `/scim/v2/*` that failed open on every request. Fixing that exposed
+**SEC-048**: `rateLimit()` appended the submitted address to every limiter's key,
+so `login-per-address` — the budget that exists to stop spraying — was keyed on
+address *and* account and bounded nothing. Both are fixed and both have regression
+tests, including one that sprays 31 accounts from one address rather than
+inspecting the key format.
 
-**Gate:**
-- a test that a permission change is visible on the next request (no TTL wait)
-- a test that a Redis failure still authorizes correctly, by falling through
-- a benchmark showing the read is served from cache
+The measured effect of §2.3 on its own: `/v1/authz/check` went from 7 statements
+to 6, since the two permission queries are now one cache read.
 
-**Done when:** the authorization benchmark improves measurably, and both
-correctness tests pass.
+**§2.4 — done.** `workflows.ts` no longer imports `db` or `drizzle-orm`, its five
+hand-written membership checks are one `preHandler`, and the data access is behind
+`src/repositories/workflow.ts`. Behaviour is unchanged: the same 403s, the same audit
+events, a missing `orgId` on the collection is still a 400, and a delete that
+matched nothing is still a 404.
 
-## 2.4 Fix the query-per-request in `workflows.ts`
-
-**Finding:** §2.2 of the API review. `GET /workflows` loads all workflows for an
-org and then filters; authorization is in the handler and re-reads membership.
-
-**Do:** scope the query by organization and role in the repository, and move the
-check behind a guard like every other module. This is the one place the codebase
-does authorization by hand, and it is the reason a sixth route would be
-dangerous.
-
-**Gate:** a cross-tenant test — user A in org 1 reading org 2's workflow — which
-already exists, plus the guard now visible in the route definition.
-
-**Done when:** `workflows.ts` has no direct `db` import and no handler-level
-authorization.
+Also removed: `src/services/permissions.ts`, which nothing imported. It was a
+second copy of the permission catalogue, able to drift from the copy that actually
+authorizes.
 
 ---
 
@@ -325,6 +335,40 @@ cannot be a `Result`.
 **Done when:** `rg -c 'throw new' src/services/domain/` is zero, and a denied
 operation can no longer surface as a 500.
 
+## 3.2 status — done
+
+**The lint rule was already satisfied.** `rg -c 'throw new' src/services/domain/`
+is **zero**, and has been. The rule is a tripwire rather than a fix, which is the
+right shape for a rule about a convention: it costs nothing now and fails the build
+the first time somebody reaches for `throw` here out of habit. Verified by
+planting a throw.
+
+**`console.*` in server code: 101 call sites → 12.** The remaining twelve are the
+code where stdout *is* the output rather than a diagnostic — the `console` email
+and SMS providers, the audit console export, and the setup token an operator has
+to read. They are listed by name in the rule's exclusion list rather than allowed
+by pattern, so a fifth such file has to be added on purpose.
+
+Route call sites now use the injected logger, and where a route helper has no
+request in scope — `detectImpossibleTravel` in `auth.ts` — the logger is **passed
+in** rather than reached for, so the line still carries the request id that
+identifies the login that triggered it. Services, queue workers and event
+subscribers get `serviceLogger("<component>")` from a new `src/lib/logger.ts`,
+which reads the same `KEYSTONE_LOG_LEVEL` as Fastify's. That last part is the
+point: `console` ignores the level, which is how the 3.1.0 benchmark ended up
+measuring its own logging.
+
+**The 10 raw `status(500)` sites were reviewed and none changed.** Each is a
+genuine server-side failure, and six of them additionally log their cause. Two of
+them — `config.ts:43` and `config.ts:48` — echo the underlying error message to
+the client, which is normally a leak and here is not: all three `/config` routes
+are `requirePlatformRole("owner")`, and the operator who is about to restart the
+server needs to know whether the write failed on permissions or on a syntax
+error. Removing it would take away a diagnostic from the one principal who can
+act on it, for no security gain. Recorded here because "reviewed and left alone"
+is a decision, and a decision nobody wrote down is indistinguishable from an
+oversight.
+
 ## 3.3 Move the two misplaced test suites
 
 **Finding:** §2.9. `audit-export.test.ts` and `registry.test.ts` sit at the root
@@ -356,6 +400,52 @@ recorded in `docs/API-REVIEW.md` so each one is a written decision.
 
 **Done when:** a route added without a guard fails the release.
 
+## 3.4 status — done, and narrower than planned
+
+`review:api --strict` is in the release gate. It fails on three things, and all
+three are mechanically decidable from the source:
+
+1. **A route with no authentication guard and no entry in `PUBLIC_BY_DESIGN`.**
+   The count is **zero** today, so this is a tripwire rather than a fix.
+2. **An entry in `PUBLIC_BY_DESIGN` with an empty reason.** An entry without a
+   reason is indistinguishable from a route nobody looked at.
+3. **A guard name that resolves to nothing.** This is the one that matters, and
+   the one nothing else could catch. A misspelled guard is not a load-time error:
+   Fastify evaluates `preHandler: [app.authentcate]` to `undefined` and skips it,
+   so the route ships unauthenticated and every test that does not happen to call
+   it still passes. Verified by misspelling `app.authenticate` on
+   `POST /auth/api-keys`, which produces both the lost-guard finding and the
+   unresolvable-name finding.
+
+**The other two reported categories are deliberately not gated.** "Authenticated,
+no authorization guard" is 27 routes and "state-changing, no rate limit" is 30,
+and neither is decidable by reading the source — whether a route should require an
+authorization guard, or what it is worth attacking, is a product judgement. The
+roadmap said the triaged exceptions belong in `docs/API-REVIEW.md` as written
+decisions. Writing 57 decisions nobody has made would have produced a document
+that reads as review and is not, and a gate encoding the same guesses would be
+worse than no gate. They stay in the report, which prints them every run, and this
+paragraph is the record of why they are not in the gate.
+
+Building the check took three attempts, and the two failures are the interesting
+part — both produced a *plausible* number rather than an obvious error:
+
+- Scanning the raw `preHandler` text found `api_keys` inside
+  `app.requireScopes("api_keys:read")` and reported **901** problems, none real.
+- Stripping string literals first, then splitting on commas, found
+  `config.LOGIN_MAX_ATTEMPTS` inside an options object and reported **40**.
+- Splitting at the top level only, but matching against the raw block, found the
+  word "so" — from a `//` comment inside a preHandler list, which also truncated
+  the match and swallowed the real guards after it — and reported **14**.
+
+The final version strips comments from the file, splits the array depth-aware, and
+accepts a guard that is declared in the same file. A gate that cries wolf gets
+switched off, and the cost of a wrong gate here is higher than the cost of no
+gate: it would have been red on day one, and the response to that is deletion.
+
+It also did not set an exit code. The finding was printed and the build went
+green, which is the exact failure §3.4 set out to end.
+
 ---
 
 # v3.4.0 — Behaviour, not just security
@@ -376,6 +466,41 @@ same atomic claim the magic link uses.
 
 **Gate:** the suite passes, and reverting the single-use claim fails it.
 
+## 4.1 status — done, and it found a live defect
+
+Twelve cases: the lifecycle, sequential replay, expiry, a deleted user, the
+uniform response shape across unknown / unverified / verified addresses, no
+re-mail to a verified account, the authenticated re-send, and that only a digest
+is stored.
+
+**SEC-049, medium. The email-verification token was not single-use under
+concurrency.** `consumeVerificationToken` read the row with `usedAt IS NULL` and
+then updated it — a read that hopes, not a claim. Two requests arriving together
+both pass the read before either writes, both update, and both are told the token
+was valid. `src/services/singleUse.ts` existed for exactly this and already served
+magic links, password resets and SMS OTP codes atomically; email verification was
+the fourth token type and the only one not routed through it.
+
+Measured against the old implementation: **2 of 8** simultaneous requests through
+`GET /auth/email-verification/verify` were each told the token was valid. Not 8 of
+8 — the connection pool serialises some of them, which is exactly what makes a
+race look intermittent and therefore unlikely.
+
+Two things are worth recording about how it survived:
+
+- The flow had no test at all. `emailVerification.ts` appeared once in the suite,
+  in a list of rate-limit prefixes.
+- **The obvious test would have passed anyway.** A sequential replay test — use
+  the token, assert the second use is refused — passes against the broken
+  implementation, because the second request arrives after the first has written.
+  Only the concurrent case catches it. That is why the concurrency test is in the
+  suite and not left to the reader's judgement.
+
+The severity is medium rather than high, and deliberately: verifying an address is
+idempotent, so a replay grants nothing new. It is a finding because the stated
+property of the flow was **false**, and because this shape is the one people copy.
+Full write-up in [`docs/security/tokens.md`](security/tokens.md).
+
 ## 4.2 WebAuthn, end to end
 
 **Finding:** §2.8. One test file references it. Passkey registration and
@@ -387,6 +512,102 @@ different credential.
 
 **Gate:** the suite passes, and each rejection case fails when the check is
 removed.
+
+## 4.2 status — done, and WebAuthn did not work at all
+
+Seventeen cases against a **software authenticator** written for the suite
+(`src/tests/helpers/softwareAuthenticator.ts`): real CBOR, a real COSE ES256 key,
+a real ECDSA signature over `authData + sha256(clientDataJSON)`, checked by
+`@simplewebauthn/server` against the real stored public key. Nothing mocks the
+verifier — "the route calls the service" is not the claim worth making about a
+second factor.
+
+**SEC-050, high. Every passkey registration and every passkey sign-in returned
+400 `Invalid challenge`. The second factor could not be used at all.**
+
+Keystone generated a challenge, stored it, and passed it to
+`generateRegistrationOptions`. `@simplewebauthn/server` re-encodes a *string*
+challenge — `isoBase64URL.fromBuffer(isoUint8Array.fromUTF8String(c))` — so what it
+returns is the base64url encoding of the **ASCII bytes** of the string that went
+in. A different string, not a different encoding of the same bytes. The cookie
+carried one value and the store was keyed by the other, so the lookup missed every
+time.
+
+```
+createChallenge() returns  ekxKcGV5ZG9Eabcdefghijklmnop
+options.challenge is       ZWt4S2NHVjVaRzlFYWJjZGVmZ2hpamtsbW5vcA
+equal?                     false
+```
+
+The fix is not "encode it back" — it is to stop keeping two values. SimpleWebAuthn
+generates the challenge; `storeChallenge` is keyed on `options.challenge` verbatim.
+There is no second copy left to drift.
+
+**It survived because the only WebAuthn test asserted a refusal.**
+`mfa.test.ts` has `POST /register/verify` on a TOTP account with no password, and
+that refusal happens in `requireStepUp` — before the challenge is read. A test that
+only checks the *rejection* of a feature never establishes that the feature works.
+Same shape as SEC-049's sequential-replay test passing against a racy
+implementation: the test looked reasonable and asserted the wrong thing.
+
+**SEC-051, high. The challenge store was per-process.** A module-level `Map`, while
+`docs/DEPLOYMENT.md` recommends "multiple Keystone containers behind a load
+balancer" and `docs/ARCHITECTURE.md` lists "support horizontal scaling through
+Redis-backed state" as a principle. A challenge minted on one container cannot be
+redeemed on another, so with two containers roughly half of all ceremonies fail —
+intermittently, and only in a multi-instance deployment. Development is a single
+process and always agrees with itself, so this cannot be reproduced locally by any
+amount of trying.
+
+Now Redis, five-minute TTL, and `GETDEL` for redemption: one command, so two
+simultaneous ceremonies cannot both win, and the answer is the same on every
+container. A failed write **propagates** — handing out a challenge that provably
+cannot be redeemed is worse than refusing to start the ceremony.
+
+**Verified separately, because otherwise they look like one finding:**
+
+| restored behaviour | result |
+|---|---|
+| challenge stored under the pre-transform value (SEC-050) | **12 of 17 fail**, every ceremony `Invalid challenge` |
+| store moved back to a `Map`, challenge still correct (SEC-051) | **2 of 17 fail** — cross-instance and TTL; the ceremony itself works |
+| as shipped | 17 pass |
+
+The second row is what shows SEC-051 is a separate defect and not the same
+symptom seen twice: a *correct* challenge store in the *wrong place* breaks only
+multi-instance deployments.
+
+### A regression I introduced in 3.3.0, and the gate that let it through
+
+Chasing the two unused variables this suite's setup created surfaced a
+**real regression already merged into `main`**. The §3.2 `console.*` migration
+replaced a multi-line call in `src/services/secrets/environment.ts` line by line,
+and produced three bare `moduleLog.warn("secrets");` statements that discarded
+their messages — including the two that printed the generated JWT private and
+public PEMs. A developer running locally with no keys configured could no longer
+obtain them. `privatePem` and `publicPem` became unused; `npm run lint` reported
+6 warnings; and I read `tail -1` of the lint output, which is the *timing* line,
+not the verdict.
+
+`npm run lint` runs in **`.github/workflows/release.yml` only, which is triggered
+only on a `v*` tag push.** So it could not have stopped the merge, and would first
+have run after the tag existed. Five gates were in that position:
+
+```
+npm run lint            release.yml=1  ci.yml=0
+registry:check          release.yml=1  ci.yml=0
+check:docs              release.yml=1  ci.yml=0
+reaudit:check           release.yml=1  ci.yml=0
+review-api-surface      release.yml=2  ci.yml=0
+```
+
+They now run in a new `gates` job in `ci.yml`, and `gates` is a **required status
+check on `main`**. None of them need PostgreSQL or Redis, so the job has no
+services. A gate's value is in what it stops; a gate that runs after the merge
+annotates.
+
+This also qualifies §3.4. `review:api --strict` was described there as "a release
+gate", which is true and was misleading: in `release.yml` alone it could not
+prevent a merge.
 
 ## 4.3 Federation
 
@@ -400,6 +621,63 @@ identity to an existing local account without proof.
 **Gate:** the suite passes. The Google nonce regression (SEC-020) is one of these
 and must stay.
 
+## 4.3 status — done, and one provider had never been fixed
+
+Seventy cases: **all six providers**, against a real OIDC provider
+(`tests/helpers/fakeOidcProvider.ts`) serving a real discovery document, a real
+JWKS, and ID tokens signed with a real RSA key. `ALLOW_PRIVATE_SSO_ENDPOINTS` is
+what makes it reachable — the SSO endpoint policy refuses loopback as an SSRF
+control, which is the correct default and the reason the switch exists.
+
+The provider list is itself asserted, because a per-connector suite that silently
+stops covering a newly added provider is worse than none: it still reports green.
+
+**SEC-052, high. The Zitadel connector never bound the ID token to the request,
+and pinned no algorithm.** `getAuthorizeUrl` set no `nonce`, `exchangeCode`
+accepted no options, `verifyToken` took one argument. An ID token minted for a
+*different* Zitadel login verified correctly — issuer, audience and signature are
+all still valid, and only the nonce proves the token belongs to the request that
+started. `jwtVerify` was also called with no `algorithms` pin (so `alg` was
+whatever the published JWKS allowed, `none` included) and no `requiredClaims` (so
+a token with no `exp` was accepted forever — not hypothetical for an enterprise
+IdP whose tokens are long-lived by design).
+
+**The Google fix did not propagate to the connector next to it.** SEC-020 was the
+Google connector discarding the nonce; 2.4.0 fixed `OidcConnector` and
+`GoogleConnector`. Zitadel never had it, and because no test drove a Zitadel
+exchange, nothing said so. That is the failure mode of fixing an *instance*
+rather than a *rule*.
+
+The rule is now in the interface, which is the part that stops it recurring:
+
+```ts
+verifyToken?(token: string, expectedNonce?: string): Promise<ExternalIdentity>;
+```
+
+It declared one argument, so a connector written from it had **no way** to accept
+a nonce. The parameter's absence from the type is why this one shipped without it.
+
+Verified by breaking it:
+
+| | result |
+|---|---|
+| as shipped | 70 pass |
+| Zitadel restored to its original behaviour | **59 pass, 11 fail** — all 11 Zitadel |
+
+The other five are untouched by the break, which is what shows the eleven are
+Zitadel's and not the suite's.
+
+Also fixed while here: `attributeMapping` is keyed by internal claim names, so a
+mapping of `{ username: "login" }` — the field name in `ExternalIdentity`, in every
+provider's config screen, in the type itself — was **silently ignored** and the
+default returned. No security impact, so it is not in the registry; it is in
+[`docs/security/federation.md`](security/federation.md) because the failure mode
+is a configuration that looks applied and is not.
+
+Each rejection is matched against the claim `jose` actually names (`"aud"`,
+`"iss"`, `"exp"`), not a concept word — `/audience/i` would have passed on an
+unrelated failure and proved nothing.
+
 ## 4.4 The queue and metrics
 
 **Finding:** §2.8. One test file references the queue; none references metrics.
@@ -410,6 +688,102 @@ rather than silently changing a dashboard.
 
 **Gate:** both pass; the metrics test asserts the series *exist*, which is the
 part that rots.
+
+## 4.4 status — done, and two things that counted wrong
+
+**A counter that never moved.** `keystone_failed_logins_total` was registered in
+`plugins/metrics.ts` and incremented from nowhere. It exported as a series with
+value 0, forever — which on a dashboard is indistinguishable from "nobody has
+failed to log in", the one reading a failed-login alert must never be able to take.
+
+It is fed by a new `events/subscribers/metrics.ts` rather than by a call in the
+route, because the event is emitted from six places and the route is one of them.
+`reason` is the label rather than a constant, so a new failure mode shows up as a
+new series value instead of being folded into "failed".
+
+**The gate for the next one is static, and deliberately so.** A behavioural check
+("every series moved after this traffic") is the wrong shape:
+`keystone_cache_hits_total` is perfectly alive and no amount of logging in and out
+of the server touches it, so the assertion would be about which subsystems a test
+happens to exercise. What rots is the *pairing* between a registered name and the
+code that writes to it, and that is a property of the source. So every registered
+series must appear as an increment target somewhere in `src/` — rename the series
+and it stops matching, delete the call site and it stops matching, and both fail.
+
+**SEC-054, medium. Every unmatched URL was its own time series.** The `onResponse`
+hook labelled requests with `request.routeOptions?.url || request.url`. For a
+request that matched no route there is no template, so the fallback was the
+concrete URL:
+
+```
+keystone_http_requests_total{...,route="/nope/aaaaaaaa-1111",status_code="404"} 1
+keystone_http_requests_total{...,route="/nope/bbbbbbbb-2222",status_code="404"} 1
+```
+
+Two requests, two series, no upper bound on how many follow. A scanner, a crawler
+or a client with a URL bug grows the count without limit, and unbounded label
+cardinality is the standard way a metrics endpoint takes Prometheus down. The
+failure is silent: the endpoint keeps answering and the only symptom is a
+Prometheus out of memory hours later. Unmatched requests are labelled `unmatched`
+now, so the series count is bounded by the number of routes.
+
+**SEC-053, high. Three counts, all wrong.**
+
+1. **`isFailedLoginAnomaly` was a predicate that mutated what it measured** — it
+   called `recordFailedLogin` to get its answer, so asking the question was itself
+   evidence. Every call site therefore recorded twice, and the threshold of 10
+   fired after **5** real failed logins. Measured before: `2, 4, 6, 8, 9, 10`
+   across six real attempts. After: `1, 2, 3, 4, 5, 6`.
+2. **The route published an event the domain service had already published.**
+   `audit()` *is* `emit()` — there is no separate audit log, the table is written
+   by a subscriber — so `request.audit("user_login_failed")` in both login paths
+   published the same failure a second time. It was written when "a wrong password
+   produced a 401 and nothing else"; by then the domain service was already
+   emitting with the reason and covering all five refusal paths.
+3. **A poison job crashed the process.** `setTimeout(() => this.run(...), delay)`
+   discarded the promise, so the attempt that exhausted the budget threw into an
+   unhandled rejection, and Node terminates a process on one. One poison job took
+   the server down — on the in-process driver, which is what a deployment without
+   `REDIS_URL` gets.
+
+Removing the duplicate emit exposed a fourth thing, which is the more interesting
+one: **the audit subscriber discarded every payload field that was not a column.**
+So the domain service's `reason` and the submitted address were being thrown away
+on the way to the table, and the route's duplicate event was the only reason they
+were ever recorded. Non-column payload keys are now nested under `metadata.event`.
+
+That required restating one SEC-037 assertion honestly. It asserted
+`row.userId === null` for a wrong password, which was true only because the *route's*
+row was the one the test found — the route deliberately recorded no user id
+because "at that point no credential has been proven". The single remaining event
+names the targeted account, which is a *better* audit record and is what makes the
+per-account anomaly keying work. The test now asserts what SEC-037 actually
+claimed — that the attempt is identifiable by the submitted address, that an
+unknown address is still recorded, and that `reason` distinguishes
+`unknown_user` from `invalid_password`.
+
+### The queue, which is the other half of §4.4
+
+| | in-process | BullMQ |
+|---|---|---|
+| enqueue → execute | ✔ | ✔ |
+| retry up to the attempt budget | ✔ | ✔ |
+| stops at the budget | ✔ | ✔ |
+| counted failed **once**, not per attempt | ✔ | — |
+| dead-letter retrievable afterwards | **no** | ✔ |
+| an unroutable job is not counted as work | ✔ | — |
+
+The "no dead-letter" row is asserted rather than skipped, so it cannot be mistaken
+for tested behaviour: `getFailed` returns `[]` and `retryAll` is a no-op, so on
+that driver a permanently failing job is lost — a log line and a counter, and
+nothing an operator can re-run. The BullMQ driver keeps them, which is one more
+reason it is the default.
+
+The SEC-053 regression sits in the same file, including the structural case:
+**counting does not itself count** — record once, read five times, assert the count
+did not move. A suite that only checked the end-to-end total would still pass if
+someone merged the predicate and the recorder back together and moved the double
+count somewhere else.
 
 ## 4.5 The CLI
 
@@ -424,6 +798,57 @@ attention, since both are destructive and both handle secrets.
 to be idempotent or to fail loudly, whichever is intended — decided explicitly
 rather than left unspecified.
 
+## 4.5 status — done, and the CLI could not create a user
+
+Nineteen cases, one per command, each run as a **real subprocess against the real
+database**. The exit code is the whole of what a CLI's caller observes, and the
+defects below are exactly the ones an in-process test cannot see.
+
+**SEC-055, high. Four defects in a 177-line CLI with eight commands and no tests.**
+
+1. **`user:create` never worked.** It called `register`, which mints a token, but
+   never called `loadSigningKeys()` — the server does that during bootstrap. Every
+   invocation failed with `JWT signing keys not loaded`. This is the command that
+   creates the **platform owner**, so it is the first thing anyone runs on a new
+   deployment.
+2. **Every command that opened a connection hung.** `org:create` printed
+   `Created organization <id>` and then sat there forever. The operator's response
+   to a hung command is Ctrl-C, which destroys the exit code that would have said
+   the work was done.
+3. **`secrets:rotate` reported success while rotating nothing.** The environment
+   provider nulled its cache and re-imported the same `JWT_PRIVATE_KEY` and the
+   command printed `Rotated signing key. New key id: env`. An operator rotating
+   keys after a suspected compromise was told it had worked. The failure was also
+   invisible to anything wrapping the command, because an exception out of an async
+   commander action is an unhandled rejection and the process still exits 0.
+4. **`--version` was hardcoded to `1.9.0`** against a package at 3.3.0.
+
+The connection fix took two attempts and the first looked complete:
+
+```
+closing only the pool:   migrate ok   keys:list ok   user:create HUNG   org:create HUNG
+closing all three:       all exit 0
+```
+
+`initializeContainer()` leaves three Redis sockets open — the shared client and a
+second created inside the `cache` constructor. A partial fix is worse than none
+here, because the commands that *do* work make the ones that do not look like a
+different bug.
+
+**The roadmap's explicit decision: `secrets:rotate` must fail loudly.** It cannot
+be idempotent, because there is nothing to be idempotent about — the key comes
+from `JWT_PRIVATE_KEY`. Generating a fresh pair in-process would be worse: every
+instance reads the same environment variable, so each would mint a *different* key
+and the cluster would stop agreeing on who signed what. With the database provider,
+which stores keys and can genuinely rotate, each call is a real rotation and the
+test asserts the key *changes* — so a change that starts reporting success without
+rotating anything still fails.
+
+Verified by breaking all four at once: **8 pass, 11 fail**, including the hang
+cases, which fail by timing out. That is the correct shape for this defect — the
+assertion is "did it return on its own", and a command that never returns cannot
+be tested any other way.
+
 ## 4.6 Resolve the empty directories
 
 **Finding:** §2.8. `src/tests/fixtures/` is empty; `src/tests/integration/` has
@@ -433,6 +858,97 @@ one file.
 or `integration` reads as coverage that does not exist.
 
 **Gate:** no empty test directories remain.
+
+### 4.6 status — already resolved, and the finding was stale
+
+Both directories have real content and the roadmap's claim is out of date:
+
+```
+src/tests/fixtures/     saml-idp-test-cert.pem
+src/tests/integration/  queue.test.ts   (now 3 files, after §4.4)
+```
+
+`fixtures/` holds the self-signed IdP certificate the SAML suites use, so it was
+populated after the analysis was taken. Recorded rather than left to be
+rediscovered, because "resolve the empty directories" reading as outstanding work
+is what would prompt somebody to delete a certificate the SAML tests need.
+
+---
+
+# v3.5.0 — Operability and the SDK
+
+## 5.0 status (first pass) — the audit's own scope, measured
+
+> **Superseded.** This section measured the gap. The decision, the
+> CodeQL triage and the fixes are in
+> [5.0 status — the audit's own scope, decided rather than assumed](#50-status--the-audits-own-scope-decided-rather-than-assumed).
+
+Found while reconciling CodeQL after §4.3–§4.5, and recorded before the rest of
+this phase because it changes what the other items are worth.
+
+**There are five published npm packages that no test, no Semgrep rule and no
+registry entry covers.**
+
+```
+packages/keystone-cli     342 lines   1 file   handles credentials
+packages/keystone-sdk     462 lines   1 file   handles credentials
+packages/keystone-vue     144 lines   1 file   handles credentials
+packages/keystone-node    102 lines   1 file   handles credentials
+packages/keystone-react   (no src/)   —        built artefact only
+```
+
+All five are named `@hilbras/keystone-*` and documented as part of the product in
+`docs/HOW-KEYSTONE-WORKS.md`. `release.yml` builds and packages
+`packages/keystone-sdk`. **Zero of the 634 tests reference `packages/`.** The
+Semgrep ruleset's `paths` cover `/src/routes/**` and `/src/services/**` and
+nothing else. The registry has 53 findings and does not mention CodeQL, or these
+packages, or `examples/`.
+
+So the registry is a complete record of what was audited, and what was audited was
+`src/`. Anything published under the same name that lives outside `src/` has never
+been looked at. That is a defensible scope decision — but it was never *made*, and
+the registry reads as the source of truth for all security claims, which is the
+part that is wrong.
+
+**CodeQL carries 25 open alerts across 10 rules, none of them in the registry:**
+
+```
+9  js/insufficient-password-hash         2  js/file-system-race
+7  js/unused-local-variable              1  js/incomplete-sanitization
+1  js/log-injection                      1  js/http-to-file-access
+1  js/file-access-to-http                1  js/remote-property-injection
+1  js/trivial-conditional
+1  javascript.express.security.injection.raw-html-format...
+```
+
+Spread over `scripts/`, `packages/`, `src/plugins/rateLimit.ts`,
+`src/services/workflows/engine.ts`, `src/services/email.ts`,
+`src/services/setup/configWriter.ts` and two test files. Most are likely
+false positives — `js/insufficient-password-hash` will fire on any call that
+passes a hash to a comparison — but "likely" is not a decision, and nobody has
+made one. A SAST surface that produces 25 unexamined alerts is a surface nobody
+reads, and a scanner whose output is never trialled is worse than no scanner
+because it looks like coverage.
+
+The one alert this phase's own work created was a false positive:
+`js/incomplete-sanitization` on `email.replace(/\./g, "\\.")` in
+`src/tests/integration/cli.test.ts`, because the value was being escaped for a
+regex. Replaced with `includes`, which the assertion wanted anyway — the address
+is test data and needed no pattern matching.
+
+**What 5.1–5.4 should therefore start with**, before the alerting metrics:
+
+1. Decide the scope of the registry explicitly — `src/` only, or everything
+   published — and say so in `docs/security/registry.md`. Whichever it is, the
+   other is a named exclusion with a reason.
+2. Triage the 25 CodeQL alerts into the registry, or dismiss them with a reason.
+   Either is a decision; leaving them open is not.
+3. Extend the Semgrep `paths` to cover `packages/` and `scripts/`, or record why
+   not.
+
+None of the three is urgent in the way a live defect is. All three are the
+difference between a security registry that means something and one that means
+"we looked here".
 
 ---
 
@@ -472,6 +988,391 @@ not trigger a restart loop.
 **Gate:** a test that `/ready` fails with the database unreachable, and a test
 that `/health` still succeeds.
 
+## 5.0 status — the audit's own scope, decided rather than assumed
+
+### The scope was an assumption, and it was the same shape as everything else
+
+`src/`. That was the scope, stated by omission: nothing had ever said it, and
+`packages/` and `scripts/` fell outside it because nobody decided they should be
+inside, not because anyone decided they should be outside.
+
+What was in the gap:
+
+```
+packages/   1,107 lines   five packages published to npm, handling tokens,
+                          cookies, PKCE verifiers and nonces
+scripts/    2,924 lines   the security control suite — every gate in this
+                          repository is a file here
+```
+
+**The decision: the registry covers everything the repository publishes or runs.**
+`src/`, `packages/`, `scripts/`, `k8s/`, `.github/workflows/`. Three exclusions,
+each with a reason *and* its cost stated, because an exclusion whose cost is not
+written down is a claim the tree is clean:
+
+| excluded | why | cost |
+|---|---|---|
+| `frontend/` | 69 `.tsx` files, and Semgrep's TS support trips over TSX generics versus JSX ambiguity in a way that aborts a whole scan. The exclusion is `frontend/`, **not** TSX — `packages/keystone-react/src/index.tsx` parses at 100% and is scanned. | No lint, no semgrep, no registry coverage. This is the honest gap in the decision. |
+| `node_modules/` | Third-party, owned upstream. `npm audit` and `dependency-review-action` cover it. | — |
+| `examples/` | Not shipped, not reachable in a deployment. | Holds one live CodeQL finding, left in place on purpose. |
+
+The scope is a field in `registry.json`, the renderer emits it into
+`registry.md`, and the checker fails if it names a tree that does not exist or an
+exclusion without a reason. Verified by adding `a-tree-that-does-not-exist/`.
+
+### 63 CodeQL alerts, not 25
+
+The roadmap's count had drifted, which is itself the argument for recording the
+*grouping* rather than the count: 10 of the 14 rules are the same false positive
+repeated, and 21 alerts are one already-enumerated decision. A list of 63
+individually-dismissed alerts teaches nothing.
+
+Full triage in [`docs/security/codeql-triage.md`](security/codeql-triage.md).
+**Afterwards: 24 dismissed with a reason, 39 open, and every one of the 39 is
+real** — 16 of them fixed here and clearing on push, leaving the 21 unrated routes
+and 2 filesystem races as open decisions rather than defects.
+
+The real ones:
+
+- **SEC-058, low** — the console email provider interpolated subject and body into
+  log lines raw, so a newline in either forged a log entry. Now one
+  JSON-encoded line.
+- **SEC-059, medium** — `secrets/azureKeyVault.ts` encrypts with **AES-256-CBC**
+  while all four of its siblings use GCM. Unauthenticated and malleable, so
+  someone with write access to the stored ciphertext can flip plaintext bits
+  without the key — which is the position encrypting secrets at rest exists to
+  defend against. **Not fixed here, deliberately:** changing the cipher
+  invalidates every already-encrypted value, and a secrets provider has no safe
+  default for a value it cannot decrypt. `db/reencryptOidcSecrets.ts` has the
+  shape of the migration. Recorded so it is not lost.
+- **SEC-060, low** — `js/trivial-conditional` was dismissed in the first pass as
+  "CodeQL wants a switch", which is true and would have closed a real finding. The
+  alert's message is more specific: *"This use of variable `isOutOfScope` always
+  evaluates to false."* It is — and so does `triggerMismatch`, because line 145
+  returns early when either is set. Two provably dead branches in the workflow
+  `blockedReason` chain. The security behaviour was never affected; the
+  *explanation* was, so an out-of-scope event left no run record and no reason.
+  Removed. Reading the rule's name and stopping there is how a correct detector
+  gets dismissed.
+- **`actions/unpinned-tag`, 8** — every `uses:` was pinned to a *major version*.
+  `actions/checkout@v4` looks pinned and is not: `@v4` is a mutable tag, so
+  whoever owns the action chooses the code that ships in a release, after the
+  review that approved it. All 46 are now SHA-pinned with the version in a
+  comment, so the pin is reviewable rather than opaque, and
+  `scripts/verify-action-pins.mjs` fails a PR that adds an unpinned one — the
+  gate also fails a SHA pin with *no* version comment, because a correct pin
+  nobody can update on purpose is barely better than a tag.
+- **`js/missing-rate-limiting`, 21** — the §3.3 set, arriving again
+  independently. Still open, and uncomfortable: 21 unrated routes on an
+  authentication server. Closing it is a product judgement about which are
+  actually abusable, and that judgement has not been made.
+
+The most instructive dismissal is `gcm-no-tag-length`: 4 **errors** claiming the
+auth tag is 12 bytes. 12 bytes is the **IV** length. NIST SP 800-38D's strongest
+GCM tag is 128 bits, which is what Node defaults to and what WebCrypto mandates —
+following the rule would have weakened all four. And while checking the question
+the rule was actually asking (is the tag *verified on decrypt*?) the answer turned
+up SEC-059 instead.
+
+### Two dead declarations, one of them a gate
+
+Extending the linter to `packages/` and `scripts/` surfaced 16 warnings. Two were
+not tidiness:
+
+- `scripts/verify-image-hygiene.mjs` declared `CREDENTIAL_FILES` — "credential
+  files that must not be in the image" — and **never used it**, while the
+  built-image check hardcoded a *smaller* set in a shell `find`, with no
+  `.keystore` and no `.git/`. The declaration and the behaviour disagreed, and a
+  reader comparing them would reasonably conclude `.keystore` files were being
+  looked for. The `find` expression is now derived from the list.
+- `packages/keystone-sdk/src/index.ts` built a `fields` array and never used it;
+  the real work was three hardcoded `querySelectorAll` calls. Dead code in a
+  published package.
+
+### The image hygiene gate ran only on a tag push
+
+`verify-image-hygiene` existed in `release.yml` and nowhere else. So
+`.dockerignore` and the build context were never checked on the pull request that
+could have broken them, and the built image was not inspected at all until release.
+This is the same systemic gap §3.3 fixed for five gates, still open for this one.
+The context half now runs in `gates`; the built-image half needs a docker build and
+stays in `release.yml`.
+
+### semgrep: eight rules, 4,000 lines, never pointed at any of it
+
+Eight of the twelve `.semgrep.yml` rules had **no `paths` restriction** — but
+semgrep was only ever invoked against `src/`. Every rule now carries a `paths`
+block stating where its construct can exist, and the scan covers
+`src packages scripts`.
+
+Widening was not free, and the two failures are the point:
+
+| attempt | result | what it taught |
+|---|---|---|
+| extend `keystone-no-console-in-server` to `packages/**` | 5 findings, all a **browser** library correctly reporting a failed background connect with `console.error` | In a browser SDK the console is the only channel there is. The rule does not extend; the reason is recorded. |
+| widen the same rule to `src/**` | **151** findings, 60-odd in `src/cli.ts`, `src/bench/`, `src/db/seed.ts` | Widening coverage only helps if the rule's scope widens with it. |
+| unscoped run | `keystone-rate-limit-fails-open` matched `if (!file) { … return true; }` in a build script | A file-existence check has the *shape* of a limiter's failure path. Scoped to `src/**`, where a rate limiter can exist. |
+
+The scan is clean at 0 findings, and the console rule was verified to still fire
+on a planted `console.log` in a service.
+
+### A near-miss worth recording
+
+Checking "does every GCM site call `setAuthTag` before `final()`?" reported
+`azureKeyVault.ts` as **missing** `setAuthTag`. It is not missing: that provider
+uses CBC, so there is no auth tag to set. The check asked a GCM question of a
+non-GCM site and produced a confident, wrong, alarming answer.
+
+A check that turns up a serious-looking result in code nobody has read is exactly
+when to read the surrounding function rather than open a finding.
+
+### The Node version was written out in ten places, and one of them did not exist
+
+Deciding on Dependabot #34 (Docker `node:22-slim` → `26-slim`) turned up a
+dependency the decision could not be made without.
+
+```
+Dockerfile            2 places    FROM node:22-slim
+ci.yml                3 places    node-version: 22
+release.yml           2 places    node-version: 22
+supply-chain.yml      3 places    node-version: 22
+benchmark.yml         1 place     node-version-file: .nvmrc
+package.json          0 places    no engines field at all
+.nvmrc                            DOES NOT EXIST
+```
+
+**`benchmark.yml` already pointed `setup-node` at a `.nvmrc` that was never
+created.** So the runtime version had no authoritative home, ten copies, and one
+consumer reading a file that was not there. Dependabot's PR changes the Dockerfile
+— one of the ten — and merging it would have produced a container on Node 26 while
+CI tested 22. That is the mismatch that turns "the tests passed" into "the release
+does not work", and nothing in the build could see it.
+
+Now: `.nvmrc` holds the version, all nine `setup-node` steps read it,
+`package.json` declares `engines.node: ">=22"`, and
+`scripts/verify-node-version.mjs` fails if any of the four disagree — including
+the Dockerfile, which is the one that matters. Verified by moving the Dockerfile
+to 26, hardcoding a version back into `ci.yml`, and setting `engines.node` to
+`">=23"`.
+
+**PR #34 is closed, not merged.** Bumping the runtime is a decision with a test
+run behind it, and it is now a one-file change: `.nvmrc` plus the Dockerfile,
+which the gate then holds together.
+
+### A gate with a permissive fallback is worse than no gate
+
+The first version of the range check was a regex plus a fallback that **accepted
+every range it did not recognise** — so `engines.node: ">=23"` was admitted for a
+project running 22, and the check passed. The planted `>=23` did not fire it.
+
+That is the same shape as `return reply;` deadlocking a request and
+`containersOf` returning nothing: a control that reports success for the thing it
+exists to catch. The fallback now returns `false` and says so, and
+`rangeAdmits` is unit-checked against eighteen cases including the empty string,
+`">="` and `"nonsense"` — all of which must be rejected.
+
+## 5.1 status — done, and the most important signal was silent
+
+`src/plugins/operationalMetrics.ts` holds the series, incremented at the
+chokepoints that already existed. The headline:
+
+**The emergency local limiter engaged with no signal at all.** Both limiters run on
+Redis so the budget is shared across the fleet. When Redis is unavailable the
+per-endpoint ones fall back to a per-process budget and **the global one fails
+open** — every request allowed. Before this, the `catch` in `checkLimit` returned a
+decision with no counter, no log line and no event.
+
+A counter of *refusals* would not have caught it. Under per-process limits the
+refusal rate looks normal, because each instance is still enforcing a budget. What
+is anomalous is the **fallback engaging**, and that was the thing with no counter.
+
+Measured against a server whose Redis is unreachable, one request:
+
+```
+keystone_rate_limit_redis_errors_total{key_prefix="global"}            1
+keystone_rate_limit_redis_errors_total{key_prefix="login"}             1
+keystone_rate_limit_redis_errors_total{key_prefix="login-per-address"}  1
+keystone_emergency_local_limiter_total{key_prefix="login",outcome="allowed"}            1
+keystone_emergency_local_limiter_total{key_prefix="login-per-address",outcome="allowed"} 1
+keystone_authentication_attempts_total{outcome="failure",reason="invalid_credentials"}   1
+```
+
+Two series rather than one, because they answer different questions: "Redis was
+unreachable" says something is broken, and "the fallback engaged" says protection
+is degraded. A counter that only moved when a fallback happened to be enabled
+would not move at all for the global limiter — the more serious of the two.
+
+`outcome="allowed"` is the label to watch. Denials are visible to users; allowances
+are invisible and are what hide the degradation.
+
+### The rest
+
+| series | what an operator asks it |
+|---|---|
+| `keystone_authentication_attempts_total{outcome,reason}` | is authentication healthy, and if not, *why* |
+| `keystone_token_operations_total{operation,outcome}` | issuance, rotation, and replays |
+| `keystone_deliveries_total{kind,outcome}` | SCIM and webhook delivery |
+| `keystone_delivery_duration_seconds{kind}` | which consumer is slow, not that something is |
+| `keystone_dependency_up{dependency}` | is PostgreSQL or Redis answering |
+
+`outcome` and `reason` are separate labels on the authentication counter. Folded
+into one, a spray, a broken second factor and a buggy client all read as "logins are
+failing", and none of them is actionable.
+
+Counting is placed where the work already happens: issuance at the same door as its
+§1.3 span, so a metric and a trace of "a token was issued" cannot disagree. The
+rotation counter is incremented in a wrapper rather than at each `return`, because
+`rotateRefreshToken` returns `null` for three different situations — unknown,
+expired, replayed — and a counter that cannot tell them apart is the same problem
+as an authentication counter with one label.
+
+### The dashboard, and the gate on it
+
+`docs/dashboards/authentication.json` is **generated** by
+`scripts/generate-auth-dashboard.mjs`, and the generator fails if a panel names a
+series that is not registered. A dashboard is the one artefact in this repository
+that nobody runs, so a renamed series leaves its panels pointing at nothing and it
+fails silently — a panel with no data looks exactly like a panel with no incidents.
+Verified by misspelling `keystone_token_operations_total`.
+
+The gate produced two false reports on its first run, both worth naming:
+
+- `keystone_delivery_duration_seconds_bucket` is a histogram's *scrape* name, not a
+  registered metric. Checking the suffixed name against the registry reports a
+  metric that does exist.
+- `keystone_dependency_up` was a series the dashboard referenced and nothing had
+  built. Rather than delete the panel, the gauge was added and fed from the
+  readiness report — so §5.2's probe became alertable, and the metric and the
+  endpoint cannot disagree because they are the same call.
+
+The general liveness gate carries over from §4.4: **every registered Keystone series
+must have a call site in `src/`**, so a rename or a deletion fails the build.
+
+### `/metrics` was rate limited
+
+The dead-Redis probe produced `key_prefix="global"` **three** times for one request:
+the login, plus the two `/metrics` fetches around it. A scrape endpoint behind a
+rate limiter fails the way a dashboard failing at 3am fails — the scraper gets 429s
+and stops, and the metrics are gone exactly when something is wrong. Exempted with
+the probes, and the count dropped to one per limiter per request.
+
+### Two mistakes in the test, both of which looked like missing metrics
+
+- The scrape helper appended `_count` to **every** series, so counters landed under
+  a key nobody looked up and three tests failed against counters that were moving
+  correctly. The §4.4 suite has the right form and this one was mis-transcribed
+  from it.
+- `samplesFor` was synchronous and called `.split` on the promise from
+  `register.metrics()`. The failure was
+  `register.metrics.split is not a function`, which reads like the metric was
+  missing rather than like the test forgot an `await`, and cost three test runs.
+
+## 5.2 status — done, and the deployment had no readiness probe at all
+
+**`/ready` did not exist.** The roadmap's claim that "`/health` and `/ready`
+exist" was itself stale, and what the manifests did about it was the finding.
+
+**SEC-056, high. `k8s/base/deployment.yaml` pointed its `readinessProbe` at
+`/health`** — the only one of the two endpoints that was real. `/health` returns
+`{status: "ok"}` unconditionally and touches nothing external, so a pod with no
+database was reported **ready**, kept in the load balancer's rotation, and every
+authenticated request it received failed. It pointed there because `/ready` had
+never been written, while `README.md` documented it.
+
+| | question | PostgreSQL down | Redis down |
+|---|---|---|---|
+| `/health` | is this process alive? | **200** | **200** |
+| `/ready` | can it serve a request now? | **503** | **200** `degraded` |
+
+`/health` must not depend on PostgreSQL either: a liveness probe that does turns a
+transient blip into a restart loop, which is a worse outage than the one it was
+reacting to. Redis alone is `degraded` and answers 200 — a pod with no Redis falls
+back to the in-process queue and can still authenticate, so removing it from the
+rotation would take authentication offline for a recoverable degradation.
+
+Both checks are real commands — `select 1` and `ping` — each bounded at 2s, run in
+parallel. A status read is not enough: a pool that exists is not a database that
+answers, and the shared Redis client is `lazyConnect`, so its status is `"wait"`
+until some *other* code path issues a command.
+
+The §3.1 layering rule fired on the first version of the route, correctly, because
+it ran `select 1` in a route. The checking moved to `services/health.ts`.
+
+**SEC-057, medium. A Redis outage made the probe unable to report the Redis
+outage.** Both probes sat behind the global rate limiter — an `onRequest` hook, so
+before the handler — and the limiter uses Redis. With both dependencies down, over a
+real socket:
+
+```
+handler's own verdict    2.0s   every call
+1st HTTP response        8.1s
+2nd HTTP response       20.3s
+3rd HTTP response       20.4s
+```
+
+Against the manifest's `timeoutSeconds: 5`, the kubelet would have recorded a
+**timeout** rather than the 503, during precisely the outage the probe exists to
+report. With Redis healthy the same call took **31ms**, which is what identified the
+limiter. After the exemption: 576ms, 2.0s, 2.0s.
+
+Getting there took ruling out three candidates, and the wrong one is the lesson:
+
+| hypothesis | test | result |
+|---|---|---|
+| the probe's own timeout is too long | per-check latencies in the body | 2.0s — handler is fine |
+| `ioredis` queues the abandoned `ping` | replaced `ping()` with a status read | still 20s — not ioredis |
+| `app.inject` resolves late, so this is a test artefact | hit a **real socket** | still 20s — it is real |
+| the global rate limiter | dead database, healthy Redis | **31ms** — confirmed |
+
+If `inject` had been the source, the fix would have been aimed at the test and the
+probe would still ship taking twenty seconds during an outage.
+
+Two traps worth keeping, both in [`docs/security/monitoring.md`](security/monitoring.md):
+a cache-busting query string on an entry module does **not** reach its dependencies,
+so `import("./index.js?dead=1")` got the healthy pool and the first version of the
+test asserted nothing — the outage is now produced in a separate process. And
+`return reply;` from an async `onRequest` hook **deadlocks the request**; the
+exemption is a bare `return;` with a comment saying why.
+
+Thirteen cases, each against a real server: the probes answer unauthenticated,
+report both dependencies with a latency, stay inside the manifest's timeout on
+repeat calls, distinguish degraded from unavailable, and the same process serves
+real traffic again once the database is back.
+
+## 5.4 status — the manifest gate exists, and it caught a dead check of its own
+
+`scripts/verify-k8s-manifests.mjs` renders `k8s/base` and both overlays and fails
+on a readiness probe not at `/ready`, a liveness probe not at `/health`, an image
+tag that is `:latest` or disagrees with `package.json`, a container with no resource
+limit or request, a variable `config.ts` insists on that nothing provides, an
+`envFrom` pointing at nothing, and a placeholder. It runs in the `gates` job and is
+a required check on `main`. Each was verified by planting it.
+
+**`newTag: latest` was the placeholder**, and the tag in `deployment.yaml` was
+decorative: a kustomization `images` entry overrides it. Both are pinned to the
+version now, and the check compares the *rendered* result, which is the only
+comparison that can tell the truth about what a deployment would run.
+
+The YAML reader is hand-written (`scripts/lib/yaml.mjs`) so the gate has no second
+failure mode. It had three bugs, each making the gate report something false — and
+the third is the one worth naming:
+
+> `containersOf` read `spec.containers`, but a Deployment has them at
+> `spec.template.spec.containers`. It returned nothing, so **the entire Deployment
+> block was dead code** and the gate printed `version: 3.4.0 (manifest image tag
+> matches package.json)` while the image was `:latest`.
+
+A summary line claiming a check that had never run — a check that could not fail,
+which is the failure this programme has been about all along. It was visible only
+because the summary asserted something a reader could contradict by opening the
+file.
+
+Two things came out of it. `scripts/lib/patch.mjs` throws when a replacement
+matches nothing, because a `str.replace` that changes nothing is a silent no-op
+that looks exactly like a success — one of these migrations reported "manifests
+pinned to 3.4.0" for a pattern indented two spaces off, and I believed it. And every
+claim now gets checked against the file it is about.
+
 ## 5.3 The SDK packages
 
 **Finding:** five packages, no release discipline of their own. The
@@ -488,6 +1389,71 @@ that `/health` still succeeds.
 **Gate:** every code sample in the documentation compiles or runs. This is the
 documentation equivalent of a regression test, and it is the only thing that stops
 example code decaying into fiction.
+
+## 5.3 status — done, and the documentation imported a package that did not exist
+
+### The samples compile, and the specifiers resolve
+
+`scripts/verify-doc-samples.mjs` extracts every ```ts fence from
+`HOW-KEYSTONE-WORKS.md` and `INTEGRATION.md`, writes each to its own module, and
+compiles them with the repository's own `tsc` against the real `packages/*`.
+Fences that make no claim about this product's API are counted and listed, not
+compiled — padding the documentation to satisfy a linter produces worse
+documentation.
+
+**What it found: the guide told users to import `@hilbras/keystone/sdk`, a
+subpath the published package did not serve.** There was no `exports` map and no
+`sdk` directory, so it did not resolve for anybody who installed it. The
+`package.json` now has an `exports` map with `.`, `./sdk` and `./package.json`,
+which also closes the deep-import surface into a security product's internals.
+
+The important part of this gate is the part that is **not** the compile. The
+first version aliased `@hilbras/keystone/sdk` in a `tsconfig`, so the sample
+compiled and the documentation was still wrong. So every specifier is *also*
+resolved against the real `exports` map, and the entries are checked against the
+build output. Verified by deleting the `./sdk` entry.
+
+Two samples that genuinely are fragments — narrative sketches referring to
+`base64url`, `issuer`, `KEYSTONE` — now say so on their first line. The marker is
+in the documentation, so a reader who copies the fence learns from the fence that
+it is not standalone, and the gate and the reader are looking at the same thing.
+
+### One version, and a declared support range
+
+The five packages were all at `1.0.0` against a 3.4.0 server, which is the clearest
+possible statement that the constraint was never stated anywhere. They now share
+the server's version and declare:
+
+```json
+"keystonePeer": { "server": ">=3.4.0 <3.5.0" }
+```
+
+A range rather than the exact version, because that is what the cadence supports:
+a server at 3.5.0 satisfies the SDK published alongside it, and stating `3.5.0`
+exactly would be a promise nothing has measured.
+
+`keystonePeer` rather than `peerDependencies`, because `@hilbras/keystone` is not
+a package to resolve — it is *this* server, and putting it in `peerDependencies`
+would send npm looking for something that is not on the registry.
+
+`scripts/sync-sdk-versions.mjs` keeps the five together and recomputes their
+ranges; `scripts/verify-sdk-packages.mjs` fails if they drift, if a range excludes
+the version being released, if a sibling dependency is not the exact version, or if
+a package does not compile.
+
+**That gate's first run reported four of the five packages as broken** —
+`Cannot find name 'URL'`, `Cannot find name 'node:fs/promises'`. Not defects: the
+packages carry their own `typescript@5.9.3` and `@types/node`, and the gate was
+using the repository's TypeScript 7. A gate that reports a toolchain mismatch as
+a code defect is worse than no gate, because the fix it implies is wrong. It now
+uses each package's own compiler and reports the skew as a note, not a failure.
+
+`scripts/bump-version.mjs` does the release bump in one command across
+`package.json`, both manifests, `package-lock.json` (which carries the version
+twice) and the five packages. Its first version rewrote the *comment* above
+`newTag:` instead of the value, because the comment names the key — and its second
+replaced the whole image reference with a bare version number. Both were caught by
+`verify:k8s`; both fixes anchor on the line rather than on the text.
 
 ## 5.4 Kubernetes manifests that are current
 
