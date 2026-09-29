@@ -1,4 +1,4 @@
-import { config, isZitadelConfigured } from "../../config.js";
+import { config } from "../../config.js";
 import { getConnectorFactory } from "../plugins/registry.js";
 import type { IdentityConnector, ConnectorConfig } from "./types.js";
 import { OidcConnector } from "./oidc.js";
@@ -53,15 +53,21 @@ export function buildConnector(type: string, overrides?: Partial<ConnectorConfig
   }
 
   if (type === "zitadel") {
-    if (!isZitadelConfigured()) {
-      throw new Error("Zitadel connector is not configured. Set ZITADEL_DOMAIN and ZITADEL_CLIENT_ID.");
+    // The overrides are merged *after* the environment, so a caller that supplies
+    // an issuer wins — which is what makes this connector constructible for a
+    // per-organization `identity_providers` row rather than only from the global
+    // ZITADEL_DOMAIN. It used to ignore `overrides` entirely and read the global,
+    // so it could not be pointed anywhere but the one deployment (SEC-052).
+    const issuer = overrides?.issuer ?? config.ZITADEL_DOMAIN;
+    if (!issuer) {
+      throw new Error("Zitadel connector is not configured. Set ZITADEL_DOMAIN, or pass an issuer.");
     }
     return new ZitadelConnector({
-      issuer: config.ZITADEL_DOMAIN,
-      clientId: config.ZITADEL_CLIENT_ID!,
+      clientId: config.ZITADEL_CLIENT_ID || "",
       clientSecret: config.ZITADEL_CLIENT_SECRET || "",
       scopes: ["openid", "profile", "email"],
       ...overrides,
+      issuer,
     });
   }
 

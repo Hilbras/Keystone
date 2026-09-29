@@ -678,6 +678,18 @@
       "test": "src/tests/security/mfa/webauthn.test.ts",
       "documentation": "docs/security/webauthn.md",
       "covers": []
+    },
+    {
+      "id": "SEC-052",
+      "title": "The Zitadel connector did not bind the ID token to the request, and pinned no algorithm",
+      "severity": "high",
+      "component": "federation",
+      "release": "3.4.0",
+      "issue": "`ZitadelConnector` was the odd one out of six providers in three ways. (1) `getAuthorizeUrl` never set a `nonce`, `exchangeCode` accepted no options, and `verifyToken` took one argument \u2014 so an ID token minted for a *different* Zitadel login verified correctly, because issuer, audience and signature are all still valid and only the nonce proves the token belongs to the request that started. The OIDC connector gained all three in 2.4.0 after SEC-020; Zitadel never had them and, because no test drove a Zitadel exchange, nothing reported it. (2) `jwtVerify` was called with no `algorithms` pin, so the accepted algorithm was whatever the published JWKS happened to allow \u2014 the algorithm-confusion surface. (3) No `requiredClaims`, so a token carrying no `exp` was accepted forever, which is not hypothetical for an enterprise IdP whose tokens are long-lived by design. Separately, the connector read `config.ZITADEL_DOMAIN` through `zitadelBaseUrl()` and ignored the `ConnectorConfig` it was constructed with, so it could not be pointed at a per-organization `identity_providers` row even though that table has one issuer per organization.",
+      "fix": "src/services/connectors/zitadel.ts \u2014 the base URL comes from the connector's own `cfg.issuer`; the nonce is sent, threaded through `exchangeCode`, and compared in `verifyToken`; `algorithms` is pinned to RS256/ES256/PS256 so `none` cannot be presented as a signed token; and `exp`, `iat`, `iss`, `aud`, `sub` are required. src/services/connectors/types.ts \u2014 `IdentityConnector.verifyToken` now declares `expectedNonce`, so the next connector written from the interface cannot drop it as this one did. src/services/connectors/registry.ts \u2014 `buildConnector` merges `overrides` after the environment, so a caller supplying an issuer wins.",
+      "test": "src/tests/security/federation/connectors.test.ts",
+      "documentation": "docs/security/federation.md",
+      "covers": []
     }
   ],
   "withdrawn": [

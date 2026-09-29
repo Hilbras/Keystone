@@ -621,6 +621,63 @@ identity to an existing local account without proof.
 **Gate:** the suite passes. The Google nonce regression (SEC-020) is one of these
 and must stay.
 
+## 4.3 status — done, and one provider had never been fixed
+
+Seventy cases: **all six providers**, against a real OIDC provider
+(`tests/helpers/fakeOidcProvider.ts`) serving a real discovery document, a real
+JWKS, and ID tokens signed with a real RSA key. `ALLOW_PRIVATE_SSO_ENDPOINTS` is
+what makes it reachable — the SSO endpoint policy refuses loopback as an SSRF
+control, which is the correct default and the reason the switch exists.
+
+The provider list is itself asserted, because a per-connector suite that silently
+stops covering a newly added provider is worse than none: it still reports green.
+
+**SEC-052, high. The Zitadel connector never bound the ID token to the request,
+and pinned no algorithm.** `getAuthorizeUrl` set no `nonce`, `exchangeCode`
+accepted no options, `verifyToken` took one argument. An ID token minted for a
+*different* Zitadel login verified correctly — issuer, audience and signature are
+all still valid, and only the nonce proves the token belongs to the request that
+started. `jwtVerify` was also called with no `algorithms` pin (so `alg` was
+whatever the published JWKS allowed, `none` included) and no `requiredClaims` (so
+a token with no `exp` was accepted forever — not hypothetical for an enterprise
+IdP whose tokens are long-lived by design).
+
+**The Google fix did not propagate to the connector next to it.** SEC-020 was the
+Google connector discarding the nonce; 2.4.0 fixed `OidcConnector` and
+`GoogleConnector`. Zitadel never had it, and because no test drove a Zitadel
+exchange, nothing said so. That is the failure mode of fixing an *instance*
+rather than a *rule*.
+
+The rule is now in the interface, which is the part that stops it recurring:
+
+```ts
+verifyToken?(token: string, expectedNonce?: string): Promise<ExternalIdentity>;
+```
+
+It declared one argument, so a connector written from it had **no way** to accept
+a nonce. The parameter's absence from the type is why this one shipped without it.
+
+Verified by breaking it:
+
+| | result |
+|---|---|
+| as shipped | 70 pass |
+| Zitadel restored to its original behaviour | **59 pass, 11 fail** — all 11 Zitadel |
+
+The other five are untouched by the break, which is what shows the eleven are
+Zitadel's and not the suite's.
+
+Also fixed while here: `attributeMapping` is keyed by internal claim names, so a
+mapping of `{ username: "login" }` — the field name in `ExternalIdentity`, in every
+provider's config screen, in the type itself — was **silently ignored** and the
+default returned. No security impact, so it is not in the registry; it is in
+[`docs/security/federation.md`](security/federation.md) because the failure mode
+is a configuration that looks applied and is not.
+
+Each rejection is matched against the claim `jose` actually names (`"aud"`,
+`"iss"`, `"exp"`), not a concept word — `/audience/i` would have passed on an
+unrelated failure and proved nothing.
+
 ## 4.4 The queue and metrics
 
 **Finding:** §2.8. One test file references the queue; none references metrics.
