@@ -254,12 +254,29 @@ That is a false positive: the destination is a path the parent created with
 is a parsing problem both files' headers already explain at length, having been
 built after the first attempt at stdout extraction proved it.
 
-Suppressed with a `// codeql[js/http-to-file-access]` comment carrying that reason,
-rather than left to fail a check, because the behaviour is intended and the reason
-belongs next to it. **The suppression syntax could not be verified locally** — the
-CodeQL CLI image is not reachable from this environment — so the PR's own CodeQL
-check is the verification. A suppression that does not work shows up as a red
-check, not as a silent pass.
+**A `// codeql[js/http-to-file-access]` suppression was tried and does not work.**
+The comment was placed on the line above the `writeFile` in each fixture, the push
+was re-analysed, and all three alerts fired again at the shifted line numbers. The
+CodeQL CLI image is not reachable from this environment, so the syntax could not be
+checked locally, and the pull request's own analysis was the verification — which
+is how a suppression that does nothing gets found rather than believed.
+
+So the comments were **removed**. A comment claiming to suppress something that is
+still reported is worse than no comment: it reads as a decision, and the alert that
+follows it is the reader's confusion. Dismissed on the alert instead, with this
+reason, once the alerts become dismissable after merge.
+
+### `js/file-system-race` — the same fix, and the same code, behaving differently
+
+`bump-version.mjs` cleared as soon as the compare-and-swap was extracted into a
+function. `sync-sdk-versions.mjs` did **not**, with the comparison inlined in the
+same shape: the alert stayed, and the first CI run still reported it while the
+identical helper elsewhere was clean.
+
+The rule reasons about a value read from the filesystem, used in a condition, and
+then written — all in one body. A function boundary is where it stops looking. So
+"the fix is the same" is not the same as "the fix works", and the only way to know
+which was to push and read the next analysis.
 
 ---
 

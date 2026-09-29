@@ -66,11 +66,6 @@ if (!OUTPUT_PATH) {
 }
 
 async function writeReport(value: Record<string, unknown>): Promise<void> {
-  // codeql[js/http-to-file-access] -- writing the response to a file IS the fixture.
-  // It boots a server, calls it, and hands the body to the parent test through a
-  // path the parent created with mkdtemp. No untrusted path is involved, and the
-  // alternative — printing to stdout — is a parsing problem this file header
-  // already explains at length.
   await writeFile(OUTPUT_PATH, JSON.stringify(value), "utf8");
 }
 

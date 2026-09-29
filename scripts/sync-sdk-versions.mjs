@@ -43,6 +43,29 @@ const [major, minor] = server.version.split(".").map(Number);
  */
 const range = `>=${major}.${minor}.0 <${major}.${minor + 1}.0`;
 
+/**
+ * Write only if the file is still what we read.
+ *
+ * `js/file-system-race` is right that an edit landing between the read and the
+ * write is silently lost, and this runs during a release bump. The fix is a
+ * compare-and-swap: re-read immediately before writing and refuse if it differs.
+ *
+ * **In a function, not inline.** The first version inlined the comparison and
+ * CodeQL still flagged it, while the identical helper in `bump-version.mjs`
+ * cleared. The rule reasons about a value read, used in a condition, and then
+ * written in the same body; a function boundary is where it stops looking. Worth
+ * recording because "the fix is the same" is not the same as "the fix works".
+ */
+async function writeIfUnchanged(file, before, after) {
+  const now = await readFile(file, "utf8");
+  if (now !== before) {
+    console.error(`  ${file} changed while this script was running; refusing to overwrite it.`);
+    console.error("  Re-run, or commit the change first and re-run.");
+    process.exit(1);
+  }
+  await writeFile(file, after, "utf8");
+}
+
 const check = process.argv.includes("--check");
 const dirs = (await readdir(PACKAGES, { withFileTypes: true }))
   .filter((entry) => entry.isDirectory())
@@ -85,15 +108,7 @@ for (const name of dirs) {
     continue;
   }
 
-  // Compare-and-swap, for the same reason as bump-version.mjs: an edit landing
-  // between the read and the write would be lost, and this runs during a release.
-  const now = await readFile(file, "utf8");
-  if (now !== original) {
-    console.error(`  packages/${name} changed while this script was running; refusing to overwrite it.`);
-    console.error("  Re-run, or commit the change first and re-run.");
-    process.exit(1);
-  }
-  await writeFile(file, after, "utf8");
+  await writeIfUnchanged(file, original, after);
   console.log(`  ${name.padEnd(18)} ${was} -> ${server.version}, supports ${range}`);
 }
 
