@@ -262,6 +262,55 @@ rules:
   # legacy `createDecipheriv` sites, so both "a new one appeared" and "the last one
   # was deleted" are visible changes rather than accidents.
 
+  # SEC-065 — a configuration file written by resolving its name twice.
+  #
+  # `EnvFileConfigWriter.write` did `fs.stat(path)`, checked it was a regular file,
+  # and then called `fs.writeFile(path, …)`. Two resolutions of one name with a window
+  # between them, and `writeFile` follows a symlink by design — so a `.env` that is a
+  # link is not a race at all, it is the steady state. CodeQL flagged the race twice;
+  # the symlink half was the larger problem and no rule mentioned it.
+  #
+  # The fix routes every access through one descriptor opened with `O_NOFOLLOW`
+  # (see `src/services/setup/safeFile.ts`). This rule is what stops a future writer
+  # from quietly going back to the name, and it exists because **the behavioural test
+  # could not catch that**: `write()` also called `read()`, and `read()` is hardened
+  # too, so reverting only the write left the end-to-end test green. It went green
+  # for the wrong reason, which is the failure mode this file keeps producing.
+  #
+  # Scoped to `src/services/setup/**` rather than all of `src/`, because that is where
+  # a path arrives from configuration. Elsewhere a path-based write is the normal,
+  # correct thing to do, and a rule that fires there is a rule people switch off.
+  - id: keystone-config-writes-by-descriptor
+    patterns:
+      - pattern-either:
+          - pattern: fs.writeFile($PATH, ...)
+          - pattern: fs.copyFile($PATH, ...)
+          - pattern: fs.appendFile($PATH, ...)
+          - pattern: fsp.writeFile($PATH, ...)
+          - pattern: fsp.copyFile($PATH, ...)
+          - pattern: promises.writeFile($PATH, ...)
+          - pattern: writeFile($PATH, ...)
+          - pattern: copyFile($PATH, ...)
+      # A literal path cannot be redirected by swapping a symlink into place, so
+      # only a computed one is in scope.
+      - metavariable-pattern:
+          metavariable: $PATH
+          patterns:
+            - pattern-not: '"..."'
+            - pattern-not: "'...'"
+    message: >-
+      Write this file through a descriptor, not by name. Resolving a path to check
+      it and then resolving it again to write leaves a window, and writeFile follows a
+      symbolic link, so a link at this path is followed in the steady state and the
+      contents land wherever it points. Use openExistingOrNew plus replaceViaHandle
+      from ./safeFile.js, which opens once with O_NOFOLLOW and reads and writes
+      through that one handle. (SEC-065)
+    severity: ERROR
+    languages: [javascript, typescript]
+    paths:
+      include:
+        - "/src/services/setup/**"
+
   # The layering rule, which AGENTS.md states and nothing enforced.
   #
   # `AGENTS.md`: "Routes must not import from `../db/index.js` directly — use

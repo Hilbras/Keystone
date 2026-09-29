@@ -5,6 +5,107 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.2] - 2026-09-29
+
+*The last two open CodeQL alerts, and the symlink the rule was not asking about.*
+
+### SEC-065, low — the setup config writer followed a symbolic link
+
+`EnvFileConfigWriter.write` did this:
+
+```ts
+const stats = await fs.stat(this.filePath);
+if (stats && !stats.isFile()) return err(…);
+…
+await fs.writeFile(this.filePath, body, { mode: 0o600 });
+```
+
+Two resolutions of one name with a window between them. CodeQL flagged it twice as
+`js/file-system-race`, and it was right.
+
+**But the race is the narrow half.** `fs.writeFile` follows a symlink *by design*, so a
+`.env` that is a link is not a race at all — it is the ordinary case. The writer reads
+the target, merges into it, and overwrites it with mode `0600`. No timing required, and
+a fix that only closed the window would have left the larger half in place. `fs.stat`
+follows too, so the "is it a regular file" check was cheerfully reporting that the
+*target* was a regular file.
+
+Severity is low and deliberately not inflated: this writes inside the application
+directory, and anyone who can plant a symlink there can already achieve more than one
+stray write. The primitive it hands over — *write `0600` to any path this process can
+write* — is the part worth closing. The JSON writer had the same shape without even the
+`stat`, and both writers' `backup()` did stat-then-`copyFile`.
+
+### One descriptor, opened once
+
+`src/services/setup/safeFile.ts` opens each file once with `O_NOFOLLOW` and routes
+every read and write through that one handle, so there is no second resolution left to
+attack. `O_NOFOLLOW` is the part that removes the steady-state problem, and it is the
+part a stat-then-write fix misses. Backups use `O_EXCL`, so a name that already exists
+— or a link planted at the backup path — is refused rather than written through.
+
+The merge behaviour is deliberately unchanged: `routes/config.ts` passes a **fully
+merged** set because it has already applied redaction, while `routes/setup.ts` passes
+only new values and relies on the writer's merge to preserve the rest of the file.
+Unifying those would change what one of them writes.
+
+### The error codes, measured
+
+| what is at the path         | `open` with `O_NOFOLLOW` | code   |
+|-----------------------------|--------------------------|--------|
+| a directory                 | refused                  | EISDIR |
+| a symlink (final component) | refused                  | ELOOP  |
+| a symlink, with `O_EXCL`    | refused                  | EEXIST |
+| a FIFO, a socket, a device  | **opens**                | —      |
+
+The last row is why the `fstat` is not dead code. The first draft handled only the
+fstat, and the directory test then failed with a bare `EISDIR` — so "the stat check
+must be unreachable" was available and wrong. The FIFO case proves it is not.
+
+Two limits, stated rather than glossed: `O_NOFOLLOW` covers the **final** component
+only, so a symlink in a *parent* directory is still followed (closing that needs
+`openat`, which Node does not expose); and it is `undefined` on Windows, so the flag is
+omitted and the protection is genuinely gone. `symlinkProtection` reports which of the
+two a caller is getting rather than implying one.
+
+### The test that passed against the defect
+
+The end-to-end assertion — *the symlink target's content is unchanged* — **stayed green
+with `write()` reverted.** Because `write()` also called `read()` on the way through,
+and `read()` is hardened too, the read refused first and the write was never reached.
+
+A test that passes for the wrong reason is worse than a missing one, because it looks
+like coverage. So the write is also tested at the descriptor with nothing in front of it,
+and `keystone-config-writes-by-descriptor` in `.semgrep.yml` catches a writer that stops
+using the primitive. Both verified by reverting:
+
+```
+behavioural suite, write() reverted    -> 2 of 21 fail
+keystone-config-writes-by-descriptor   -> configWriter.ts:154
+restored                               -> 21 of 21, 0 semgrep findings over 204 paths
+```
+
+### The bump script is not atomic, and the gate is the backstop
+
+While preparing this release, `bump-version.mjs` left `k8s/base/kustomization.yaml` at
+3.5.1 while `package.json` and `deployment.yaml` moved to 3.5.2. The cause was in the
+command invoking it, not the script: a diagnostic `grep` with an invalid option died,
+the pipeline closed, and the script took `SIGPIPE` mid-write.
+
+It writes four places sequentially, so being killed between them leaves a tree that
+describes two different releases. `verify:k8s` caught it immediately — which is the
+gate doing precisely the job it was written for, and the reason a release process can
+trust `bump` followed by `verify` rather than `bump` and hope.
+
+No change made: making the script transactional across four files and a
+`package-lock.json` is real work, and the gate already turns a silent half-release
+into a loud one.
+
+### CodeQL
+
+**62 alerts triaged. This closes the last two.** Whether they actually close is a
+prediction, not a claim — the re-analysis will say, and the triage records it that way
+rather than as done.
 ## [3.5.1] - 2026-09-29
 
 *The two things 3.5.0 left open, and the general gates that stop them recurring.*
