@@ -172,3 +172,62 @@ zero. Alongside it, the structural case:
 That one is what stops the predicate and the recorder collapsing back into each
 other. A suite that only checks the end-to-end total would still pass if someone
 merged them again and moved the double count somewhere else.
+
+## SEC-055, high — four defects in the CLI
+
+177 lines, eight commands, and no tests, for the interface an operator reaches for
+when something has already gone wrong. Each command is now run as a real
+subprocess against the real database, because the exit code is the whole of what a
+CLI's caller observes, and the things that were broken are exactly the things an
+in-process test cannot see.
+
+**`user:create` never worked.** The CLI called `register`, which mints a token,
+but never called `loadSigningKeys()` — the server does that during bootstrap. Every
+invocation failed with `JWT signing keys not loaded`. This is the command that
+creates the **platform owner**, so it is the first thing anyone runs on a new
+deployment.
+
+**Every command that opened a connection hung.** `org:create` printed
+`Created organization <id>` and then sat there forever. The operator's response to
+a hung command is Ctrl-C, which destroys the exit code that would have said the
+work was done.
+
+The fix took two attempts, and the first one looked complete:
+
+```
+closing only the pool:   migrate ✔   keys:list ✔   user:create ✖   org:create ✖
+closing all three:       all exit 0
+```
+
+`initializeContainer()` left three Redis sockets open — one shared client, and a
+second created inside the `cache` constructor. A partial fix here is worse than
+none, because the commands that work make the ones that do not look like a
+different bug.
+
+**`secrets:rotate` reported success while rotating nothing.** The environment
+provider has no key material to rotate: it comes from `JWT_PRIVATE_KEY`. The old
+implementation nulled its cache and re-imported the same key, and the command
+printed `Rotated signing key. New key id: env`. It now throws with instructions.
+
+The decision the roadmap asked to be made explicitly: with the environment
+provider, `secrets:rotate` **must fail loudly**. It cannot be idempotent, because
+there is nothing to be idempotent about, and generating a fresh pair in-process
+would be worse — every instance reads the same environment variable, so each
+would mint a *different* key and the cluster would stop agreeing on who signed
+what. With the database provider, which stores keys and can genuinely rotate, each
+call is a real rotation and the key is asserted to change.
+
+**`--version` was hardcoded to `1.9.0`** against a package at 3.3.0. Nothing
+noticed, because a test asserting `"1.9.0"` passes just as long as nobody
+remembers to update it — so the test compares against `package.json` instead.
+
+### Verified by breaking all four
+
+| restored behaviour | result |
+|---|---|
+| as shipped | 19 pass |
+| all four reverted | **8 pass, 11 fail** |
+
+The 11 include the hang cases, which fail by timing out at 30 seconds each. That
+is the correct shape for this defect: the assertion is "did it return on its own",
+and a command that never returns cannot be tested any other way.

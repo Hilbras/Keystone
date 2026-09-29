@@ -798,6 +798,57 @@ attention, since both are destructive and both handle secrets.
 to be idempotent or to fail loudly, whichever is intended — decided explicitly
 rather than left unspecified.
 
+## 4.5 status — done, and the CLI could not create a user
+
+Nineteen cases, one per command, each run as a **real subprocess against the real
+database**. The exit code is the whole of what a CLI's caller observes, and the
+defects below are exactly the ones an in-process test cannot see.
+
+**SEC-055, high. Four defects in a 177-line CLI with eight commands and no tests.**
+
+1. **`user:create` never worked.** It called `register`, which mints a token, but
+   never called `loadSigningKeys()` — the server does that during bootstrap. Every
+   invocation failed with `JWT signing keys not loaded`. This is the command that
+   creates the **platform owner**, so it is the first thing anyone runs on a new
+   deployment.
+2. **Every command that opened a connection hung.** `org:create` printed
+   `Created organization <id>` and then sat there forever. The operator's response
+   to a hung command is Ctrl-C, which destroys the exit code that would have said
+   the work was done.
+3. **`secrets:rotate` reported success while rotating nothing.** The environment
+   provider nulled its cache and re-imported the same `JWT_PRIVATE_KEY` and the
+   command printed `Rotated signing key. New key id: env`. An operator rotating
+   keys after a suspected compromise was told it had worked. The failure was also
+   invisible to anything wrapping the command, because an exception out of an async
+   commander action is an unhandled rejection and the process still exits 0.
+4. **`--version` was hardcoded to `1.9.0`** against a package at 3.3.0.
+
+The connection fix took two attempts and the first looked complete:
+
+```
+closing only the pool:   migrate ok   keys:list ok   user:create HUNG   org:create HUNG
+closing all three:       all exit 0
+```
+
+`initializeContainer()` leaves three Redis sockets open — the shared client and a
+second created inside the `cache` constructor. A partial fix is worse than none
+here, because the commands that *do* work make the ones that do not look like a
+different bug.
+
+**The roadmap's explicit decision: `secrets:rotate` must fail loudly.** It cannot
+be idempotent, because there is nothing to be idempotent about — the key comes
+from `JWT_PRIVATE_KEY`. Generating a fresh pair in-process would be worse: every
+instance reads the same environment variable, so each would mint a *different* key
+and the cluster would stop agreeing on who signed what. With the database provider,
+which stores keys and can genuinely rotate, each call is a real rotation and the
+test asserts the key *changes* — so a change that starts reporting success without
+rotating anything still fails.
+
+Verified by breaking all four at once: **8 pass, 11 fail**, including the hang
+cases, which fail by timing out. That is the correct shape for this defect — the
+assertion is "did it return on its own", and a command that never returns cannot
+be tested any other way.
+
 ## 4.6 Resolve the empty directories
 
 **Finding:** §2.8. `src/tests/fixtures/` is empty; `src/tests/integration/` has
@@ -807,6 +858,20 @@ one file.
 or `integration` reads as coverage that does not exist.
 
 **Gate:** no empty test directories remain.
+
+### 4.6 status — already resolved, and the finding was stale
+
+Both directories have real content and the roadmap's claim is out of date:
+
+```
+src/tests/fixtures/     saml-idp-test-cert.pem
+src/tests/integration/  queue.test.ts   (now 3 files, after §4.4)
+```
+
+`fixtures/` holds the self-signed IdP certificate the SAML suites use, so it was
+populated after the analysis was taken. Recorded rather than left to be
+rediscovered, because "resolve the empty directories" reading as outstanding work
+is what would prompt somebody to delete a certificate the SAML tests need.
 
 ---
 

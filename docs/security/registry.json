@@ -714,6 +714,18 @@
       "test": "src/tests/integration/metrics.test.ts",
       "documentation": "docs/security/monitoring.md",
       "covers": []
+    },
+    {
+      "id": "SEC-055",
+      "title": "The CLI could not create a user, hung after doing its work, and reported a rotation that never happened",
+      "severity": "high",
+      "component": "cli",
+      "release": "3.4.0",
+      "issue": "Four defects in the 177-line CLI that had 8 commands and no tests, found by \u00a74.5. It is the interface an operator reaches for when something has already gone wrong. (1) `user:create` never worked. The CLI built the authentication service and called `register`, which mints a token, but never called `loadSigningKeys()` \u2014 the server calls it during bootstrap, the CLI never did. Every invocation failed with \"JWT signing keys not loaded\". This is the command that creates the platform owner, so it is the first thing anyone runs on a new deployment. (2) Every command that opened a connection hung. `db` is a module-level postgres pool and the process never closed it; an open socket is a live handle, so the event loop never emptied and the process never exited. `org:create` printed \"Created organization <id>\" and then sat there forever, and an operator's response to a hung command is Ctrl-C, which destroys the exit code that would have said the work was done. (3) `secrets:rotate` reported success while rotating nothing. `EnvironmentSecretsProvider.rotateSigningKeys` nulled its cache and re-imported the same `JWT_PRIVATE_KEY`, returning the same key under the same key id, and the command printed \"Rotated signing key. New key id: env\". An operator rotating keys after a suspected compromise was told it had worked. The failure was also invisible to anything wrapping the command, because an exception out of an async commander action is an unhandled rejection and the process still exits 0. (4) `program.version(\"1.9.0\")` was a hardcoded literal against a package at 3.3.0, so `keystone --version` \u2014 the first thing anyone runs when filing a bug report \u2014 answered with a version two minor majors and two years out of date.",
+      "fix": "src/cli.ts \u2014 `user:create` loads the signing keys before minting; every database-touching command runs inside `withReleasedConnections`, which closes the pool, the shared Redis client and the cache's own Redis client in a `finally`; `secrets:rotate` catches, prints `Signing key was NOT rotated: \u2026` and sets a non-zero exit code; the version is read from package.json. src/services/secrets/environment.ts \u2014 `rotateSigningKeys` throws with instructions, because there is nothing in the process to rotate. src/services/redis.ts \u2014 new `closeRedis()`. Releasing the pool alone was not enough: `migrate` and `keys:list` then exited while `user:create` and `org:create` still hung, and the difference was `initializeContainer()` leaving three Redis sockets open \u2014 one shared, one owned by the cache.",
+      "test": "src/tests/integration/cli.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
     }
   ],
   "withdrawn": [
