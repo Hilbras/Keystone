@@ -466,6 +466,41 @@ same atomic claim the magic link uses.
 
 **Gate:** the suite passes, and reverting the single-use claim fails it.
 
+## 4.1 status — done, and it found a live defect
+
+Twelve cases: the lifecycle, sequential replay, expiry, a deleted user, the
+uniform response shape across unknown / unverified / verified addresses, no
+re-mail to a verified account, the authenticated re-send, and that only a digest
+is stored.
+
+**SEC-049, medium. The email-verification token was not single-use under
+concurrency.** `consumeVerificationToken` read the row with `usedAt IS NULL` and
+then updated it — a read that hopes, not a claim. Two requests arriving together
+both pass the read before either writes, both update, and both are told the token
+was valid. `src/services/singleUse.ts` existed for exactly this and already served
+magic links, password resets and SMS OTP codes atomically; email verification was
+the fourth token type and the only one not routed through it.
+
+Measured against the old implementation: **2 of 8** simultaneous requests through
+`GET /auth/email-verification/verify` were each told the token was valid. Not 8 of
+8 — the connection pool serialises some of them, which is exactly what makes a
+race look intermittent and therefore unlikely.
+
+Two things are worth recording about how it survived:
+
+- The flow had no test at all. `emailVerification.ts` appeared once in the suite,
+  in a list of rate-limit prefixes.
+- **The obvious test would have passed anyway.** A sequential replay test — use
+  the token, assert the second use is refused — passes against the broken
+  implementation, because the second request arrives after the first has written.
+  Only the concurrent case catches it. That is why the concurrency test is in the
+  suite and not left to the reader's judgement.
+
+The severity is medium rather than high, and deliberately: verifying an address is
+idempotent, so a replay grants nothing new. It is a finding because the stated
+property of the flow was **false**, and because this shape is the one people copy.
+Full write-up in [`docs/security/tokens.md`](security/tokens.md).
+
 ## 4.2 WebAuthn, end to end
 
 **Finding:** §2.8. One test file references it. Passkey registration and

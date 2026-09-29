@@ -642,6 +642,18 @@
       "test": "src/tests/security/rate-limiting/spraying.test.ts",
       "documentation": "docs/security/rate-limiting.md",
       "covers": []
+    },
+    {
+      "id": "SEC-049",
+      "title": "The email-verification token was not single-use under concurrency",
+      "severity": "medium",
+      "component": "tokens",
+      "release": "3.4.0",
+      "issue": "`consumeVerificationToken` read the row with `usedAt IS NULL`, then updated it. That is a read that hopes, not a claim: two requests arriving together both pass the read before either writes, both update, and both are told the token was valid. `src/services/singleUse.ts` exists for exactly this and already served magic links, password resets and SMS OTP codes atomically; email verification was the fourth token type and the only one not routed through it. The file was named once in the whole test suite, in a list of rate-limit prefixes, so nothing exercised the path. Found by writing the end-to-end lifecycle suite \u00a74.1 asked for, and specifically by the concurrency case in it \u2014 the sequential replay test passes against the broken implementation, because the second request arrives after the first has written. Measured: 2 of 8 simultaneous requests through `GET /auth/email-verification/verify` were each told the token was valid.",
+      "fix": "src/services/emailVerification.ts \u2014 the consume path now calls `consumeEmailVerificationTokenRow`, the same atomic claim the other three token types use. `usedAt` is written by the claim's WHERE clause rather than by a second statement",
+      "test": "src/tests/security/authentication/email-verification.test.ts",
+      "documentation": "docs/security/tokens.md",
+      "covers": []
     }
   ],
   "withdrawn": [
