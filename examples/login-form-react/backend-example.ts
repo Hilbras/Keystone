@@ -7,7 +7,6 @@
  * Your backend verifies it by fetching Keystone's JWKS.
  */
 
-import { createPublicKey } from "node:crypto";
 import { jwtVerify, createLocalJWKSet } from "jose";
 
 const KEYSTONE_URL = process.env.KEYSTONE_URL || "http://localhost:4001";
