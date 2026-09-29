@@ -177,6 +177,43 @@ async function releaseFor(repo, sha) {
 /** Whether a tag is a bare major, which is a moving reference rather than a release. */
 const isBareMajor = (tag) => /^v\d+$/.test(tag);
 
+/**
+ * A GitHub repository name, or a refusal.
+ *
+ * `owner/name`, where each segment is `[A-Za-z0-9._-]` and nothing else. Both halves
+ * of that mattered: the first version allowed no `/` at all, so it rejected
+ * `actions/checkout` — every real repository — and nothing noticed, because
+ * `--fix-annotations` reaches the check only for a pin whose annotation is a bare
+ * major, and at the time this was written all fourteen were exact. A guard that is
+ * unreachable until it is needed fails silently right up until the moment it is
+ * needed, and then fails on every input.
+ *
+ * The point of the assertion is so the *escaping* below is a formality rather than the
+ * only thing standing between a name and a pattern.
+ */
+const REPO_NAME = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * Escape a string for use inside a `RegExp`.
+ *
+ * The first version escaped only `.` and `/`, and CodeQL's `js/incomplete-sanitization`
+ * was right that it did not escape backslashes. Not exploitable as written — a
+ * repository name cannot contain one — but an escape that handles the metacharacters
+ * you happen to have met is a habit, and a habit is what becomes a real bug when the
+ * input source changes.
+ *
+ * The charset assertion is the actual control. Escaping is the belt.
+ */
+function escapeForRegExp(value) {
+  if (!REPO_NAME.test(value)) {
+    throw new Error(
+      `${JSON.stringify(value)} is not a valid repository name ` +
+        `([A-Za-z0-9._-] only). Refusing to build a pattern from it.`
+    );
+  }
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 const pins = await collectPins();
 
 if (process.argv.includes("--fix-annotations")) {
@@ -198,7 +235,7 @@ if (process.argv.includes("--fix-annotations")) {
       const full = path.join(WORKFLOWS, file);
       const text = await readFile(full, "utf8");
       const pattern = new RegExp(
-        `(uses:\\s*${pin.repo.replace(/[/.]/g, "\\$&")}(?:/[^\\s@]+)?)@${pin.sha}\\s*#\\s*${pin.tag}(/[^\\s]*)?`,
+        `(uses:\\s*${escapeForRegExp(pin.repo)}(?:/[^\\s@]+)?)@${pin.sha}\\s*#\\s*${pin.tag}(/[^\\s]*)?`,
         "g"
       );
       const next = text.replace(pattern, (_m, head, subpath) => `${head}@${pin.sha} # ${release}${subpath ?? ""}`);

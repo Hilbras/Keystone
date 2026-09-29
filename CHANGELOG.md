@@ -5,6 +5,43 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.5] - 2026-09-30
+
+*The new pin gate had a bug in it, and the scanner found it in the same release.*
+
+### `js/incomplete-sanitization` in the gate I wrote in 3.5.4
+
+`verify-action-pin-versions.mjs` builds a `RegExp` from a repository name so
+`--fix-annotations` can rewrite a stale annotation. The escape handled `.` and `/` and
+**did not handle a backslash**, and CodeQL was right.
+
+Not exploitable as written: a GitHub repository name is `[A-Za-z0-9._-]` and cannot
+contain one. But an escape that covers the metacharacters you happen to have met is a
+habit, and a habit is what turns into a real bug when the input source changes.
+
+Fixed by escaping the full set — and by asserting the charset first, which is the
+actual control and the escaping only the belt. **The first version of that assertion
+was wrong in the opposite direction**: it allowed no `/` at all, so it rejected
+`actions/checkout` and every other real repository.
+
+Nothing noticed, because `--fix-annotations` only reaches the check for a pin whose
+annotation is a bare major, and when this was written all fourteen were exact. The
+guard was unreachable until it was needed, at which point it would have failed on
+every input. Found by testing the function directly against eight names — four that
+must be accepted, four that must be refused — because the end-to-end runs were all
+green and all irrelevant.
+
+```
+ok       actions/checkout          refused   a\b+/b
+ok       anchore/sbom-action       refused   a/b(c)
+ok       a.b-c_d/e                 refused   a b/c
+ok       github/codeql-action      refused   a/b|c
+                                  refused   no-slash
+                                  refused   a/b/c
+```
+
+A guard that cannot reject a real value is not a guard, and a guard that is never
+reached proves nothing about the values it would have rejected.
 ## [3.5.4] - 2026-09-30
 
 *The Dependabot queue, and the fact that most of our action pins said nothing about which release they were.*
