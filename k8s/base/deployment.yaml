@@ -34,7 +34,7 @@ spec:
           # rollback has nothing to roll back to. `scripts/verify-k8s-manifests.mjs`
           # fails when this tag drifts from package.json, so the bump is part of
           # cutting a release rather than a thing somebody remembers.
-          image: ghcr.io/hilbras-dev/hilbras-keystone:3.5.1
+          image: ghcr.io/hilbras-dev/hilbras-keystone:3.5.3
           imagePullPolicy: Always
           ports:
             - name: http

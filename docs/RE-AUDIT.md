@@ -71,6 +71,6 @@ Suites that assert a property but do not correspond to a defect we can evidence.
 
 ## Coverage
 
-- 62 findings recorded in `docs/security/registry.json`.
-- 62 of 62 verified to have a regression test present right now.
-- 6 critical, 33 high, 18 medium, 5 low.
+- 63 findings recorded in `docs/security/registry.json`.
+- 63 of 63 verified to have a regression test present right now.
+- 6 critical, 33 high, 18 medium, 6 low.
