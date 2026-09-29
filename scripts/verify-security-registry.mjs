@@ -19,10 +19,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const quiet = process.argv.includes("--quiet");
 
@@ -68,6 +66,30 @@ function resolveFixPath(fix) {
   // Not a TypeScript source file — a workflow, a config, a Dockerfile.
   const leading = String(fix).trim().split(/\s+—|\s+-\s/)[0].trim();
   return fs.existsSync(path.join(root, leading)) ? leading : null;
+}
+
+// The scope decision is only meaningful if its named paths exist. A scope that
+// names a tree nobody has is a boundary drawn around nothing.
+if (!registry.scope) {
+  errors.push('no "scope" — the registry must say what it covers and what it does not');
+} else {
+  if (typeof registry.scope.decision !== "string" || registry.scope.decision.trim() === "") {
+    errors.push('scope.decision must be a sentence, not empty');
+  }
+  const trees = [
+    ...(registry.scope.in_scope ?? []),
+    ...(registry.scope.excluded ?? []).map((e) => e.what),
+  ].map((t) => t.replace(/`/g, "").split(/[\s,—-]/)[0]);
+  for (const tree of trees) {
+    if (!fs.existsSync(path.join(root, tree))) {
+      errors.push(`scope names ${tree}, which is not in the repository`);
+    }
+  }
+  for (const excluded of registry.scope.excluded ?? []) {
+    if (!excluded.why || String(excluded.why).trim().length < 20) {
+      errors.push(`scope exclusion "${excluded.what}" has no reason`);
+    }
+  }
 }
 
 for (const entry of entries) {

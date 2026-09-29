@@ -1,4 +1,30 @@
 {
+  "scope": {
+    "decision": "The registry covers **everything the repository publishes or runs**, not `src/` alone.",
+    "in_scope": [
+      "src/ \u2014 the server",
+      "packages/ \u2014 five packages published to npm, which handle tokens, cookies, PKCE verifiers and nonces",
+      "scripts/ \u2014 the security control suite: every gate in this repository is a file here",
+      "k8s/ \u2014 the deployment, including the probe routing and the image tag",
+      ".github/workflows/ \u2014 the pipeline, including third-party action pins"
+    ],
+    "excluded": [
+      {
+        "what": "frontend/",
+        "why": "The admin dashboard and setup wizard. It is the only tree that receives no security analysis, so this is the honest gap in the decision rather than a claim that it is clean. It is excluded for one mechanical reason: it is 69 `.tsx` files, and Semgrep's TypeScript support trips over TSX generics versus JSX ambiguity in a way that aborts a whole scan rather than skipping one file. The exclusion is `frontend/`, not TSX \u2014 `packages/keystone-react/src/index.tsx` parses at 100% and is scanned.",
+        "cost": "No lint, no semgrep, no registry coverage. CodeQL's `js/remote-property-injection` alert on `frontend/src/hooks/useHashRoute.ts` is the one place this has produced a finding, and it was dismissed as crossing no security boundary \u2014 which is a statement about that one finding, not about the tree."
+      },
+      {
+        "what": "node_modules/",
+        "why": "Third-party code, owned and fixed upstream. Covered by `npm audit` and the `dependency-review-action` in supply-chain.yml, not by a registry of this project's findings."
+      },
+      {
+        "what": "examples/",
+        "why": "Sample applications. Not shipped and not reachable in a deployment. `examples/login-form-react` does hold one live CodeQL finding (an unused local), which was left in place deliberately: it is an example, and fixing it would make the example less representative of the code a reader will actually write."
+      }
+    ],
+    "why_not_src_only": "The `src/`-only scope was an assumption rather than a decision, and it was the same shape as the others this programme has been correcting: a boundary that looked deliberate and covered 1,107 lines of published credential-handling code and 2,924 lines of security controls without either. The test of the boundary is whether anything falls outside it for a reason, and `src/` failed that test \u2014 `packages/` and `scripts/` fell outside it because nobody decided they should, not because anyone decided they should not."
+  },
   "$comment": "Security regression registry. Each entry is a vulnerability that was found, fixed, and given a permanent test. Entries may be withdrawn; a withdrawn id is recorded in `withdrawn` with the reason rather than renumbered, because a registry whose ids shift is one nobody can cite. `coverage` records suites that assert a property without corresponding to an evidenced defect. The registry is the source of truth: `npm run registry:check` verifies every entry points at a test file that exists, that no security suite is unclaimed, and that every mandatory attack class is covered. `npm run registry:render` regenerates docs/security/registry.md from this file, so the documentation cannot drift from the tests.",
   "mandatoryAttackClasses": [
     "privilege-escalation",
@@ -725,6 +751,66 @@
       "fix": "src/cli.ts \u2014 `user:create` loads the signing keys before minting; every database-touching command runs inside `withReleasedConnections`, which closes the pool, the shared Redis client and the cache's own Redis client in a `finally`; `secrets:rotate` catches, prints `Signing key was NOT rotated: \u2026` and sets a non-zero exit code; the version is read from package.json. src/services/secrets/environment.ts \u2014 `rotateSigningKeys` throws with instructions, because there is nothing in the process to rotate. src/services/redis.ts \u2014 new `closeRedis()`. Releasing the pool alone was not enough: `migrate` and `keys:list` then exited while `user:create` and `org:create` still hung, and the difference was `initializeContainer()` leaving three Redis sockets open \u2014 one shared, one owned by the cache.",
       "test": "src/tests/integration/cli.test.ts",
       "documentation": "docs/security/monitoring.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-056",
+      "title": "The deployment advertised a readiness probe that could not fail",
+      "severity": "high",
+      "component": "health",
+      "release": "3.5.0",
+      "issue": "`/ready` did not exist. `README.md` documented `GET /health` and `GET /ready` as probe endpoints, and `k8s/base/deployment.yaml` pointed its `readinessProbe` at `/health` \u2014 the only one of the two that was real. `/health` returns `{status: \"ok\"}` unconditionally and touches nothing external, so it answers 200 whenever the process is listening. A pod with no database was therefore reported ready, kept in the load balancer's rotation, and every authenticated request it received failed. The traffic was sent to a pod that could serve none of it, which is the failure a readiness probe exists to prevent.",
+      "fix": "src/routes/health.ts and src/services/health.ts \u2014 `/ready` checks PostgreSQL with `select 1` and Redis with `ping`, each bounded at 2s and run in parallel, and answers 503 only when PostgreSQL is unreachable. Redis alone is `degraded` and answers 200, because a deployment with no Redis falls back to the in-process queue and the local rate limiter and can still authenticate. `/health` is unchanged and still answers 200 with no database, so a transient blip does not fail liveness and cause a restart loop. The route holds no queries \u2014 the \u00a73.1 layering rule fired on the first version, correctly, and the checking moved to a service. k8s/base/deployment.yaml \u2014 readinessProbe now points at `/ready`.",
+      "test": "src/tests/integration/readiness.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-057",
+      "title": "A Redis outage made the readiness probe unable to report the Redis outage",
+      "severity": "medium",
+      "component": "health",
+      "release": "3.5.0",
+      "issue": "Both probe endpoints sat behind the global rate limiter, which is an `onRequest` hook and so runs **before** the route handler. The limiter uses Redis. With PostgreSQL and Redis both unreachable, measured over a real socket: the handler reported its verdict in 2.0s every time, and the HTTP responses took 8.1s, then 20.3s and 20.4s. The time was spent in the limiter. Against `timeoutSeconds: 5` in k8s/base/deployment.yaml the kubelet would have recorded a **timeout** rather than the 503, during precisely the outage the probe exists to report. With Redis healthy the same call took 31ms, which is what identified the limiter as the cause. A probe that cannot report the outage is worse than no probe, because it looks like one.",
+      "fix": "src/index.ts \u2014 the global rate limit skips `/health` and `/ready`. They are called by the kubelet, not by a client: two requests per pod per 40 seconds, with nothing to abuse. Measured after: 576ms, 2.0s, 2.0s on repeat calls with both dependencies down.",
+      "test": "src/tests/integration/readiness.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-058",
+      "title": "The console email provider wrote attacker-influenceable content into log lines unescaped",
+      "severity": "low",
+      "component": "email",
+      "release": "3.5.0",
+      "issue": "ConsoleEmailProvider printed `To:`, `Subject:` and the body on three separate lines with the values interpolated raw. A newline in an email subject or body therefore started a new log entry. Anyone who can influence an email \u2014 a display name, a subject line, a signup form \u2014 could forge log lines, and a forged log line is how log integrity gets quietly lost: an incident review reading a log that has attacker-written entries in it cannot tell which are real. Found by the CodeQL triage (js/log-injection, severity error).",
+      "fix": "src/services/email.ts \u2014 one line with every field JSON-encoded. JSON rather than stripping, because it preserves the value while making its boundaries unambiguous.",
+      "test": "docs/security/codeql-triage.md",
+      "documentation": "docs/security/codeql-triage.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-059",
+      "title": "One secrets provider encrypts with unauthenticated AES-256-CBC",
+      "severity": "medium",
+      "component": "secrets",
+      "release": "3.5.0",
+      "issue": "Four of the five locally-encrypting secrets providers use AES-256-GCM. `secrets/azureKeyVault.ts` uses AES-256-CBC, which is malleable and unauthenticated. Someone with write access to the stored ciphertext \u2014 a compromised database row, a tampered backup \u2014 can flip chosen plaintext bits without the key. Encrypting secrets at rest exists to defend against exactly that position, and this provider does not. Exploitability is limited: a bit flip in a TOTP secret or an OAuth client secret does not obviously yield either, and the attacker must already hold database write, which is why this is medium and not high. Found by asking the question `gcm-no-tag-length` was actually asking while triaging it.",
+      "fix": "src/services/secrets/azureKeyVault.ts \u2014 NOT FIXED, deliberately. Changing the cipher invalidates every already-encrypted value, and a secrets provider has no safe default for a value it cannot decrypt. The migration needs a read-both/write-new path; src/db/reencryptOidcSecrets.ts already has the shape of one. It needs to be a planned operation rather than a patch. Recorded so it is not lost.",
+      "test": "docs/security/codeql-triage.md",
+      "documentation": "docs/security/codeql-triage.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-060",
+      "title": "Two provably dead branches in the workflow blocked-reason chain",
+      "severity": "low",
+      "component": "workflows",
+      "release": "3.5.0",
+      "issue": "`triggerWorkflowRun` builds `blockedReason` as a five-deep nested ternary, the last two branches being `triggerMismatch` and `isOutOfScope`. Both are provably false at that point: line 145 returns `undefined` when either is true, so control never reaches line 159 with either set. CodeQL's `js/trivial-conditional` reported it precisely \u2014 \"This use of variable 'isOutOfScope' always evaluates to false\" \u2014 and pointed at the right line. The security behaviour was never affected: the guard at 145 is what stops the run, and it works. What was wrong was the explanation. A workflow that did not run because the event was out of scope, or because the trigger did not match, left no run record and no reason at all, so an operator asking why a workflow did not fire got nothing. The dead branches read as an attempt to explain a decision the code had already made and returned.",
+      "fix": "src/services/workflows/engine.ts \u2014 both branches removed. The remaining two reasons are the only reachable ones, and a comment records why the other two cannot be.",
+      "test": "docs/security/codeql-triage.md",
+      "documentation": "docs/security/codeql-triage.md",
       "covers": []
     }
   ],

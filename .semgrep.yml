@@ -17,6 +17,11 @@ rules:
       - pattern-either:
           - pattern: "fastify({..., trustProxy: true, ...})"
           - pattern: "$FASTIFY.set({..., trustProxy: true, ...})"
+    # WHY THIS SCOPE — A trust-proxy setting belongs to a server. Nothing in `packages/` or `scripts/` configures one, so scanning them can only produce noise — and a rule that cries wolf is a rule people stop reading.
+    paths:
+      include:
+        - "/src/**"
+
     message: >-
       trustProxy: true trusts x-forwarded-for from any peer, so a client can
       present a fresh address per request. Use the configured trusted networks in
@@ -33,6 +38,11 @@ rules:
           - pattern: request.headers["x-org-id"]
           - pattern: req.headers["x-service-account-id"]
           - pattern: req.headers["x-user-id"]
+    # WHY THIS SCOPE — Server-side: the risk is trusting an identity header that arrived in a request. The SDK packages *send* identity, they do not accept it, so the rule is meaningless there and would only fire on the wrong code.
+    paths:
+      include:
+        - "/src/**"
+
     message: >-
       This header is client-supplied. Identity must be derived from a verified
       credential, not asserted by the caller. (SEC-007, SEC-009)
@@ -48,6 +58,11 @@ rules:
             return true;
           }
       - pattern: return true;
+    # WHY THIS SCOPE — Server-side. Scoping this one is not a way to quiet a finding: the first unscoped run matched `if (!file) { ... return true; }` in `scripts/render-reaudit-matrix.mjs` — a file-existence check that happens to have the shape of a limiter's failure path. Nothing in `packages/` or `scripts/` serves HTTP, so a rate limiter cannot exist there and the rule cannot have anything to say.
+    paths:
+      include:
+        - "/src/**"
+
     message: >-
       A limiter that returns true when its store is unavailable removes the
       control entirely during an outage, which is when unlimited attempts are
@@ -61,6 +76,12 @@ rules:
       - pattern-either:
           - pattern: "{ ..., origin: true, credentials: true, ... }"
           - pattern: "{ ..., origin: '*', credentials: true, ... }"
+    # WHY THIS SCOPE — A CORS policy can be set by a server or by a browser client. The react and vue packages send credentialed requests, so a wildcard there is the same defect it is in a route. Not `scripts/`: nothing in a build script makes a cross-origin request with cookies.
+    paths:
+      include:
+        - "/src/**"
+        - "/packages/**"
+
     message: >-
       Credentialed requests with an unrestricted origin produce a wildcard CORS
       policy that browsers enforce. Resolve the origin explicitly and fail
@@ -73,6 +94,13 @@ rules:
   - id: keystone-secret-denylist
     patterns:
       - pattern-regex: '(?i)(SENSITIVE|SECRET)_?(KEYS?|NAMES?)\s*[:=]\s*(\[|new Set)'
+    # WHY THIS SCOPE — Everywhere. A hardcoded secret is a hardcoded secret, and `packages/` handles tokens while `scripts/` reads the whole security registry.
+    paths:
+      include:
+        - "/src/**"
+        - "/packages/**"
+        - "/scripts/**"
+
     message: >-
       A denylist of secret-looking key names has to predict every name a secret
       might take, and a new secret is unredacted until someone remembers to add
@@ -90,6 +118,12 @@ rules:
       # builds its options once and spreads them, and `secure` is derived from
       # NODE_ENV in that helper.
       - pattern-not: "reply.setCookie($NAME, $VALUE, {..., ...$SPREAD, ...})"
+    # WHY THIS SCOPE — The server sets session cookies and so do the browser packages. `scripts/` does not touch cookies.
+    paths:
+      include:
+        - "/src/**"
+        - "/packages/**"
+
     message: >-
       This cookie is set without `secure`, so it will be sent over plaintext.
       Derive it from NODE_ENV rather than leaving it to configuration. (SEC-031)
@@ -110,6 +144,11 @@ rules:
           metavariable: $GUARD
           patterns:
             - pattern: app.requireHumanPrincipal(...)
+    # WHY THIS SCOPE — Server-side: `authenticate` is a Fastify pre-handler. No package or script has one.
+    paths:
+      include:
+        - "/src/**"
+
     message: >-
       requireHumanPrincipal runs before app.authenticate, so request.serviceAccount
       is not populated yet and the guard permits every machine principal. It must
@@ -124,6 +163,13 @@ rules:
       - pattern-either:
           - pattern: crypto.createHash("md5")
           - pattern: $X = Math.random().toString(36)
+    # WHY THIS SCOPE — Everywhere. The SDK packages generate PKCE verifiers and nonces for the browser, which is exactly the code where `Math.random()` would be a real defect rather than a stylistic one.
+    paths:
+      include:
+        - "/src/**"
+        - "/packages/**"
+        - "/scripts/**"
+
     message: >-
       Not a cryptographically secure source. Use `crypto.randomBytes` for
       tokens, codes and nonces.
@@ -231,6 +277,28 @@ rules:
   # than allowed by pattern, so a fifth one has to be added on purpose.
   - id: keystone-no-console-in-server
     pattern-regex: '(?<!\/\/).*\bconsole\.(log|warn|error|info|debug)\s*\('
+    # WHY THIS SCOPE — **not extended**, and working out why is the finding.
+    #
+    # Every other rule in this file was widened to cover `packages/` and
+    # `scripts/`. This one cannot usefully be:
+    #
+    # - Nothing in `packages/` is server request-handling code. The five packages
+    #   are a browser SDK, a Node client, a CLI and two framework bindings.
+    # - `keystone-sdk/src/index.ts` catches a failed background connect and calls
+    #   `console.error`. **In a browser library that is the only channel there
+    #   is** — there is no server log to write to, and the source already carries
+    #   a deliberate `eslint-disable-next-line no-console` saying so.
+    # - `keystone-sdk/build.ts` is a build script, so stdout is its output.
+    # - `scripts/**` is the gate suite, and a gate communicates through its output.
+    #
+    # So the honest scope is the server's request-handling code, which is what it
+    # already was. An intermediate attempt added `/packages/**` and produced five
+    # findings, every one of them a browser library correctly reporting a failure.
+    #
+    # A second attempt widened `src` to `/src/**` and produced **151** findings,
+    # 60-odd of them in `src/cli.ts`, `src/bench/` and `src/db/seed.ts` — legitimate
+    # calls the rule was never meant to see. Widening coverage only helps if the
+    # rule's scope widens with it.
     paths:
       include:
         - "/src/services/**"

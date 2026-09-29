@@ -877,7 +877,11 @@ is what would prompt somebody to delete a certificate the SAML tests need.
 
 # v3.5.0 — Operability and the SDK
 
-## 5.0 status — the audit's own scope, measured
+## 5.0 status (first pass) — the audit's own scope, measured
+
+> **Superseded.** This section measured the gap. The decision, the
+> CodeQL triage and the fixes are in
+> [5.0 status — the audit's own scope, decided rather than assumed](#50-status--the-audits-own-scope-decided-rather-than-assumed).
 
 Found while reconciling CodeQL after §4.3–§4.5, and recorded before the rest of
 this phase because it changes what the other items are worth.
@@ -984,6 +988,391 @@ not trigger a restart loop.
 **Gate:** a test that `/ready` fails with the database unreachable, and a test
 that `/health` still succeeds.
 
+## 5.0 status — the audit's own scope, decided rather than assumed
+
+### The scope was an assumption, and it was the same shape as everything else
+
+`src/`. That was the scope, stated by omission: nothing had ever said it, and
+`packages/` and `scripts/` fell outside it because nobody decided they should be
+inside, not because anyone decided they should be outside.
+
+What was in the gap:
+
+```
+packages/   1,107 lines   five packages published to npm, handling tokens,
+                          cookies, PKCE verifiers and nonces
+scripts/    2,924 lines   the security control suite — every gate in this
+                          repository is a file here
+```
+
+**The decision: the registry covers everything the repository publishes or runs.**
+`src/`, `packages/`, `scripts/`, `k8s/`, `.github/workflows/`. Three exclusions,
+each with a reason *and* its cost stated, because an exclusion whose cost is not
+written down is a claim the tree is clean:
+
+| excluded | why | cost |
+|---|---|---|
+| `frontend/` | 69 `.tsx` files, and Semgrep's TS support trips over TSX generics versus JSX ambiguity in a way that aborts a whole scan. The exclusion is `frontend/`, **not** TSX — `packages/keystone-react/src/index.tsx` parses at 100% and is scanned. | No lint, no semgrep, no registry coverage. This is the honest gap in the decision. |
+| `node_modules/` | Third-party, owned upstream. `npm audit` and `dependency-review-action` cover it. | — |
+| `examples/` | Not shipped, not reachable in a deployment. | Holds one live CodeQL finding, left in place on purpose. |
+
+The scope is a field in `registry.json`, the renderer emits it into
+`registry.md`, and the checker fails if it names a tree that does not exist or an
+exclusion without a reason. Verified by adding `a-tree-that-does-not-exist/`.
+
+### 63 CodeQL alerts, not 25
+
+The roadmap's count had drifted, which is itself the argument for recording the
+*grouping* rather than the count: 10 of the 14 rules are the same false positive
+repeated, and 21 alerts are one already-enumerated decision. A list of 63
+individually-dismissed alerts teaches nothing.
+
+Full triage in [`docs/security/codeql-triage.md`](security/codeql-triage.md).
+**Afterwards: 24 dismissed with a reason, 39 open, and every one of the 39 is
+real** — 16 of them fixed here and clearing on push, leaving the 21 unrated routes
+and 2 filesystem races as open decisions rather than defects.
+
+The real ones:
+
+- **SEC-058, low** — the console email provider interpolated subject and body into
+  log lines raw, so a newline in either forged a log entry. Now one
+  JSON-encoded line.
+- **SEC-059, medium** — `secrets/azureKeyVault.ts` encrypts with **AES-256-CBC**
+  while all four of its siblings use GCM. Unauthenticated and malleable, so
+  someone with write access to the stored ciphertext can flip plaintext bits
+  without the key — which is the position encrypting secrets at rest exists to
+  defend against. **Not fixed here, deliberately:** changing the cipher
+  invalidates every already-encrypted value, and a secrets provider has no safe
+  default for a value it cannot decrypt. `db/reencryptOidcSecrets.ts` has the
+  shape of the migration. Recorded so it is not lost.
+- **SEC-060, low** — `js/trivial-conditional` was dismissed in the first pass as
+  "CodeQL wants a switch", which is true and would have closed a real finding. The
+  alert's message is more specific: *"This use of variable `isOutOfScope` always
+  evaluates to false."* It is — and so does `triggerMismatch`, because line 145
+  returns early when either is set. Two provably dead branches in the workflow
+  `blockedReason` chain. The security behaviour was never affected; the
+  *explanation* was, so an out-of-scope event left no run record and no reason.
+  Removed. Reading the rule's name and stopping there is how a correct detector
+  gets dismissed.
+- **`actions/unpinned-tag`, 8** — every `uses:` was pinned to a *major version*.
+  `actions/checkout@v4` looks pinned and is not: `@v4` is a mutable tag, so
+  whoever owns the action chooses the code that ships in a release, after the
+  review that approved it. All 46 are now SHA-pinned with the version in a
+  comment, so the pin is reviewable rather than opaque, and
+  `scripts/verify-action-pins.mjs` fails a PR that adds an unpinned one — the
+  gate also fails a SHA pin with *no* version comment, because a correct pin
+  nobody can update on purpose is barely better than a tag.
+- **`js/missing-rate-limiting`, 21** — the §3.3 set, arriving again
+  independently. Still open, and uncomfortable: 21 unrated routes on an
+  authentication server. Closing it is a product judgement about which are
+  actually abusable, and that judgement has not been made.
+
+The most instructive dismissal is `gcm-no-tag-length`: 4 **errors** claiming the
+auth tag is 12 bytes. 12 bytes is the **IV** length. NIST SP 800-38D's strongest
+GCM tag is 128 bits, which is what Node defaults to and what WebCrypto mandates —
+following the rule would have weakened all four. And while checking the question
+the rule was actually asking (is the tag *verified on decrypt*?) the answer turned
+up SEC-059 instead.
+
+### Two dead declarations, one of them a gate
+
+Extending the linter to `packages/` and `scripts/` surfaced 16 warnings. Two were
+not tidiness:
+
+- `scripts/verify-image-hygiene.mjs` declared `CREDENTIAL_FILES` — "credential
+  files that must not be in the image" — and **never used it**, while the
+  built-image check hardcoded a *smaller* set in a shell `find`, with no
+  `.keystore` and no `.git/`. The declaration and the behaviour disagreed, and a
+  reader comparing them would reasonably conclude `.keystore` files were being
+  looked for. The `find` expression is now derived from the list.
+- `packages/keystone-sdk/src/index.ts` built a `fields` array and never used it;
+  the real work was three hardcoded `querySelectorAll` calls. Dead code in a
+  published package.
+
+### The image hygiene gate ran only on a tag push
+
+`verify-image-hygiene` existed in `release.yml` and nowhere else. So
+`.dockerignore` and the build context were never checked on the pull request that
+could have broken them, and the built image was not inspected at all until release.
+This is the same systemic gap §3.3 fixed for five gates, still open for this one.
+The context half now runs in `gates`; the built-image half needs a docker build and
+stays in `release.yml`.
+
+### semgrep: eight rules, 4,000 lines, never pointed at any of it
+
+Eight of the twelve `.semgrep.yml` rules had **no `paths` restriction** — but
+semgrep was only ever invoked against `src/`. Every rule now carries a `paths`
+block stating where its construct can exist, and the scan covers
+`src packages scripts`.
+
+Widening was not free, and the two failures are the point:
+
+| attempt | result | what it taught |
+|---|---|---|
+| extend `keystone-no-console-in-server` to `packages/**` | 5 findings, all a **browser** library correctly reporting a failed background connect with `console.error` | In a browser SDK the console is the only channel there is. The rule does not extend; the reason is recorded. |
+| widen the same rule to `src/**` | **151** findings, 60-odd in `src/cli.ts`, `src/bench/`, `src/db/seed.ts` | Widening coverage only helps if the rule's scope widens with it. |
+| unscoped run | `keystone-rate-limit-fails-open` matched `if (!file) { … return true; }` in a build script | A file-existence check has the *shape* of a limiter's failure path. Scoped to `src/**`, where a rate limiter can exist. |
+
+The scan is clean at 0 findings, and the console rule was verified to still fire
+on a planted `console.log` in a service.
+
+### A near-miss worth recording
+
+Checking "does every GCM site call `setAuthTag` before `final()`?" reported
+`azureKeyVault.ts` as **missing** `setAuthTag`. It is not missing: that provider
+uses CBC, so there is no auth tag to set. The check asked a GCM question of a
+non-GCM site and produced a confident, wrong, alarming answer.
+
+A check that turns up a serious-looking result in code nobody has read is exactly
+when to read the surrounding function rather than open a finding.
+
+### The Node version was written out in ten places, and one of them did not exist
+
+Deciding on Dependabot #34 (Docker `node:22-slim` → `26-slim`) turned up a
+dependency the decision could not be made without.
+
+```
+Dockerfile            2 places    FROM node:22-slim
+ci.yml                3 places    node-version: 22
+release.yml           2 places    node-version: 22
+supply-chain.yml      3 places    node-version: 22
+benchmark.yml         1 place     node-version-file: .nvmrc
+package.json          0 places    no engines field at all
+.nvmrc                            DOES NOT EXIST
+```
+
+**`benchmark.yml` already pointed `setup-node` at a `.nvmrc` that was never
+created.** So the runtime version had no authoritative home, ten copies, and one
+consumer reading a file that was not there. Dependabot's PR changes the Dockerfile
+— one of the ten — and merging it would have produced a container on Node 26 while
+CI tested 22. That is the mismatch that turns "the tests passed" into "the release
+does not work", and nothing in the build could see it.
+
+Now: `.nvmrc` holds the version, all nine `setup-node` steps read it,
+`package.json` declares `engines.node: ">=22"`, and
+`scripts/verify-node-version.mjs` fails if any of the four disagree — including
+the Dockerfile, which is the one that matters. Verified by moving the Dockerfile
+to 26, hardcoding a version back into `ci.yml`, and setting `engines.node` to
+`">=23"`.
+
+**PR #34 is closed, not merged.** Bumping the runtime is a decision with a test
+run behind it, and it is now a one-file change: `.nvmrc` plus the Dockerfile,
+which the gate then holds together.
+
+### A gate with a permissive fallback is worse than no gate
+
+The first version of the range check was a regex plus a fallback that **accepted
+every range it did not recognise** — so `engines.node: ">=23"` was admitted for a
+project running 22, and the check passed. The planted `>=23` did not fire it.
+
+That is the same shape as `return reply;` deadlocking a request and
+`containersOf` returning nothing: a control that reports success for the thing it
+exists to catch. The fallback now returns `false` and says so, and
+`rangeAdmits` is unit-checked against eighteen cases including the empty string,
+`">="` and `"nonsense"` — all of which must be rejected.
+
+## 5.1 status — done, and the most important signal was silent
+
+`src/plugins/operationalMetrics.ts` holds the series, incremented at the
+chokepoints that already existed. The headline:
+
+**The emergency local limiter engaged with no signal at all.** Both limiters run on
+Redis so the budget is shared across the fleet. When Redis is unavailable the
+per-endpoint ones fall back to a per-process budget and **the global one fails
+open** — every request allowed. Before this, the `catch` in `checkLimit` returned a
+decision with no counter, no log line and no event.
+
+A counter of *refusals* would not have caught it. Under per-process limits the
+refusal rate looks normal, because each instance is still enforcing a budget. What
+is anomalous is the **fallback engaging**, and that was the thing with no counter.
+
+Measured against a server whose Redis is unreachable, one request:
+
+```
+keystone_rate_limit_redis_errors_total{key_prefix="global"}            1
+keystone_rate_limit_redis_errors_total{key_prefix="login"}             1
+keystone_rate_limit_redis_errors_total{key_prefix="login-per-address"}  1
+keystone_emergency_local_limiter_total{key_prefix="login",outcome="allowed"}            1
+keystone_emergency_local_limiter_total{key_prefix="login-per-address",outcome="allowed"} 1
+keystone_authentication_attempts_total{outcome="failure",reason="invalid_credentials"}   1
+```
+
+Two series rather than one, because they answer different questions: "Redis was
+unreachable" says something is broken, and "the fallback engaged" says protection
+is degraded. A counter that only moved when a fallback happened to be enabled
+would not move at all for the global limiter — the more serious of the two.
+
+`outcome="allowed"` is the label to watch. Denials are visible to users; allowances
+are invisible and are what hide the degradation.
+
+### The rest
+
+| series | what an operator asks it |
+|---|---|
+| `keystone_authentication_attempts_total{outcome,reason}` | is authentication healthy, and if not, *why* |
+| `keystone_token_operations_total{operation,outcome}` | issuance, rotation, and replays |
+| `keystone_deliveries_total{kind,outcome}` | SCIM and webhook delivery |
+| `keystone_delivery_duration_seconds{kind}` | which consumer is slow, not that something is |
+| `keystone_dependency_up{dependency}` | is PostgreSQL or Redis answering |
+
+`outcome` and `reason` are separate labels on the authentication counter. Folded
+into one, a spray, a broken second factor and a buggy client all read as "logins are
+failing", and none of them is actionable.
+
+Counting is placed where the work already happens: issuance at the same door as its
+§1.3 span, so a metric and a trace of "a token was issued" cannot disagree. The
+rotation counter is incremented in a wrapper rather than at each `return`, because
+`rotateRefreshToken` returns `null` for three different situations — unknown,
+expired, replayed — and a counter that cannot tell them apart is the same problem
+as an authentication counter with one label.
+
+### The dashboard, and the gate on it
+
+`docs/dashboards/authentication.json` is **generated** by
+`scripts/generate-auth-dashboard.mjs`, and the generator fails if a panel names a
+series that is not registered. A dashboard is the one artefact in this repository
+that nobody runs, so a renamed series leaves its panels pointing at nothing and it
+fails silently — a panel with no data looks exactly like a panel with no incidents.
+Verified by misspelling `keystone_token_operations_total`.
+
+The gate produced two false reports on its first run, both worth naming:
+
+- `keystone_delivery_duration_seconds_bucket` is a histogram's *scrape* name, not a
+  registered metric. Checking the suffixed name against the registry reports a
+  metric that does exist.
+- `keystone_dependency_up` was a series the dashboard referenced and nothing had
+  built. Rather than delete the panel, the gauge was added and fed from the
+  readiness report — so §5.2's probe became alertable, and the metric and the
+  endpoint cannot disagree because they are the same call.
+
+The general liveness gate carries over from §4.4: **every registered Keystone series
+must have a call site in `src/`**, so a rename or a deletion fails the build.
+
+### `/metrics` was rate limited
+
+The dead-Redis probe produced `key_prefix="global"` **three** times for one request:
+the login, plus the two `/metrics` fetches around it. A scrape endpoint behind a
+rate limiter fails the way a dashboard failing at 3am fails — the scraper gets 429s
+and stops, and the metrics are gone exactly when something is wrong. Exempted with
+the probes, and the count dropped to one per limiter per request.
+
+### Two mistakes in the test, both of which looked like missing metrics
+
+- The scrape helper appended `_count` to **every** series, so counters landed under
+  a key nobody looked up and three tests failed against counters that were moving
+  correctly. The §4.4 suite has the right form and this one was mis-transcribed
+  from it.
+- `samplesFor` was synchronous and called `.split` on the promise from
+  `register.metrics()`. The failure was
+  `register.metrics.split is not a function`, which reads like the metric was
+  missing rather than like the test forgot an `await`, and cost three test runs.
+
+## 5.2 status — done, and the deployment had no readiness probe at all
+
+**`/ready` did not exist.** The roadmap's claim that "`/health` and `/ready`
+exist" was itself stale, and what the manifests did about it was the finding.
+
+**SEC-056, high. `k8s/base/deployment.yaml` pointed its `readinessProbe` at
+`/health`** — the only one of the two endpoints that was real. `/health` returns
+`{status: "ok"}` unconditionally and touches nothing external, so a pod with no
+database was reported **ready**, kept in the load balancer's rotation, and every
+authenticated request it received failed. It pointed there because `/ready` had
+never been written, while `README.md` documented it.
+
+| | question | PostgreSQL down | Redis down |
+|---|---|---|---|
+| `/health` | is this process alive? | **200** | **200** |
+| `/ready` | can it serve a request now? | **503** | **200** `degraded` |
+
+`/health` must not depend on PostgreSQL either: a liveness probe that does turns a
+transient blip into a restart loop, which is a worse outage than the one it was
+reacting to. Redis alone is `degraded` and answers 200 — a pod with no Redis falls
+back to the in-process queue and can still authenticate, so removing it from the
+rotation would take authentication offline for a recoverable degradation.
+
+Both checks are real commands — `select 1` and `ping` — each bounded at 2s, run in
+parallel. A status read is not enough: a pool that exists is not a database that
+answers, and the shared Redis client is `lazyConnect`, so its status is `"wait"`
+until some *other* code path issues a command.
+
+The §3.1 layering rule fired on the first version of the route, correctly, because
+it ran `select 1` in a route. The checking moved to `services/health.ts`.
+
+**SEC-057, medium. A Redis outage made the probe unable to report the Redis
+outage.** Both probes sat behind the global rate limiter — an `onRequest` hook, so
+before the handler — and the limiter uses Redis. With both dependencies down, over a
+real socket:
+
+```
+handler's own verdict    2.0s   every call
+1st HTTP response        8.1s
+2nd HTTP response       20.3s
+3rd HTTP response       20.4s
+```
+
+Against the manifest's `timeoutSeconds: 5`, the kubelet would have recorded a
+**timeout** rather than the 503, during precisely the outage the probe exists to
+report. With Redis healthy the same call took **31ms**, which is what identified the
+limiter. After the exemption: 576ms, 2.0s, 2.0s.
+
+Getting there took ruling out three candidates, and the wrong one is the lesson:
+
+| hypothesis | test | result |
+|---|---|---|
+| the probe's own timeout is too long | per-check latencies in the body | 2.0s — handler is fine |
+| `ioredis` queues the abandoned `ping` | replaced `ping()` with a status read | still 20s — not ioredis |
+| `app.inject` resolves late, so this is a test artefact | hit a **real socket** | still 20s — it is real |
+| the global rate limiter | dead database, healthy Redis | **31ms** — confirmed |
+
+If `inject` had been the source, the fix would have been aimed at the test and the
+probe would still ship taking twenty seconds during an outage.
+
+Two traps worth keeping, both in [`docs/security/monitoring.md`](security/monitoring.md):
+a cache-busting query string on an entry module does **not** reach its dependencies,
+so `import("./index.js?dead=1")` got the healthy pool and the first version of the
+test asserted nothing — the outage is now produced in a separate process. And
+`return reply;` from an async `onRequest` hook **deadlocks the request**; the
+exemption is a bare `return;` with a comment saying why.
+
+Thirteen cases, each against a real server: the probes answer unauthenticated,
+report both dependencies with a latency, stay inside the manifest's timeout on
+repeat calls, distinguish degraded from unavailable, and the same process serves
+real traffic again once the database is back.
+
+## 5.4 status — the manifest gate exists, and it caught a dead check of its own
+
+`scripts/verify-k8s-manifests.mjs` renders `k8s/base` and both overlays and fails
+on a readiness probe not at `/ready`, a liveness probe not at `/health`, an image
+tag that is `:latest` or disagrees with `package.json`, a container with no resource
+limit or request, a variable `config.ts` insists on that nothing provides, an
+`envFrom` pointing at nothing, and a placeholder. It runs in the `gates` job and is
+a required check on `main`. Each was verified by planting it.
+
+**`newTag: latest` was the placeholder**, and the tag in `deployment.yaml` was
+decorative: a kustomization `images` entry overrides it. Both are pinned to the
+version now, and the check compares the *rendered* result, which is the only
+comparison that can tell the truth about what a deployment would run.
+
+The YAML reader is hand-written (`scripts/lib/yaml.mjs`) so the gate has no second
+failure mode. It had three bugs, each making the gate report something false — and
+the third is the one worth naming:
+
+> `containersOf` read `spec.containers`, but a Deployment has them at
+> `spec.template.spec.containers`. It returned nothing, so **the entire Deployment
+> block was dead code** and the gate printed `version: 3.4.0 (manifest image tag
+> matches package.json)` while the image was `:latest`.
+
+A summary line claiming a check that had never run — a check that could not fail,
+which is the failure this programme has been about all along. It was visible only
+because the summary asserted something a reader could contradict by opening the
+file.
+
+Two things came out of it. `scripts/lib/patch.mjs` throws when a replacement
+matches nothing, because a `str.replace` that changes nothing is a silent no-op
+that looks exactly like a success — one of these migrations reported "manifests
+pinned to 3.4.0" for a pattern indented two spaces off, and I believed it. And every
+claim now gets checked against the file it is about.
+
 ## 5.3 The SDK packages
 
 **Finding:** five packages, no release discipline of their own. The
@@ -1000,6 +1389,71 @@ that `/health` still succeeds.
 **Gate:** every code sample in the documentation compiles or runs. This is the
 documentation equivalent of a regression test, and it is the only thing that stops
 example code decaying into fiction.
+
+## 5.3 status — done, and the documentation imported a package that did not exist
+
+### The samples compile, and the specifiers resolve
+
+`scripts/verify-doc-samples.mjs` extracts every ```ts fence from
+`HOW-KEYSTONE-WORKS.md` and `INTEGRATION.md`, writes each to its own module, and
+compiles them with the repository's own `tsc` against the real `packages/*`.
+Fences that make no claim about this product's API are counted and listed, not
+compiled — padding the documentation to satisfy a linter produces worse
+documentation.
+
+**What it found: the guide told users to import `@hilbras/keystone/sdk`, a
+subpath the published package did not serve.** There was no `exports` map and no
+`sdk` directory, so it did not resolve for anybody who installed it. The
+`package.json` now has an `exports` map with `.`, `./sdk` and `./package.json`,
+which also closes the deep-import surface into a security product's internals.
+
+The important part of this gate is the part that is **not** the compile. The
+first version aliased `@hilbras/keystone/sdk` in a `tsconfig`, so the sample
+compiled and the documentation was still wrong. So every specifier is *also*
+resolved against the real `exports` map, and the entries are checked against the
+build output. Verified by deleting the `./sdk` entry.
+
+Two samples that genuinely are fragments — narrative sketches referring to
+`base64url`, `issuer`, `KEYSTONE` — now say so on their first line. The marker is
+in the documentation, so a reader who copies the fence learns from the fence that
+it is not standalone, and the gate and the reader are looking at the same thing.
+
+### One version, and a declared support range
+
+The five packages were all at `1.0.0` against a 3.4.0 server, which is the clearest
+possible statement that the constraint was never stated anywhere. They now share
+the server's version and declare:
+
+```json
+"keystonePeer": { "server": ">=3.4.0 <3.5.0" }
+```
+
+A range rather than the exact version, because that is what the cadence supports:
+a server at 3.5.0 satisfies the SDK published alongside it, and stating `3.5.0`
+exactly would be a promise nothing has measured.
+
+`keystonePeer` rather than `peerDependencies`, because `@hilbras/keystone` is not
+a package to resolve — it is *this* server, and putting it in `peerDependencies`
+would send npm looking for something that is not on the registry.
+
+`scripts/sync-sdk-versions.mjs` keeps the five together and recomputes their
+ranges; `scripts/verify-sdk-packages.mjs` fails if they drift, if a range excludes
+the version being released, if a sibling dependency is not the exact version, or if
+a package does not compile.
+
+**That gate's first run reported four of the five packages as broken** —
+`Cannot find name 'URL'`, `Cannot find name 'node:fs/promises'`. Not defects: the
+packages carry their own `typescript@5.9.3` and `@types/node`, and the gate was
+using the repository's TypeScript 7. A gate that reports a toolchain mismatch as
+a code defect is worse than no gate, because the fix it implies is wrong. It now
+uses each package's own compiler and reports the skew as a note, not a failure.
+
+`scripts/bump-version.mjs` does the release bump in one command across
+`package.json`, both manifests, `package-lock.json` (which carries the version
+twice) and the five packages. Its first version rewrote the *comment* above
+`newTag:` instead of the value, because the comment names the key — and its second
+replaced the whole image reference with a bare version number. Both were caught by
+`verify:k8s`; both fixes anchor on the line rather than on the text.
 
 ## 5.4 Kubernetes manifests that are current
 

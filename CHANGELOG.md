@@ -5,6 +5,422 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-09-29
+
+*Operability, and the audit's own scope. The release where the deployment turned
+out to have no readiness probe at all, the most important operational signal turned
+out to be silent, and 4,031 lines of published code and security controls turned
+out never to have been looked at.*
+
+### SEC-056, high — the deployment advertised a readiness probe that could not fail
+
+**`/ready` did not exist.** The roadmap's claim that "`/health` and `/ready`
+exist" was itself stale, and what the manifests did about it was the finding.
+
+`k8s/base/deployment.yaml` pointed its `readinessProbe` at `/health` — the only
+one of the two endpoints that was real. `/health` returns `{status: "ok"}`
+unconditionally and touches nothing external, so a pod with no database was
+reported **ready**, kept in the load balancer's rotation, and every authenticated
+request it received failed. It pointed there because `/ready` had never been
+written, while `README.md` documented it.
+
+```
+/health   is this process alive?       PostgreSQL down -> 200    Redis down -> 200
+/ready    can it serve a request now?  PostgreSQL down -> 503    Redis down -> 200 degraded
+```
+
+`/health` must not depend on PostgreSQL either: a liveness probe that does turns a
+transient blip into three failed probes and a restart, a worse outage than the one
+it was reacting to. Redis alone is `degraded` and answers 200 — a pod with no
+Redis falls back to the in-process queue and can still authenticate, so removing
+it from the rotation would take authentication offline for a recoverable
+degradation.
+
+Both checks are real commands — `select 1` and `ping` — each bounded at 2s, run in
+parallel. A status read is not enough: a pool that exists is not a database that
+answers, and the shared Redis client is `lazyConnect`, so its status is `"wait"`
+until some *other* code path issues a command.
+
+### SEC-057, medium — a Redis outage made the probe unable to report the Redis outage
+
+Both probes sat behind the **global rate limiter** — an `onRequest` hook, so before
+the handler — and the limiter uses Redis. With both dependencies unreachable, over
+a real socket:
+
+```
+handler's own verdict    2.0s   every call
+1st HTTP response        8.1s
+2nd HTTP response       20.3s
+3rd HTTP response       20.4s
+```
+
+Against the manifest's `timeoutSeconds: 5` the kubelet would have recorded a
+**timeout** rather than the 503, during precisely the outage the probe exists to
+report. With Redis healthy the same call took **31ms**, which is what identified
+the limiter. After the exemption: 576ms, 2.0s, 2.0s.
+
+Getting there meant ruling out three candidates, and the wrong one is the lesson:
+the probe's own timeout was fine (2.0s, from the per-check latencies in the body);
+`ioredis` was not it (a status read instead of `ping()` still took 20s); and
+`app.inject` was not it either (a real socket still took 20s). If `inject` had been
+the source, the fix would have been aimed at the test and the probe would still
+ship taking twenty seconds during an outage.
+
+Two traps are recorded permanently: a cache-busting query string on an entry
+module does **not** reach its dependencies, so `import("./index.js?dead=1")` got
+the healthy pool and the first version of the test asserted nothing; and
+`return reply;` from an async `onRequest` hook **deadlocks the request**.
+
+### The metrics an operator needs at 3am, and the one that was silent
+
+**The emergency local limiter engaged with no signal at all.** Both limiters run on
+Redis so the budget is shared across the fleet. When Redis is unavailable the
+per-endpoint ones fall back to a per-process budget and the *global* one **fails
+open** — every request allowed. The `catch` in `checkLimit` returned a decision
+with no counter, no log line and no event.
+
+A counter of *refusals* would not have caught it. Under per-process limits the
+refusal rate looks normal, because each instance is still enforcing a budget. What
+is anomalous is the **fallback engaging**.
+
+```
+keystone_rate_limit_redis_errors_total{key_prefix="global"} 1
+keystone_rate_limit_redis_errors_total{key_prefix="login"} 1
+keystone_emergency_local_limiter_total{key_prefix="login",outcome="allowed"} 1
+keystone_authentication_attempts_total{outcome="failure",reason="invalid_credentials"} 1
+```
+
+Also new: `keystone_authentication_attempts_total{outcome,reason}`,
+`keystone_token_operations_total{operation,outcome}`,
+`keystone_deliveries_total{kind,outcome}`,
+`keystone_delivery_duration_seconds{kind}` and
+`keystone_dependency_up{dependency}` — the last fed from the readiness report, so
+the metric and the endpoint cannot disagree because they are the same call.
+
+`outcome` and `reason` are separate labels because the question is not "are logins
+failing" but "why": a spray, a broken second factor and a buggy client all read as
+"logins are failing" and none of them is actionable.
+
+`docs/dashboards/authentication.json` is **generated** and the generator fails if
+a panel names a series that is not registered — a dashboard is the one artefact
+here that nobody runs, so a renamed series would leave it blank at 3am. It caught
+two false reports on its first run, including `keystone_dependency_up`, a series it
+referenced and nothing had built.
+
+`/metrics` was itself rate limited: one login against a dead Redis produced three
+`key_prefix="global"` errors, because the two `/metrics` fetches around it counted
+too. Exempted with the probes.
+
+### The audit's own scope was an assumption
+
+`src/`. Not stated by anyone; `packages/` and `scripts/` fell outside it because
+nobody decided they should be inside.
+
+```
+packages/   1,107 lines   five packages published to npm — tokens, cookies,
+                          PKCE verifiers, nonces
+scripts/    2,924 lines   the security control suite: every gate here is a file
+```
+
+**The registry now covers everything the repository publishes or runs** — `src/`,
+`packages/`, `scripts/`, `k8s/`, `.github/workflows/` — with three named
+exclusions, each with its cost stated. `frontend/` is the honest gap: 69 `.tsx`
+files that Semgrep's TypeScript support aborts on. The exclusion is `frontend/`,
+**not** TSX — `packages/keystone-react/src/index.tsx` parses at 100% and is
+scanned.
+
+The scope is a field in `registry.json`, the renderer emits it, and the checker
+fails if it names a tree that does not exist or an exclusion without a reason.
+
+### 63 CodeQL alerts, not 25 — and 24 dismissed with a reason
+
+Ten of the fourteen rules were the same false positive repeated, and 21 alerts were
+one already-enumerated decision, so the grouping is the durable artifact
+(`docs/security/codeql-triage.md`). Afterwards: 24 dismissed, 39 open, **and every
+one of the 39 is real**.
+
+The most instructive dismissal is `gcm-no-tag-length`: 4 **errors** demanding a
+12-byte auth tag. 12 bytes is the **IV** length. NIST SP 800-38D's strongest GCM
+tag is 128 bits, which is what Node defaults to and what WebCrypto mandates —
+obeying the rule would have weakened all four. And while checking the question the
+rule was actually asking — is the tag *verified on decrypt*? — the answer turned up
+SEC-059 instead.
+
+### SEC-058, low — the console email provider forged log entries
+
+`ConsoleEmailProvider` printed `To:`, `Subject:` and the body on separate lines with
+the values interpolated raw, so a newline in a subject or body wrote log entries of
+its own. Now one JSON-encoded line.
+
+### SEC-059, medium — one secrets provider encrypts with unauthenticated CBC
+
+Four of the five locally-encrypting providers use AES-256-**GCM**.
+`secrets/azureKeyVault.ts` uses AES-256-**CBC**, which is malleable and
+unauthenticated: someone with write access to the stored ciphertext can flip
+plaintext bits without the key, which is the position encrypting secrets at rest
+exists to defend against. Exploitability is limited — a bit flip in a TOTP secret
+does not obviously yield it — which is why this is medium.
+
+**Not fixed, deliberately.** Changing the cipher invalidates every already-encrypted
+value, and a secrets provider has no safe default for a value it cannot decrypt.
+`db/reencryptOidcSecrets.ts` has the shape of the migration. Recorded so it is not
+lost.
+
+### SEC-060, low — two provably dead branches in the workflow blocked-reason chain
+
+Dismissed in the first triage pass as "CodeQL wants a switch", which is true and
+would have closed a real finding. The alert's own message is more specific: *"This
+use of variable `isOutOfScope` always evaluates to false."* It is — and so does
+`triggerMismatch`, because line 145 returns early when either is set. The security
+behaviour was never affected; the *explanation* was, so an out-of-scope event left
+no run record and no reason. Removed. Reading the rule's name and stopping there is
+how a correct detector gets dismissed.
+
+### Every action was pinned to a major version, which is not a pin
+
+`actions/checkout@v4` looks pinned and is not: `@v4` is a mutable tag, so whoever
+owns the action chooses the code that ships in a release, after the review that
+approved it. All 46 are now SHA-pinned with the version in a comment, and
+`verify-action-pins.mjs` fails a PR that adds an unpinned one — and fails a SHA pin
+with *no* version comment, because a correct pin nobody can update on purpose is
+barely better than a tag.
+
+### The Node version was written out in ten places, and one of them did not exist
+
+Deciding on Dependabot #34 turned up a dependency the decision could not be made
+without. `benchmark.yml` already pointed `setup-node` at a **`.nvmrc` that was never
+created**; the Dockerfile said 22 in two places, eight workflows said 22, and
+`package.json` had no `engines` field. Merging that PR would have produced a
+container on Node 26 while CI tested 22 — the mismatch that turns "the tests
+passed" into "the release does not work", and the build could not see it.
+
+Now `.nvmrc` holds the version, all nine `setup-node` steps read it, `engines.node`
+is declared, and `verify-node-version.mjs` fails if any of the four disagree.
+#34 is closed rather than merged: the bump is a decision with a test run behind it,
+and it is now a one-file change.
+
+Its first version had a fallback that **accepted every range it did not recognise**,
+so `engines.node: ">=23"` passed for a project on 22. A permissive fallback in a
+gate is worse than none — it reports the thing the gate exists to catch as fine.
+`rangeAdmits` is now unit-checked against eighteen cases including `""`, `">="` and
+`"nonsense"`.
+
+### 3.3.0 and 3.4.0 were published with no changelog entry
+
+Found by the new `verify-changelog.mjs`, which also compares against the npm
+registry — the existing release check verified the changelog *ships*, and nothing
+checked that it was *current*. Both entries are written, the 1.1.0–1.6.0 block is
+reordered, and all 14 published versions are now represented.
+
+### The documentation told users to import a package that did not exist
+
+`HOW-KEYSTONE-WORKS.md` imported `@hilbras/keystone/sdk`, a subpath the published
+package did not serve: there was no `exports` map and no `sdk` directory, so it did
+not resolve for anyone who installed it.
+
+`scripts/verify-doc-samples.mjs` compiles every sample in the two guides against
+the real packages **and** resolves each specifier against the real `exports` map.
+The second half matters more than the first: the first version aliased the subpath
+in a `tsconfig`, so the compile passed and the documentation was still wrong.
+
+### A hand-rolled YAML reader, and a gate inside it that could not fail
+
+`scripts/verify-k8s-manifests.mjs` renders `k8s/base` and both overlays without
+pulling in the kustomize binary, and fails on a readiness probe not at `/ready`, a
+liveness probe not at `/health`, an image tag that is `:latest` or disagrees with
+`package.json`, a container with no resource limit, a variable `config.ts` insists
+on that nothing provides, and a placeholder.
+
+Its YAML reader (`scripts/lib/yaml.mjs`) had three bugs, each making the gate
+report something false. The third is the one worth naming: `containersOf` read
+`spec.containers`, but a Deployment has them at `spec.template.spec.containers`, so
+it returned nothing and **the entire Deployment block was dead code** — while the
+gate printed
+
+```
+version: 3.4.0 (manifest image tag matches package.json)
+```
+
+with the image at `:latest`. A summary line claiming a check that had never run. It
+was visible only because the summary asserted something a reader could contradict
+by opening the file.
+
+That produced `scripts/lib/patch.mjs`, which throws when a replacement matches
+nothing. A `str.replace` that changes nothing is a silent no-op that looks exactly
+like a success — one of these migrations reported "manifests pinned to 3.4.0" for a
+pattern indented two spaces off, and it was believed.
+
+### Changed
+
+- **`lint` covers `packages/` and `scripts/`.** Sixteen warnings, two of them
+  declaration-that-is-built-and-never-used: `verify-image-hygiene.mjs` declared
+  `CREDENTIAL_FILES` and never used it, while the built-image check hardcoded a
+  *smaller* set with no `.keystore` and no `.git/`; and `keystone-sdk` built a
+  `fields` array and never used it. The `find` expression is now derived from the
+  list.
+- **semgrep covers `src packages scripts`**, and every rule in `.semgrep.yml` now
+  carries a `paths` block saying where its construct can exist. Eight of twelve
+  rules had no scope at all, because the scan was only ever pointed at `src/`.
+  `keystone-no-console-in-server` was tried at `packages/**` (5 findings, all a
+  browser library correctly reporting a failed connect) and at `src/**`
+  (**151** findings, mostly `src/cli.ts`) — and does not extend, with the reason
+  recorded.
+- **`verify:image` now runs on pull requests.** It existed only in `release.yml`,
+  which fires on a tag push, so `.dockerignore` and the build context were never
+  checked on the PR that could have broken them.
+- **The five SDK packages share the server's version** and declare
+  `keystonePeer.server: ">=3.4.0 <3.5.0"`. They were all at `1.0.0` against a 3.4.0
+  server, which is the clearest possible statement that the constraint was never
+  stated anywhere. `scripts/sync-sdk-versions.mjs` keeps them together.
+- **`package.json` gains an `exports` map**, which makes the documented
+  `@hilbras/keystone/sdk` subpath resolve and closes the deep-import surface.
+  Deep imports into a security product's internals were never supported; this
+  makes that explicit rather than incidental.
+
+### The `gates` job, which is a required check on `main`
+
+```
+lint  registry:check  verify:changelog  check:docs  reaudit:check
+review-api-surface  dashboard:auth  verify:node  verify-action-pins
+verify:image  verify:doc-samples  verify:sdk  verify:k8s
+```
+
+Fourteen gates, all of which run on every pull request. The three that used to
+exist only in `release.yml` — and so only on a tag push — were the reason five
+controls appeared to be in place and were not.
+
+## [3.4.0] - 2026-09-28
+
+*Behaviour. Six suites, and every one of them found something — which is not a
+statistic you can plan for, it is what happens when the tests finally exercise the
+code paths that were written to be exercised.*
+
+### SEC-055, high — four defects in the CLI, and none of them reachable
+
+`user:create` never worked. Every connection-opening CLI command hung. `secrets:rotate`
+reported success while rotating nothing. `--version` printed a hardcoded `1.9.0`.
+
+The common cause is the third one, and it is the one worth remembering:
+**`withReleasedConnections` did not exist.** Nothing closed the PostgreSQL pool,
+the shared Redis client, or the permission cache's own connection, so the first
+command that opened a connection opened it and then waited for the process to exit
+on its own. `user:create` additionally never called `loadSigningKeys()`, so it had
+no key to sign with.
+
+`secrets:rotate` with the environment provider now **fails loudly** rather than
+reporting success. It cannot be idempotent — minting a key in-process would give
+every instance a different one — and a rotation that silently does nothing is
+worse than one that refuses. The database provider genuinely rotates, so the test
+asserts the key *changes*.
+
+11 of 21 tests fail when reverted.
+
+### SEC-052, high — Zitadel sent no nonce, pinned no algorithm, required no claims
+
+Three omissions in one connector, and the shape of all three is the same: a
+verification step that existed and did not check anything.
+`src/services/connectors/types.ts` now requires `nonce`, `algorithms` and
+`requiredClaims` on an OIDC connector, so the next connector cannot be added
+without them. 11 of 70 tests fail when reverted.
+
+### SEC-051, high — the WebAuthn challenge store was a process-local `Map`
+
+Two replicas, two stores, so a challenge minted on one pod could not be verified
+on the other. Redis `GETDEL`, which is single-use by construction.
+SEC-050 is the finding that found it: the stored challenge was not the returned
+challenge, so **WebAuthn could never complete at all** — `@simplewebauthn`
+re-encodes a string challenge, so the value in the database was not the value sent
+to the browser. 12 of 17 tests fail when reverted.
+
+### SEC-053, high — three counts, all wrong
+
+`isFailedLoginAnomaly` recorded the failure as it read the count, so the check
+raised its own threshold. The login route re-emitted an event the domain service
+had already emitted. And `setTimeout(() => this.run(...))` discarded a promise, so
+a job that threw took the process with it.
+
+All three were `void`-shaped: a return value nobody read, a subscription that
+fired twice, a promise nobody held. 2 of 17 tests fail when SEC-051's fix is
+reverted alone.
+
+### SEC-049 and SEC-054, medium
+
+The email-verification token was not single-use under concurrency, and every
+unmatched URL became its own Prometheus series — which is a cardinality bomb
+reachable by anyone who can send a request.
+
+### The dead counter
+
+`keystone_failed_logins_total` was registered and never incremented, so it
+exported as a series of zeros, which on a dashboard is indistinguishable from a
+series that should read zero. It is now fed by an **event subscriber**, not a route
+call, because `user_login_failed` is emitted from six places and a route-level
+counter would have to be added to all six.
+
+`src/tests/integration/metrics.test.ts` now asserts statically that every
+registered `keystone_*` series has a call site in `src/`. A behavioural check
+would only have proved which subsystems that one test happens to touch —
+`keystone_cache_hits_total` is perfectly alive and no amount of logging in and out
+of the server touches it. What rots is the pairing between a registered name and
+the code that writes to it, and that is a property of the source.
+
+
+## [3.3.0] - 2026-09-28
+
+*Codebase shape. The release that turned two conventions into gates, and turned
+one thing in the roadmap into a finding.*
+
+### Two layering rules, and the gate that would have caught them
+
+`AGENTS.md` said routes must not import the database client and that `src/services/domain/`
+must not throw. Both were true in the document and false in the code:
+`setup.ts` and `admin/platform.ts` reached past the data layer, and
+`workflows.ts` did authorization by hand.
+
+Two semgrep rules enforce them now, and they are the working pair
+`keystone-route-imports-db` and `keystone-route-imports-drizzle`, with paths
+anchored as `/src/routes/**`.
+
+**`pattern-regex` was tried and rejected** for the layering rules. A check that
+cannot fire looks exactly like a codebase with no violations, and both obvious
+`pattern` forms for these imports quietly match nothing: `import $X from ".../db/index.js"`
+does not treat `...` as a path wildcard inside the string, and
+`import $X from "drizzle-orm"` does not match a *named* import list, which is how
+both files actually import it. Every rule was verified against a deliberately
+planted violation before being written down.
+
+### `review:api` became a gate
+
+It reported; it did not fail the build. It now gates the three checks that are
+mechanically decidable — no authentication guard, an empty `PUBLIC_BY_DESIGN`
+reason, an unresolvable guard name. The 27 routes with no authorization guard and
+the 30 with no rate limit stay **reported only**, because a gate that fires on 57
+routes trains people to ignore it, and a mechanical rule cannot tell a login from
+a discovery document.
+
+### `console.*`, 101 → 12
+
+Read through the existing `request.log` / `serviceLogger` calls rather than
+replaced with a blanket suppression, because the point is that a log line carries
+its request id. The twelve that remain are files that legitimately log.
+
+### A fixed regression, in the same release
+
+The §3.2 `console.*` migration mangled three multi-line calls in
+`src/services/secrets/environment.ts` into bare statements that **discarded the
+JWT PEM output**. Caught before release, and it is the reason
+`verify-release-metadata` now checks the tarball contents rather than trusting
+that a build produced something.
+
+### The gates moved where they run
+
+`npm run lint`, `registry:check`, `check:docs`, `reaudit:check` and
+`review-api-surface` ran only in `release.yml` — which fires only on a **tag
+push**. So five gates did not run on any pull request. They now run in a new
+`gates` job in `ci.yml`, which is a required status check on `main`.
+
+That was the same defect three times over: a control that exists, and does not
+cover what it is assumed to.
 ## [3.2.0] - 2026-09-28
 
 *The database layer. The release the roadmap called medium-risk, and which turned
@@ -1313,6 +1729,109 @@ factor mandatory.
 - Backend test suite passes with the security regression suite enabled.
 - Frontend production build passes.
 
+## [1.6.0] - 2026-09-20
+
+Frontend upgrades — React 19, Vite 8, Tailwind 4, TypeScript 7.
+
+### Changed
+
+- **React** 18.3.1 → 19.3.0
+- **React DOM** 18.3.1 → 19.3.0
+- **Vite** 5.4.21 → 8.3.0
+- **@vitejs/plugin-react** 4.7.0 → 6.1.1
+- **Tailwind CSS** 3.4.19 → 4.3.3 — complete rewrite: config moved from JS to CSS `@theme` directive, PostCSS plugin replaced with `@tailwindcss/vite`.
+- **@simplewebauthn/browser** 13.3.0 → 14.0.0
+- **TypeScript** 5.9.3 → 7.0.2 (frontend)
+- **@types/react** 18.3.31 → 19.0.0
+- **@types/react-dom** 18.3.7 → 19.0.0
+
+### Removed
+
+- **autoprefixer** — not needed with Tailwind 4.
+- **postcss** — not needed with Tailwind 4.
+- **tailwindcss-animate** — animations built into Tailwind 4.
+
+### Added
+
+- **@tailwindcss/vite** — replaces PostCSS plugin approach.
+
+### Migration notes
+
+- `tailwind.config.js` deleted — config now lives in `src/tailwind.css` using `@theme` directive.
+- `postcss.config.js` deleted — Tailwind 4 uses Vite plugin directly.
+- `src/index.css` updated to use `@import "./tailwind.css"` instead of `@tailwind base/components/utilities`.
+
+[1.7.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.7.0
+[1.6.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.6.0
+[1.5.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.5.0
+[1.4.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.4.0
+[1.3.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.3.0
+[1.2.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.2.0
+[1.1.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.1.0
+[1.0.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.0.0
+## [1.5.0] - 2026-09-20
+
+Auth & infrastructure upgrades — jose 6, ioredis 6, bullmq 6, simplewebauthn 14, nodemailer 10.
+
+### Changed
+
+- **jose** 5.10.0 → 6.2.12 — `KeyLike` type removed, replaced with `CryptoKey`.
+- **ioredis** 5.11.1 → 6.0.0
+- **bullmq** 5.80.2 → 6.3.8
+- **@simplewebauthn/server** 13.3.2 → 14.0.2 — `AuthenticatorTransportFuture` renamed to `AuthenticatorTransport`.
+- **nodemailer** 9.0.3 → 10.0.10
+
+### Fixed
+
+- **jose 6 migration** — Replaced `KeyLike` with `CryptoKey` in secrets provider, tokens service, and database/environment secrets providers.
+- **simplewebauthn 14 migration** — Renamed `AuthenticatorTransportFuture` to `AuthenticatorTransport` in webauthn service.
+
+## [1.4.0] - 2026-09-20
+
+Fastify ecosystem upgrades — all plugins updated to latest major versions.
+
+### Changed
+
+- **fastify-plugin** 5.1.0 → 6.0.0
+- **@fastify/cookie** 10.0.1 → 11.1.2
+- **@fastify/cors** 10.1.0 → 11.3.0
+- **@fastify/static** 8.3.0 → 10.1.4
+- **@fastify/swagger-ui** 5.2.6 → 6.1.1
+
+## [1.3.0] - 2026-09-20
+
+Core tooling upgrades — TypeScript 7, Zod 4, Drizzle latest, Commander 15, Dotenv 18.
+
+### Changed
+
+- **TypeScript** 5.9.3 → 7.0.2 — new major version with stricter type checking.
+- **Zod** 3.25.76 → 4.6.5 — API redesign: `z.record()` now requires explicit key type. Updated 7 call sites across 6 route files.
+- **Drizzle ORM** 0.31.4 → 0.45.2
+- **Drizzle Kit** 0.22.8 → 0.31.10
+- **Commander** 12.1.0 → 15.0.0
+- **Dotenv** 16.6.1 → 18.0.1
+
+### Fixed
+
+- **Zod 4 migration** — Updated all `z.record()` calls to include explicit `z.string()` key type parameter (sso.ts, auth.ts, config.ts, profile.ts, setup.ts, webauthn.ts, workflows.ts).
+
+## [1.2.0] - 2026-09-20
+
+Dependency updates — safe patches and minor versions.
+
+### Changed
+
+- **fastify** 5.10.0 → latest 5.x
+- **@fastify/swagger** 9.8.0 → latest 9.x
+- **argon2** 0.44.0 → latest 0.x
+- **otpauth** 9.5.1 → latest 9.x
+- **@opentelemetry/sdk-node** 0.220.0 → latest 0.x
+- **@opentelemetry/auto-instrumentations-node** 0.78.0 → latest 0.x
+- **autoprefixer** 10.5.2 → latest 10.x (frontend)
+- **postcss** 8.5.19 → latest 8.x (frontend)
+- **lucide-react** 1.24.0 → latest 1.x (frontend)
+- **@playwright/test** 1.61.1 → latest 1.x (frontend)
+
 ## [1.1.0] - 2026-09-19
 
 Security hardening, architecture improvements, and enterprise SSO enhancements.
@@ -1357,106 +1876,3 @@ Security hardening, architecture improvements, and enterprise SSO enhancements.
 - **Information leak removal** — Queue class name no longer exposed in API response.
 - **Input validation** — All route inputs validated with Zod schemas.
 
-## [1.2.0] - 2026-09-20
-
-Dependency updates — safe patches and minor versions.
-
-### Changed
-
-- **fastify** 5.10.0 → latest 5.x
-- **@fastify/swagger** 9.8.0 → latest 9.x
-- **argon2** 0.44.0 → latest 0.x
-- **otpauth** 9.5.1 → latest 9.x
-- **@opentelemetry/sdk-node** 0.220.0 → latest 0.x
-- **@opentelemetry/auto-instrumentations-node** 0.78.0 → latest 0.x
-- **autoprefixer** 10.5.2 → latest 10.x (frontend)
-- **postcss** 8.5.19 → latest 8.x (frontend)
-- **lucide-react** 1.24.0 → latest 1.x (frontend)
-- **@playwright/test** 1.61.1 → latest 1.x (frontend)
-
-## [1.3.0] - 2026-09-20
-
-Core tooling upgrades — TypeScript 7, Zod 4, Drizzle latest, Commander 15, Dotenv 18.
-
-### Changed
-
-- **TypeScript** 5.9.3 → 7.0.2 — new major version with stricter type checking.
-- **Zod** 3.25.76 → 4.6.5 — API redesign: `z.record()` now requires explicit key type. Updated 7 call sites across 6 route files.
-- **Drizzle ORM** 0.31.4 → 0.45.2
-- **Drizzle Kit** 0.22.8 → 0.31.10
-- **Commander** 12.1.0 → 15.0.0
-- **Dotenv** 16.6.1 → 18.0.1
-
-### Fixed
-
-- **Zod 4 migration** — Updated all `z.record()` calls to include explicit `z.string()` key type parameter (sso.ts, auth.ts, config.ts, profile.ts, setup.ts, webauthn.ts, workflows.ts).
-
-## [1.4.0] - 2026-09-20
-
-Fastify ecosystem upgrades — all plugins updated to latest major versions.
-
-### Changed
-
-- **fastify-plugin** 5.1.0 → 6.0.0
-- **@fastify/cookie** 10.0.1 → 11.1.2
-- **@fastify/cors** 10.1.0 → 11.3.0
-- **@fastify/static** 8.3.0 → 10.1.4
-- **@fastify/swagger-ui** 5.2.6 → 6.1.1
-
-## [1.5.0] - 2026-09-20
-
-Auth & infrastructure upgrades — jose 6, ioredis 6, bullmq 6, simplewebauthn 14, nodemailer 10.
-
-### Changed
-
-- **jose** 5.10.0 → 6.2.12 — `KeyLike` type removed, replaced with `CryptoKey`.
-- **ioredis** 5.11.1 → 6.0.0
-- **bullmq** 5.80.2 → 6.3.8
-- **@simplewebauthn/server** 13.3.2 → 14.0.2 — `AuthenticatorTransportFuture` renamed to `AuthenticatorTransport`.
-- **nodemailer** 9.0.3 → 10.0.10
-
-### Fixed
-
-- **jose 6 migration** — Replaced `KeyLike` with `CryptoKey` in secrets provider, tokens service, and database/environment secrets providers.
-- **simplewebauthn 14 migration** — Renamed `AuthenticatorTransportFuture` to `AuthenticatorTransport` in webauthn service.
-
-## [1.6.0] - 2026-09-20
-
-Frontend upgrades — React 19, Vite 8, Tailwind 4, TypeScript 7.
-
-### Changed
-
-- **React** 18.3.1 → 19.3.0
-- **React DOM** 18.3.1 → 19.3.0
-- **Vite** 5.4.21 → 8.3.0
-- **@vitejs/plugin-react** 4.7.0 → 6.1.1
-- **Tailwind CSS** 3.4.19 → 4.3.3 — complete rewrite: config moved from JS to CSS `@theme` directive, PostCSS plugin replaced with `@tailwindcss/vite`.
-- **@simplewebauthn/browser** 13.3.0 → 14.0.0
-- **TypeScript** 5.9.3 → 7.0.2 (frontend)
-- **@types/react** 18.3.31 → 19.0.0
-- **@types/react-dom** 18.3.7 → 19.0.0
-
-### Removed
-
-- **autoprefixer** — not needed with Tailwind 4.
-- **postcss** — not needed with Tailwind 4.
-- **tailwindcss-animate** — animations built into Tailwind 4.
-
-### Added
-
-- **@tailwindcss/vite** — replaces PostCSS plugin approach.
-
-### Migration notes
-
-- `tailwind.config.js` deleted — config now lives in `src/tailwind.css` using `@theme` directive.
-- `postcss.config.js` deleted — Tailwind 4 uses Vite plugin directly.
-- `src/index.css` updated to use `@import "./tailwind.css"` instead of `@tailwind base/components/utilities`.
-
-[1.7.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.7.0
-[1.6.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.6.0
-[1.5.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.5.0
-[1.4.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.4.0
-[1.3.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.3.0
-[1.2.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.2.0
-[1.1.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.1.0
-[1.0.0]: https://github.com/Hilbras/Keystone/releases/tag/v1.0.0

@@ -1,0 +1,267 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Authentication outcomes",
+      "description": "Every login attempt, by outcome and reason. A rise in invalid_credentials is a spray; a rise in mfa_failed is a user with a broken second factor; a rise in rate_limited is a client with a bug. One undifferentiated failure count answers none of those.",
+      "type": "timeseries",
+      "unit": "short",
+      "targets": [
+        {
+          "expr": "sum by (outcome, reason) (rate(keystone_authentication_attempts_total[5m]))",
+          "legendFormat": "{{outcome}} / {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Failed logins per second",
+      "description": "The alertable shape of the panel above.",
+      "type": "timeseries",
+      "unit": "reqps",
+      "targets": [
+        {
+          "expr": "sum(rate(keystone_authentication_attempts_total{outcome=\"failure\"}[5m]))",
+          "legendFormat": "failures"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Token operations",
+      "description": "Issuance, rotation, and replays. A replay means a credential leaked and somebody came back with it — the single most security-relevant line on this dashboard.",
+      "type": "timeseries",
+      "unit": "short",
+      "targets": [
+        {
+          "expr": "sum by (operation, outcome) (rate(keystone_token_operations_total[5m]))",
+          "legendFormat": "{{operation}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Replays detected",
+      "description": "Alert on any sustained non-zero value.",
+      "type": "stat",
+      "unit": "short",
+      "targets": [
+        {
+          "expr": "increase(keystone_token_operations_total{operation=\"replay\"}[15m])",
+          "legendFormat": "replays / 15m"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Redis unavailable to the rate limiter",
+      "description": "Every rate-limit check that could not reach Redis. The global limiter has no emergency fallback, so a non-zero value here means the **global rate limit is not being applied at all**.",
+      "type": "timeseries",
+      "unit": "short",
+      "targets": [
+        {
+          "expr": "sum by (key_prefix) (rate(keystone_rate_limit_redis_errors_total[5m]))",
+          "legendFormat": "{{key_prefix}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Emergency local limiter engaged",
+      "description": "Rate limiting has fallen back to per-process budgets, so **it is no longer shared across the fleet** — the exact weakness the distributed limiter exists to remove. `allowed` is the one to watch: denials are visible to users, allowances are invisible and are what hide the degradation.",
+      "type": "timeseries",
+      "unit": "short",
+      "targets": [
+        {
+          "expr": "sum by (key_prefix, outcome) (rate(keystone_emergency_local_limiter_total[5m]))",
+          "legendFormat": "{{key_prefix}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Outbound deliveries",
+      "description": "SCIM provisioning and webhook delivery, by outcome.",
+      "type": "timeseries",
+      "unit": "short",
+      "targets": [
+        {
+          "expr": "sum by (kind, outcome) (rate(keystone_deliveries_total[5m]))",
+          "legendFormat": "{{kind}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Delivery latency, p95",
+      "description": "Which consumer is slow, rather than that something is.",
+      "type": "timeseries",
+      "unit": "s",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, kind) (rate(keystone_delivery_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{kind}} p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "title": "Dependency state",
+      "description": "Straight from `/ready`. `1` is healthy, `0` is not, so this reads as a health column rather than a graph. `degraded` means Redis is down and the queue is in-process — authentication still works, which is why `/ready` answers 200.",
+      "type": "stat",
+      "unit": "short",
+      "targets": [
+        {
+          "expr": "max(keystone_dependency_up{database=\"postgres\"})",
+          "legendFormat": "postgres"
+        },
+        {
+          "expr": "max(keystone_dependency_up{redis=\"redis\"})",
+          "legendFormat": "redis"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "keystone",
+    "authentication"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Keystone — authentication",
+  "uid": "keystone-authentication",
+  "version": 1
+}

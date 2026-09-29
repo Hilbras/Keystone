@@ -1,6 +1,7 @@
 import { and, eq, gt, isNull, type SQL } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { db } from "../db/index.js";
+import { recordTokenOperation } from "../plugins/operationalMetrics.js";
 import {
   emailVerificationTokens,
   magicLinks,
@@ -121,7 +122,14 @@ async function claimAndClassify<T extends SingleUseShape>(
     .limit(1)) as T[];
 
   if (!existing) return { outcome: "not_found" };
-  if (existing.usedAt) return { outcome: "replayed", reason: "replayed" };
+  if (existing.usedAt) {
+    // A replay means the credential leaked and somebody came back with it. It is
+    // the single most security-relevant outcome in the system and it had no
+    // series of its own — `keystone_token_operations_total{operation="replay"}`
+    // is that series.
+    recordTokenOperation("replay", "detected");
+    return { outcome: "replayed", reason: "replayed" };
+  }
   if (existing.expiresAt.getTime() <= now.getTime()) {
     return { outcome: "expired", reason: "expired" };
   }
