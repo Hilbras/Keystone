@@ -120,8 +120,15 @@ jobs:
         # happen to call it still passes. Nothing else in the pipeline can see it.
         run: node scripts/review-api-surface.mjs --strict
 
-      - name: Gate — release metadata is consistent
-        run: npm run verify:release
+      # `verify:release` is deliberately NOT here. It checks that `main`, `types`
+      # and `bin` point at files that exist in `dist/`, so it has to run after a
+      # build — and the `backend` job already builds and already runs it. Repeating
+      # it here without a build fails on the missing `dist/`, which is what
+      # happened the first time this job was pushed.
+      #
+      # That is a trap worth naming: the check is not wrong, the ordering is. A
+      # gate that fails for a reason unrelated to the change is a gate people learn
+      # to re-run.
 
   frontend:
     runs-on: ubuntu-latest
