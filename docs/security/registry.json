@@ -726,6 +726,30 @@
       "test": "src/tests/integration/cli.test.ts",
       "documentation": "docs/security/monitoring.md",
       "covers": []
+    },
+    {
+      "id": "SEC-056",
+      "title": "The deployment advertised a readiness probe that could not fail",
+      "severity": "high",
+      "component": "health",
+      "release": "3.5.0",
+      "issue": "`/ready` did not exist. `README.md` documented `GET /health` and `GET /ready` as probe endpoints, and `k8s/base/deployment.yaml` pointed its `readinessProbe` at `/health` \u2014 the only one of the two that was real. `/health` returns `{status: \"ok\"}` unconditionally and touches nothing external, so it answers 200 whenever the process is listening. A pod with no database was therefore reported ready, kept in the load balancer's rotation, and every authenticated request it received failed. The traffic was sent to a pod that could serve none of it, which is the failure a readiness probe exists to prevent.",
+      "fix": "src/routes/health.ts and src/services/health.ts \u2014 `/ready` checks PostgreSQL with `select 1` and Redis with `ping`, each bounded at 2s and run in parallel, and answers 503 only when PostgreSQL is unreachable. Redis alone is `degraded` and answers 200, because a deployment with no Redis falls back to the in-process queue and the local rate limiter and can still authenticate. `/health` is unchanged and still answers 200 with no database, so a transient blip does not fail liveness and cause a restart loop. The route holds no queries \u2014 the \u00a73.1 layering rule fired on the first version, correctly, and the checking moved to a service. k8s/base/deployment.yaml \u2014 readinessProbe now points at `/ready`.",
+      "test": "src/tests/integration/readiness.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-057",
+      "title": "A Redis outage made the readiness probe unable to report the Redis outage",
+      "severity": "medium",
+      "component": "health",
+      "release": "3.5.0",
+      "issue": "Both probe endpoints sat behind the global rate limiter, which is an `onRequest` hook and so runs **before** the route handler. The limiter uses Redis. With PostgreSQL and Redis both unreachable, measured over a real socket: the handler reported its verdict in 2.0s every time, and the HTTP responses took 8.1s, then 20.3s and 20.4s. The time was spent in the limiter. Against `timeoutSeconds: 5` in k8s/base/deployment.yaml the kubelet would have recorded a **timeout** rather than the 503, during precisely the outage the probe exists to report. With Redis healthy the same call took 31ms, which is what identified the limiter as the cause. A probe that cannot report the outage is worse than no probe, because it looks like one.",
+      "fix": "src/index.ts \u2014 the global rate limit skips `/health` and `/ready`. They are called by the kubelet, not by a client: two requests per pod per 40 seconds, with nothing to abuse. Measured after: 576ms, 2.0s, 2.0s on repeat calls with both dependencies down.",
+      "test": "src/tests/integration/readiness.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
     }
   ],
   "withdrawn": [

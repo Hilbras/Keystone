@@ -984,6 +984,112 @@ not trigger a restart loop.
 **Gate:** a test that `/ready` fails with the database unreachable, and a test
 that `/health` still succeeds.
 
+## 5.2 status — done, and the deployment had no readiness probe at all
+
+**`/ready` did not exist.** The roadmap's claim that "`/health` and `/ready`
+exist" was itself stale, and what the manifests did about it was the finding.
+
+**SEC-056, high. `k8s/base/deployment.yaml` pointed its `readinessProbe` at
+`/health`** — the only one of the two endpoints that was real. `/health` returns
+`{status: "ok"}` unconditionally and touches nothing external, so a pod with no
+database was reported **ready**, kept in the load balancer's rotation, and every
+authenticated request it received failed. It pointed there because `/ready` had
+never been written, while `README.md` documented it.
+
+| | question | PostgreSQL down | Redis down |
+|---|---|---|---|
+| `/health` | is this process alive? | **200** | **200** |
+| `/ready` | can it serve a request now? | **503** | **200** `degraded` |
+
+`/health` must not depend on PostgreSQL either: a liveness probe that does turns a
+transient blip into a restart loop, which is a worse outage than the one it was
+reacting to. Redis alone is `degraded` and answers 200 — a pod with no Redis falls
+back to the in-process queue and can still authenticate, so removing it from the
+rotation would take authentication offline for a recoverable degradation.
+
+Both checks are real commands — `select 1` and `ping` — each bounded at 2s, run in
+parallel. A status read is not enough: a pool that exists is not a database that
+answers, and the shared Redis client is `lazyConnect`, so its status is `"wait"`
+until some *other* code path issues a command.
+
+The §3.1 layering rule fired on the first version of the route, correctly, because
+it ran `select 1` in a route. The checking moved to `services/health.ts`.
+
+**SEC-057, medium. A Redis outage made the probe unable to report the Redis
+outage.** Both probes sat behind the global rate limiter — an `onRequest` hook, so
+before the handler — and the limiter uses Redis. With both dependencies down, over a
+real socket:
+
+```
+handler's own verdict    2.0s   every call
+1st HTTP response        8.1s
+2nd HTTP response       20.3s
+3rd HTTP response       20.4s
+```
+
+Against the manifest's `timeoutSeconds: 5`, the kubelet would have recorded a
+**timeout** rather than the 503, during precisely the outage the probe exists to
+report. With Redis healthy the same call took **31ms**, which is what identified the
+limiter. After the exemption: 576ms, 2.0s, 2.0s.
+
+Getting there took ruling out three candidates, and the wrong one is the lesson:
+
+| hypothesis | test | result |
+|---|---|---|
+| the probe's own timeout is too long | per-check latencies in the body | 2.0s — handler is fine |
+| `ioredis` queues the abandoned `ping` | replaced `ping()` with a status read | still 20s — not ioredis |
+| `app.inject` resolves late, so this is a test artefact | hit a **real socket** | still 20s — it is real |
+| the global rate limiter | dead database, healthy Redis | **31ms** — confirmed |
+
+If `inject` had been the source, the fix would have been aimed at the test and the
+probe would still ship taking twenty seconds during an outage.
+
+Two traps worth keeping, both in [`docs/security/monitoring.md`](security/monitoring.md):
+a cache-busting query string on an entry module does **not** reach its dependencies,
+so `import("./index.js?dead=1")` got the healthy pool and the first version of the
+test asserted nothing — the outage is now produced in a separate process. And
+`return reply;` from an async `onRequest` hook **deadlocks the request**; the
+exemption is a bare `return;` with a comment saying why.
+
+Thirteen cases, each against a real server: the probes answer unauthenticated,
+report both dependencies with a latency, stay inside the manifest's timeout on
+repeat calls, distinguish degraded from unavailable, and the same process serves
+real traffic again once the database is back.
+
+## 5.4 status — the manifest gate exists, and it caught a dead check of its own
+
+`scripts/verify-k8s-manifests.mjs` renders `k8s/base` and both overlays and fails
+on a readiness probe not at `/ready`, a liveness probe not at `/health`, an image
+tag that is `:latest` or disagrees with `package.json`, a container with no resource
+limit or request, a variable `config.ts` insists on that nothing provides, an
+`envFrom` pointing at nothing, and a placeholder. It runs in the `gates` job and is
+a required check on `main`. Each was verified by planting it.
+
+**`newTag: latest` was the placeholder**, and the tag in `deployment.yaml` was
+decorative: a kustomization `images` entry overrides it. Both are pinned to the
+version now, and the check compares the *rendered* result, which is the only
+comparison that can tell the truth about what a deployment would run.
+
+The YAML reader is hand-written (`scripts/lib/yaml.mjs`) so the gate has no second
+failure mode. It had three bugs, each making the gate report something false — and
+the third is the one worth naming:
+
+> `containersOf` read `spec.containers`, but a Deployment has them at
+> `spec.template.spec.containers`. It returned nothing, so **the entire Deployment
+> block was dead code** and the gate printed `version: 3.4.0 (manifest image tag
+> matches package.json)` while the image was `:latest`.
+
+A summary line claiming a check that had never run — a check that could not fail,
+which is the failure this programme has been about all along. It was visible only
+because the summary asserted something a reader could contradict by opening the
+file.
+
+Two things came out of it. `scripts/lib/patch.mjs` throws when a replacement
+matches nothing, because a `str.replace` that changes nothing is a silent no-op
+that looks exactly like a success — one of these migrations reported "manifests
+pinned to 3.4.0" for a pattern indented two spaces off, and I believed it. And every
+claim now gets checked against the file it is about.
+
 ## 5.3 The SDK packages
 
 **Finding:** five packages, no release discipline of their own. The

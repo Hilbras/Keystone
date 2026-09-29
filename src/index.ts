@@ -57,6 +57,7 @@ import scimRoutes from "./routes/scim.js";
 import federationRoutes from "./routes/federation.js";
 import workflowRoutes from "./routes/workflows.js";
 import setupRoutes from "./routes/setup.js";
+import healthRoutes from "./routes/health.js";
 import sdkRoutes from "./routes/sdk.js";
 import configRoutes from "./routes/config.js";
 import sessionRoutes from "./routes/sessions.js";
@@ -215,10 +216,41 @@ export async function buildApp() {
   });
 
   // Global API rate limiting to protect the platform from abuse.
-  app.addHook("onRequest", globalRateLimit({
+  //
+  // The probe endpoints are exempt, and the reason is not that probes are cheap.
+  // It is that **the limiter uses Redis**, so a Redis outage puts the probe
+  // behind a dependency it is meant to be reporting on. Measured, with both
+  // PostgreSQL and Redis unreachable, over a real socket:
+  //
+  //   Redis healthy   31ms   -> 503
+  //   Redis down      8.1s, then 20.3s and 20.4s
+  //
+  // The handler itself reports its verdict in 2s in every case — that is the
+  // per-dependency budget — so the time is spent in the limiter, before the
+  // handler runs. Against `k8s/base/deployment.yaml`, whose readinessProbe has
+  // `timeoutSeconds: 5`, the kubelet would see a **timeout** rather than the 503,
+  // during precisely the outage the probe exists to report.
+  //
+  // A probe that cannot report the outage is worse than no probe, because it
+  // looks like one. The kubelet is not a client and there is nothing to abuse
+  // here: two requests per pod per 40 seconds.
+  const globalLimiter = globalRateLimit({
     maxRequests: Number(config.GLOBAL_RATE_LIMIT_MAX) || 100,
     windowSeconds: Number(config.GLOBAL_RATE_LIMIT_WINDOW) || 60,
-  }));
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    const path = request.routeOptions?.url ?? request.url.split("?")[0];
+    if (path === "/health" || path === "/ready") return;
+    return globalLimiter(request, reply);
+  });
+  // Note the bare `return`. An earlier version of this skipped the probes with
+  // `return reply;` and every probe request **hung until its client gave up** —
+  // an async `onRequest` hook that resolves to the reply deadlocks the request.
+  // Fastify is being passed a value it treats as a continuation. `undefined` is
+  // the only thing that means "carry on", and the cost of getting it wrong was a
+  // probe that could not answer at all, which is the failure this whole change
+  // exists to remove.
 
   await app.register(appContextPlugin);
   await app.register(authPlugin);
@@ -271,7 +303,8 @@ export async function buildApp() {
     return getPublicJwks();
   });
 
-  app.get("/health", { schema: { tags: ["Discovery"] } }, async () => ({ status: "ok" }));
+  // Liveness and readiness, registered as a unit so they cannot drift apart.
+  await app.register(healthRoutes);
 
   await app.register(setupRoutes, { prefix: "/setup" });
 

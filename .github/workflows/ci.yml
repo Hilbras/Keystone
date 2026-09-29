@@ -133,6 +133,15 @@ jobs:
         # happen to call it still passes. Nothing else in the pipeline can see it.
         run: node scripts/review-api-surface.mjs --strict
 
+      - name: Gate — the Kubernetes manifests match the running software
+        # The readiness probe pointed at /health — liveness, which answers 200
+        # whenever the process is listening — because /ready did not exist. So a
+        # pod with no database was reported ready and every authenticated request
+        # it received failed. This renders the kustomizations and checks the probe
+        # routing, the image tag against package.json, resource limits, and that
+        # every variable config.ts insists on is reachable.
+        run: node scripts/verify-k8s-manifests.mjs
+
       # `verify:release` is deliberately NOT here. It checks that `main`, `types`
       # and `bin` point at files that exist in `dist/`, so it has to run after a
       # build — and the `backend` job already builds and already runs it. Repeating
