@@ -50,10 +50,10 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -100,10 +100,10 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -187,6 +187,21 @@ jobs:
         # from the one the suite passed on.
         run: node scripts/verify-node-version.mjs
 
+      - name: Gate — every action pin is the commit its annotation names
+        # verify:action-pins checks the FORM of a pin: a SHA, not a tag, with a
+        # version in a trailing comment. It does not check that the SHA is the
+        # commit that version names — so the comment, which is the entire reason
+        # to pin rather than use a moving tag, was documentation rather than a
+        # control. Nine of this repository's fourteen distinct pins were annotated
+        # with a bare major ("# v4"), which is a moving reference: "which release is
+        # this?" has no answer.
+        #
+        # Answers are recorded in scripts/action-pin-versions.json by an explicit
+        # --refresh, and this compares that record against the code. Offline, fast
+        # and deterministic. The record failing on staleness is deliberate: a
+        # lockfile nobody refreshes is the same failure as a check nobody runs.
+        run: node scripts/verify-action-pin-versions.mjs
+
       - name: Gate — every third-party action is pinned to a commit SHA
         # Every "uses:" was pinned to a major version (actions/checkout@v4), which
         # looks pinned and is not: @v4 is a mutable tag, so whoever owns the action
@@ -247,10 +262,10 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -267,7 +282,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build Docker image
         run: docker build -t hilbras-keystone:test .

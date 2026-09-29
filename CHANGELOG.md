@@ -5,6 +5,101 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.4] - 2026-09-30
+
+*The Dependabot queue, and the fact that most of our action pins said nothing about which release they were.*
+
+### The dependency queue, closed
+
+Four Dependabot PRs were open and stale, and merging them one at a time was not going
+to work: this repository has no merge queue and no auto-merge, and each merge makes
+the rest `BEHIND`, which invalidates their required checks. They are applied here
+together, with each superseded PR listed.
+
+| from | what | to |
+|---|---|---|
+| #60 | `actions/checkout` | `v4.4.0` → `v7.0.1` |
+| #61 | `actions/setup-node` | `v4.4.0` → `v7.0.0` |
+| #62 | `softprops/action-gh-release` | `v2.6.2` → `v3.0.3` |
+| #58 | frontend patch group | `lucide-react` 1.47→1.48, `vite` 8.0→8.3, `@types/node` 26.1→26.6 |
+
+`setup-node` v4 → v7 is three majors, so the thing to check was whether the workflows
+that read `.nvmrc` still do. `verify:node` holds all nine `setup-node` steps to the
+single version file and passed unchanged, and the frontend builds clean on vite 8.3.
+
+### SEC-066, medium — nine of fourteen action pins said which *major*, not which release
+
+`verify:action-pins` checks the **form** of a pin: a 40-character commit SHA rather
+than a tag, with a version in a trailing comment. It does not check that the SHA is the
+commit that version names.
+
+So `# v4.2.2` was documentation, not a control — and worse, **nine of the fourteen
+distinct pins were annotated `# v4`**, which is a *moving* major reference. Pinning
+the commit while annotating `v4` gives a reader the one thing the annotation exists to
+provide and then takes it away: "which release is this?" has no answer, because `v4`
+is whatever `v4` points at today.
+
+All nine now name the release they actually name:
+
+| action | was | is |
+|---|---|---|
+| `actions/dependency-review-action` | `v4` | `v4.9.0` |
+| `actions/download-artifact` | `v4` | `v4.3.0` |
+| `actions/upload-artifact` | `v4` | `v4.6.2` |
+| `anchore/sbom-action` | `v0` | `v0.24.0` |
+| `docker/build-push-action` | `v6` | `v6.19.2` |
+| `docker/login-action` | `v3` | `v3.7.0` |
+| `docker/metadata-action` | `v5` | `v5.10.0` |
+| `docker/setup-buildx-action` | `v3` | `v3.12.0` |
+| `github/codeql-action` | `v3` | `v3.38.2` |
+
+`verify:action-pin-versions` closes it. Answering needs the GitHub API, and there are
+two things about that which are easy to get wrong in a way that looks like success:
+
+- **An annotated tag resolves to a tag object, not a commit.** `refs/tags/v3.0.3` on
+  `action-gh-release` returns a SHA that is not the pinned commit, so an un-dereferenced
+  check reports every annotated release as a mismatch. My first shell attempt did
+  exactly this and reported **17 mismatches on a tree where nothing was wrong** — then,
+  having "found" them, nearly reported a supply-chain problem.
+- **A subpath action is a directory, not a repository.** `github/codeql-action/analyze`
+  resolves under the repository `github/codeql-action`, and asking about the subpath
+  404s, which is indistinguishable from a real failure.
+
+So the answers are **recorded** in `scripts/action-pin-versions.json` by an explicit
+`--refresh`, and the gate compares the record against the code: offline, deterministic,
+fast enough to be required on every PR. The record **fails on staleness** at 90 days,
+deliberately — a lockfile nobody refreshes is the same failure as a check nobody runs.
+
+### `@types/node` 20 → 26, closed with a reason (#39)
+
+The recorded blocker was real: `npm run typecheck` with 26 installed produces exactly
+the three `KeyUsage` errors the earlier note described. But the reason not to merge is
+stronger than the conflict, and it is not the conflict.
+
+`@types/node` describes the API surface of the Node version you run, and this project
+runs **Node 22**, stated in three places `verify:node` keeps in agreement:
+
+```
+.nvmrc                    22
+package.json engines.node >=22
+Dockerfile                FROM node:22-slim
+```
+
+`@types/node@26` describes Node 26, which is not what ships. Adopting it would mean
+`npm run typecheck` accepts code written against APIs that do not exist in the runtime
+the image runs — turning the typecheck from a guard into a source of false confidence.
+That is worse than a green typecheck with slightly older types.
+
+The `KeyUsage` conflict is the visible symptom: Node 26's own `KeyUsage` union added
+members the global WebCrypto declarations lack, so a `CryptoKeyPair` from
+`node:crypto` stopped being assignable to the one `@peculiar/x509` expects. A cast would
+silence it, but the runtime object is identical and only the declarations differ — so a
+cast is defensible in a test and still the wrong fix, because it papers over the
+type/version mismatch rather than resolving it.
+
+`@types/node` moves in lockstep with the Node version, in a release that also raises
+`.nvmrc`, `engines.node` and the Dockerfile. The frontend is already on 26 because it
+is a different package with a different toolchain, and that is not the same decision.
 ## [3.5.3] - 2026-09-30
 
 *An alert that moved instead of closing, and the four line-anchoring rules that went with it.*

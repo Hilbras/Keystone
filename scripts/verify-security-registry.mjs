@@ -63,8 +63,20 @@ const withdrawn = registry.withdrawn ?? [];
 function resolveFixPath(fix) {
   const source = String(fix).match(/(src\/[^\s:,—)]+\.ts)/)?.[1];
   if (source) return fs.existsSync(path.join(root, source)) ? source : null;
-  // Not a TypeScript source file — a workflow, a config, a Dockerfile.
-  const leading = String(fix).trim().split(/\s+—|\s+-\s/)[0].trim();
+  // Not a TypeScript source file — a workflow, a config, a script, a Dockerfile.
+  //
+  // The leading token is split on an em dash or a spaced hyphen, then a trailing
+  // parenthetical is dropped. That second step was missing until an entry wanted to
+  // say a file was *new* — `scripts/….mjs (new) — every pin…` — and the path lookup
+  // then failed on the annotation rather than on the path. The error it produced
+  // read as "does not resolve to a file in the repository" about a file that is in
+  // the repository, which is the least useful form this message takes: it sends a
+  // reader looking for a missing file instead of at the check.
+  const leading = String(fix)
+    .trim()
+    .split(/\s+—|\s+-\s/)[0]
+    .trim()
+    .replace(/\s*\([^)]*\)\s*$/, "");
   return fs.existsSync(path.join(root, leading)) ? leading : null;
 }
 

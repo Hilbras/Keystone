@@ -4,13 +4,13 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**63 findings.**
+**64 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 33 |
-| medium | 18 |
+| medium | 19 |
 | low | 6 |
 
 ## Scope
@@ -805,6 +805,18 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Test.** `scripts/review-api-surface.mjs`
 
 **Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-066 — Nine of fourteen action pins were annotated with a moving major tag rather than a release
+
+*Fixed in v3.5.4. Component: `ci`.*
+
+**Issue.** `scripts/verify-action-pins.mjs` is the gate on GitHub Actions pinning. It checks the FORM of a pin: a 40-character commit SHA rather than a tag, with a version in a trailing comment. It does not check that the SHA is the commit that version names, so the annotation was documentation rather than a control — and that annotation is the entire reason to pin to a SHA rather than use a moving tag. A pin you cannot map back to a release is not reviewable, it is an opaque hash. Worse, **nine of the fourteen distinct pins were annotated with a bare major** — `# v4`, `# v3`, `# v6`, `# v0` — which is a MOVING reference rather than a release. Pinning the commit while annotating `v4` gives a reader the one thing the annotation exists to provide and then takes it away: 'which release is this?' has no answer, because `v4` is whatever `v4` points at today. A wrong annotation would have sat there indefinitely, and anyone comparing a pin against a release would have been comparing against a lie.
+
+**Fix.** scripts/verify-action-pin-versions.mjs (new) — every pin resolved against the version it annotates, and the answer recorded. Two failure modes had to be got right, and both look like success when wrong: (1) an ANNOTATED tag resolves to a tag object rather than a commit, so refs/tags/v3.0.3 returns a SHA that is not the pinned commit and an un-dereferenced check reports every annotated release as a mismatch; (2) a SUBPATH action is a directory, not a repository — github/codeql-action/analyze resolves under the repository github/codeql-action, and asking about the subpath 404s, which is indistinguishable from a real failure. So the answers are recorded in scripts/action-pin-versions.json by an explicit --refresh, and the gate compares the record against the code: offline, deterministic, and fast enough to be required on every PR. The record FAILS on staleness at 90 days, deliberately — a lockfile nobody refreshes is the same failure as a check nobody runs. All nine bare-major annotations are corrected to the release the pin actually names, found with `repos/{repo}/tags`, which carries commit.sha per tag and so costs one call per repository rather than one per candidate release. `--fix-annotations` rewrites them by reading the SHA out of the workflow files rather than from a hand-typed map: the first attempt at that used a transcribed list in which one SHA was 39 characters rather than 40, the substitution matched nothing, and it reported success. The script now exits non-zero if a substitution changes nothing. scripts/verify-security-registry.mjs — resolveFixPath drops a trailing parenthetical, so a `fix` field can say a file is new; without it the check failed on the annotation and reported a file that was in the repository as missing. Verified it still catches a genuinely absent path.
+
+**Test.** `scripts/verify-action-pin-versions.mjs`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
 
 ## Low
 
