@@ -9,6 +9,19 @@ on:
   pull_request:
     branches: [main, "release/**"]
 
+# Declared rather than inherited, so a job added later cannot silently pick up
+# whatever the repository's default token happens to allow. Every job here only
+# reads the repository — the tests, the frontend build, the image hygiene check and
+# the gates — so `contents: read` is the whole of what is needed.
+#
+# `ci.yml` was the only workflow in `.github/workflows/` without this block, and
+# CodeQL's `actions/missing-workflow-permissions` said so. It is not a stylistic
+# point: the default token's permissions are a repository setting, so a workflow
+# with no block has whatever that setting happens to be, and a job that needs less
+# than the setting allows is one accidental `write` away from being a write.
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
