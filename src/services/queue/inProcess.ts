@@ -1,4 +1,7 @@
 import type { Queue, Job, JobHandler, QueueStats } from "./types.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const log = serviceLogger("queue");
 
 const DEFAULT_ATTEMPTS = 3;
 
@@ -9,7 +12,7 @@ export class InProcessQueue implements Queue {
   async enqueue<T>(job: Job<T>): Promise<void> {
     setImmediate(() => {
       this.run(job, 1).catch((err) => {
-        console.error(`[in-process-queue] job ${job.type} failed permanently:`, err);
+        log.error({ err, jobType: job.type }, "job failed permanently");
       });
     });
   }
@@ -46,7 +49,7 @@ export class InProcessQueue implements Queue {
   private async run(job: Job, attempt: number): Promise<void> {
     const handler = this.handlers.get(job.type);
     if (!handler) {
-      console.warn(`[in-process-queue] no handler registered for ${job.type}`);
+      log.warn({ jobType: job.type }, "no handler registered for this job type");
       return;
     }
 
@@ -58,7 +61,10 @@ export class InProcessQueue implements Queue {
       const maxAttempts = job.attempts ?? DEFAULT_ATTEMPTS;
       if (attempt < maxAttempts) {
         const delay = Math.min(1000 * 2 ** (attempt - 1), 30000);
-        console.warn(`[in-process-queue] job ${job.type} failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms`);
+        log.warn(
+          { jobType: job.type, attempt, maxAttempts, delayMs: delay },
+          "job failed, scheduling a retry"
+        );
         setTimeout(() => this.run(job, attempt + 1), delay);
         return;
       }

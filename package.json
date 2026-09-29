@@ -2,7 +2,7 @@
   "name": "@hilbras/keystone",
   "version": "3.2.0",
   "license": "MIT",
-  "description": "Hilbras Keystone \u2014 standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
+  "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hilbras/Keystone.git"
@@ -83,6 +83,7 @@
     "jose": "^6.2.12",
     "nodemailer": "^10.0.10",
     "otpauth": "^9.5.2",
+    "pino": "^10.3.1",
     "postgres": "^3.4.4",
     "prom-client": "^15.1.3",
     "samlify": "^2.13.1",

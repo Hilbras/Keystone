@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { config } from "../config.js";
 import { getSdk } from "../sdk/index.js";
 import {
@@ -21,7 +21,12 @@ import { findApplicationByClientId } from "../services/applications.js";
  * Emits a suspicious-login email when the user's previous login came from a
  * different IP within the anomaly window.
  */
-function detectImpossibleTravel(user: { id: string; email: string }, ip?: string, userAgent?: string): void {
+function detectImpossibleTravel(
+  user: { id: string; email: string },
+  log: FastifyBaseLogger,
+  ip?: string,
+  userAgent?: string
+): void {
   checkImpossibleTravel(user.id, ip)
     .then(async (suspicious) => {
       if (!suspicious) return;
@@ -33,7 +38,7 @@ function detectImpossibleTravel(user: { id: string; email: string }, ip?: string
       });
     })
     .catch((err: unknown) => {
-      console.error("[anomaly] impossible-travel check failed:", err);
+      log.error({ err }, "impossible-travel check failed");
     });
 }
 
@@ -202,7 +207,7 @@ export default async function authRoutes(app: FastifyInstance) {
       const auth = result.data.data;
       request.state.auditUserId = auth.user.id;
       await request.audit("user_login", { userId: auth.user.id });
-      detectImpossibleTravel(auth.user, request.ip, request.headers["user-agent"]);
+      detectImpossibleTravel(auth.user, request.log, request.ip, request.headers["user-agent"]);
       setSessionCookies(reply, auth.accessToken, auth.refreshToken, body.client_id);
       return { user: toSelfUser(auth.user) };
     }
@@ -286,7 +291,7 @@ export default async function authRoutes(app: FastifyInstance) {
       const auth = result.data.data;
       request.state.auditUserId = auth.user.id;
       await request.audit("user_token_login", { userId: auth.user.id });
-      detectImpossibleTravel(auth.user, request.ip, request.headers["user-agent"]);
+      detectImpossibleTravel(auth.user, request.log, request.ip, request.headers["user-agent"]);
       return {
         accessToken: auth.accessToken,
         refreshToken: auth.refreshToken,
@@ -345,7 +350,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
       request.state.auditUserId = result.data.user.id;
       await request.audit("mfa_verified", { userId: result.data.user.id, factor: result.data.factor });
-      detectImpossibleTravel(result.data.user, request.ip, request.headers["user-agent"]);
+      detectImpossibleTravel(result.data.user, request.log, request.ip, request.headers["user-agent"]);
 
       if (result.data.flow === "login") {
         await request.audit("user_login", { userId: result.data.user.id, mfa: result.data.factor });

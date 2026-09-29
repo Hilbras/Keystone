@@ -14,6 +14,9 @@ import type { UserRepository, ApplicationRepository, OrganizationRepository, Mfa
 import type { IssuedMfaChallenge, MfaFactor, MfaService } from "../mfa.js";
 import { ok, err, type Result } from "../../lib/result.js";
 import { hashPassword, verifyPassword } from "../secrets/index.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("auth");
 
 export interface AuthContext {
   app?: { id: string; clientId: string; orgId?: string };
@@ -112,7 +115,7 @@ export class AuthenticationDomainService {
           password: input.password,
         });
       } catch (err) {
-        console.warn("Zitadel user mirror failed; continuing with local user", err);
+        moduleLog.warn({ err }, "auth");
       }
     }
 
@@ -131,7 +134,7 @@ export class AuthenticationDomainService {
       try {
         const { sendVerificationEmail } = await import("../emailVerification.js");
         sendVerificationEmail(user).catch((err: unknown) => {
-          console.error("[auth] failed to send verification email:", err);
+          moduleLog.error({ err }, "auth");
         });
       } catch {
         // emailVerification module may not be available in all configurations

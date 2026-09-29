@@ -1,6 +1,9 @@
 import { queue } from "../queue/index.js";
 import type { EmailMessage } from "../email.js";
 import type { User } from "../../db/schema.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("workflows");
 
 export interface StepContext {
   payload: Record<string, unknown>;
@@ -26,7 +29,7 @@ export interface StepResult {
 }
 
 export async function executeStep(step: WorkflowStep, context: StepContext): Promise<StepResult> {
-  const log = (msg: string) => console.log(`[workflow] step ${step.type}: ${msg}`);
+  const log = (msg: string) => moduleLog.info({ step: step.type }, msg);
 
   if (isBlockedWorkflowStep(step)) {
     return { error: `workflow step ${step.type} is not allowed for tenant workflows` };

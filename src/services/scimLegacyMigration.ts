@@ -1,6 +1,9 @@
 import { config } from "../config.js";
 import { hashScimToken } from "./scimCredentials.js";
 import type { ScimConnectionRepository } from "../repositories/types.js";
+import { serviceLogger } from "../lib/logger.js";
+
+const moduleLog = serviceLogger("scim-migration");
 
 /**
  * One-time migration from the pre-1.9 single-tenant SCIM configuration.
@@ -25,8 +28,9 @@ export async function migrateLegacyScimEnv(
     const existing = await connections.listByOrg(orgId);
     if (existing.length > 0) {
       if (existing.every((connection) => connection.revokedAt !== null)) {
-        console.warn(
-          `[scim] SCIM_BEARER_TOKEN/SCIM_ORG_ID are still set for org ${orgId} but its connection was revoked. ` +
+        moduleLog.warn(
+          { orgId },
+          "SCIM_BEARER_TOKEN/SCIM_ORG_ID are still set for an organization whose connection was revoked. " +
             "The legacy variables are ignored; remove them to clear this warning."
         );
       }
@@ -40,13 +44,14 @@ export async function migrateLegacyScimEnv(
       tokenHint: token.slice(-4),
     });
 
-    console.warn(
-      `[scim] Adopted SCIM_BEARER_TOKEN/SCIM_ORG_ID into a per-organization connection for org ${orgId}. ` +
+    moduleLog.warn(
+      { orgId },
+      "Adopted SCIM_BEARER_TOKEN/SCIM_ORG_ID into a per-organization connection. " +
         "These variables are deprecated: rotate the token and remove them, then manage the connection through the API."
     );
   } catch (error) {
     // A failed adoption must not stop the server from booting; the SCIM routes
     // report "not configured" until an operator creates a connection.
-    console.error("[scim] Failed to adopt the legacy SCIM configuration:", error);
+    moduleLog.error({ err: error, orgId }, "failed to adopt the legacy SCIM configuration");
   }
 }

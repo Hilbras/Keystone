@@ -185,3 +185,70 @@ rules:
       category: correctness
       confidence: HIGH
       cwe: "CWE-1068 (Inconsistency Between Implementation and Documented Design)"
+
+  # §3.2 — a `throw` in the domain layer, which the whole `Result<T>` convention
+  # exists to prevent.
+  #
+  # A `throw` in a method that returns `Result<T>` bypasses `sendResultError` on
+  # the way out, so a denial the caller could have turned into a 403 becomes a
+  # 500 instead. That is the failure this rule exists to stop.
+  #
+  # The count is already zero, so this is a tripwire rather than a fix — which is
+  # the right shape for a rule about a convention: it costs nothing now and fails
+  # the build the first time somebody reaches for `throw` here out of habit.
+  - id: keystone-domain-layer-throws
+    pattern-regex: 'throw\s+new\s+\w+'
+    paths:
+      include:
+        - "/src/services/domain/**"
+    message: >-
+      Do not throw from `src/services/domain/`. Every outcome here is expressible
+      as a `Result<T>`, and a thrown error bypasses `sendResultError` — so a
+      denial the caller was meant to turn into a 403 surfaces as a 500. Use
+      `err()` / `errFromMessage` from src/lib/result.js. If something genuinely
+      cannot be a Result, it belongs outside this layer, or it needs a comment
+      saying why and an entry in the registry.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      category: correctness
+      confidence: HIGH
+      cwe: "CWE-755 (Improper Handling of Exceptional Conditions)"
+
+  # §3.2 — `console.*` in server code, which is how 101 unstructured lines with
+  # no service name and no level got written.
+  #
+  # Fastify gives every route a `request.log`, carrying the request id; anything
+  # outside a request gets `serviceLogger(name)` from `src/lib/logger.ts`. The
+  # level comes from `KEYSTONE_LOG_LEVEL` in both cases, so one variable silences
+  # the process — which is how the 3.1.0 benchmark ended up measuring its own
+  # logging, because `console` ignores it.
+  #
+  # The exclusions are the code where stdout *is* the output rather than a
+  # diagnostic: the `console` email and SMS providers exist to print a message,
+  # the audit console export exists to print a record, and the setup token has to
+  # be readable by an operator. Those are four files and they are listed rather
+  # than allowed by pattern, so a fifth one has to be added on purpose.
+  - id: keystone-no-console-in-server
+    pattern-regex: '(?<!\/\/).*\bconsole\.(log|warn|error|info|debug)\s*\('
+    paths:
+      include:
+        - "/src/services/**"
+        - "/src/routes/**"
+      exclude:
+        - "/src/services/email.ts"
+        - "/src/services/sms.ts"
+        - "/src/services/auditExport.ts"
+        - "/src/services/setup/token.ts"
+        - "/src/services/connectors/google.ts"
+    message: >-
+      Do not use `console.*` in server code. In a route use `request.log` — or
+      `app.log` where there is no request — so the line carries the request id.
+      Outside a request use `serviceLogger("<component>")` from
+      `src/lib/logger.ts`. If this really is program output rather than a
+      diagnostic, add the file to the exclusion list in this rule with a reason.
+    severity: ERROR
+    languages: [javascript, typescript]
+    metadata:
+      category: correctness
+      confidence: MEDIUM

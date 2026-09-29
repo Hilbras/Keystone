@@ -335,6 +335,40 @@ cannot be a `Result`.
 **Done when:** `rg -c 'throw new' src/services/domain/` is zero, and a denied
 operation can no longer surface as a 500.
 
+## 3.2 status — done
+
+**The lint rule was already satisfied.** `rg -c 'throw new' src/services/domain/`
+is **zero**, and has been. The rule is a tripwire rather than a fix, which is the
+right shape for a rule about a convention: it costs nothing now and fails the build
+the first time somebody reaches for `throw` here out of habit. Verified by
+planting a throw.
+
+**`console.*` in server code: 101 call sites → 12.** The remaining twelve are the
+code where stdout *is* the output rather than a diagnostic — the `console` email
+and SMS providers, the audit console export, and the setup token an operator has
+to read. They are listed by name in the rule's exclusion list rather than allowed
+by pattern, so a fifth such file has to be added on purpose.
+
+Route call sites now use the injected logger, and where a route helper has no
+request in scope — `detectImpossibleTravel` in `auth.ts` — the logger is **passed
+in** rather than reached for, so the line still carries the request id that
+identifies the login that triggered it. Services, queue workers and event
+subscribers get `serviceLogger("<component>")` from a new `src/lib/logger.ts`,
+which reads the same `KEYSTONE_LOG_LEVEL` as Fastify's. That last part is the
+point: `console` ignores the level, which is how the 3.1.0 benchmark ended up
+measuring its own logging.
+
+**The 10 raw `status(500)` sites were reviewed and none changed.** Each is a
+genuine server-side failure, and six of them additionally log their cause. Two of
+them — `config.ts:43` and `config.ts:48` — echo the underlying error message to
+the client, which is normally a leak and here is not: all three `/config` routes
+are `requirePlatformRole("owner")`, and the operator who is about to restart the
+server needs to know whether the write failed on permissions or on a syntax
+error. Removing it would take away a diagnostic from the one principal who can
+act on it, for no security gain. Recorded here because "reviewed and left alone"
+is a decision, and a decision nobody wrote down is indistinguishable from an
+oversight.
+
 ## 3.3 Move the two misplaced test suites
 
 **Finding:** §2.9. `audit-export.test.ts` and `registry.test.ts` sit at the root

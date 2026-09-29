@@ -4,6 +4,9 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { userDevices, users } from "../db/schema.js";
 import { sendNewDeviceAlert } from "./email.js";
+import { serviceLogger } from "../lib/logger.js";
+
+const moduleLog = serviceLogger("devices");
 
 export function fingerprintFromRequest(request: FastifyRequest): string {
   const ip = request.ip || "unknown";
@@ -64,7 +67,7 @@ export async function recordDevice(
       ipAddress: ip,
       userAgent: userAgent,
     }).catch((err: unknown) => {
-      console.error("[devices] failed to send new-device alert:", err);
+      moduleLog.error({ err }, "devices");
     });
     await db
       .update(userDevices)
