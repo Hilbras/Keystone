@@ -23,6 +23,51 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const asJson = process.argv.includes("--json");
+const strict = process.argv.includes("--strict");
+
+/**
+ * Guard names that may appear in a route's `preHandler`.
+ *
+ * The point of the list is the typo. A guard is a call — `app.authenticate`,
+ * `requirePlatformRole("owner")`, `scimRateLimit` — and a misspelling of one is
+ * not a compile error: Fastify evaluates `preHandler: [app.authentcate]` to
+ * `undefined` and skips it, so the route ships with no authentication and every
+ * test that does not happen to call it still passes. That is the failure mode
+ * this list exists to make impossible, and it is why the check below is on the
+ * *name* rather than on whether the route happens to be authenticated — a
+ * misspelled guard still shows up as "authenticated" if something else in the
+ * file also guards it.
+ *
+ * Split into two kinds because they fail differently: a decorated name is looked
+ * up on `app` at request time, and a helper is imported at module load, so only
+ * the first can be checked by reading the source alone.
+ */
+const APP_GUARDS = new Set([
+  "authenticate",
+  "authenticateOrApiKey",
+  "requireScopes",
+  "requirePermission",
+  "requireMTLS",
+  "requireHumanPrincipal",
+]);
+
+const HELPER_GUARDS = new Set([
+  "requirePlatformRole",
+  "requireOrganizationRole",
+  "requireAuthAndRole",
+  "requireOwner",
+  "rateLimit",
+  "scimRateLimit",
+  "globalRateLimit",
+  "appContext",
+]);
+
+/** Identifiers that appear in a `preHandler` list but are not guards. */
+const NOT_GUARDS = new Set([
+  "app", "request", "reply", "owner", "admin", "member", "user", "service_account",
+  "read", "write", "create", "update", "delete", "manage", "revoke", "preHandler",
+  "options", "config", "true", "false",
+]);
 const read = (rel) => {
   try {
     return fs.readFileSync(path.join(root, rel), "utf8");
@@ -178,8 +223,149 @@ for (const r of routes) {
   if (problems.length) concerns.push({ ...r, publicReason: publicReason ?? null, problems });
 }
 
+/**
+ * Split a `preHandler` array body into its top-level elements.
+ *
+ * Depth-aware on purpose. The obvious `body.split(",")` reports every property of
+ * every options object as if it were an element — so `rateLimit({ maxAttempts:
+ * config.LOGIN_MAX_ATTEMPTS, ... })` yields `config.LOGIN_MAX_ATTEMPTS` as a
+ * candidate guard, and the check reports 40 problems that are all artefacts of
+ * the splitting. A gate that cries wolf is disabled, so the first version of this
+ * was wrong twice: once by scanning string literals, and once by not tracking
+ * depth.
+ */
+function splitTopLevel(body) {
+  const parts = [];
+  let depth = 0;
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      // Skip the whole literal, backslash escapes included, so a comma or a brace
+      // inside a string or a regex cannot move the depth.
+      current += ch;
+      if (ch === "\\") {
+        current += body[++i] ?? "";
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    if (ch === "," && depth === 0) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current);
+  return parts.map((p) => p.trim()).filter((p) => p.length > 0);
+}
+
+/** Remove line and block comments, so a guard named only in a comment is not counted. */
+function stripComments(text) {
+  return text
+    .replace(/\/\*\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
+}
+
+/**
+ * The mechanically decidable problems, which are the ones `--strict` fails on.
+ *
+ * Deliberately narrower than `concerns`. Two of the three reported categories are
+ * not decidable by reading the source:
+ *
+ * - "authenticated, no authorization guard" (27 routes) is a real question and a
+ *   product judgement. Some routes are legitimately readable by any member of the
+ *   organization; which ones is a decision a person has to make and write down,
+ *   and a gate that encodes 27 guesses is worse than no gate.
+ * - "state-changing, no rate limit" (30 routes) depends on what the endpoint is
+ *   worth attacking, which is not a property of its source.
+ *
+ * So those two stay reported. The three below are decidable, and all three are
+ * currently satisfied — which makes them tripwires rather than fixes, the same
+ * shape as the `throw` rule in §3.2.
+ */
+const strictFailures = [];
+
+if (strict) {
+  for (const r of routes) {
+    if (!r.auth && !PUBLIC_BY_DESIGN.has(r.url)) {
+      strictFailures.push(
+        `${r.method} ${r.url} — no authentication guard and no entry in PUBLIC_BY_DESIGN. ` +
+          `Add the guard, or add the route to the list with a reason.`
+      );
+    }
+  }
+
+  for (const [url, reason] of PUBLIC_BY_DESIGN) {
+    if (typeof reason !== "string" || reason.trim() === "") {
+      strictFailures.push(
+        `PUBLIC_BY_DESIGN has no reason for ${url}. An entry without a reason is ` +
+          `indistinguishable from a route nobody looked at.`
+      );
+    }
+  }
+
+  // Every guard named in a route must resolve, so a typo cannot disable it.
+  for (const file of routeFiles) {
+    // Comments are removed from the whole file before the blocks are matched, not
+    // from each block afterwards. A `//` comment inside a preHandler list that
+    // mentions a guard name is prose, and a comment containing a `]` also
+    // truncates the match and swallows the real guards after it. Both showed up
+    // as guards named "so" and "which".
+    const source = stripComments(read(file));
+    for (const block of source.matchAll(/preHandler:\s*\[([^\]]*)\]/g)) {
+      for (const element of splitTopLevel(block[1])) {
+        // `app.<name>` is a decorator lookup; a bare leading identifier is a
+        // helper. Anything else at this position is a value, not a guard.
+        const decorated = /^\s*app\.([A-Za-z_][A-Za-z0-9_]*)/.exec(element);
+        if (decorated) {
+          const name = decorated[1];
+          if (!APP_GUARDS.has(name) && name !== "container") {
+            strictFailures.push(
+              `${file} — preHandler names app.${name}, which is not a guard. Fastify ` +
+                `evaluates an unknown decorator to undefined and skips it, so this ` +
+                `guard does not run. Known: ${[...APP_GUARDS].sort().join(", ")}.`
+            );
+          }
+          continue;
+        }
+        const bare = /^\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(element);
+        if (!bare) continue;
+        const name = bare[1];
+        // A guard defined in the same file resolves, whether it is a shared
+        // helper or something the file builds for itself — `factorRateLimit` in
+        // totp.ts, `requireOrgIdParam` in workflows.ts. Requiring a file-local
+        // guard to appear in a global allowlist would mean adding a name to a
+        // shared list every time a route file grows one, which is a tax with no
+        // safety in return: the thing being checked is whether the name resolves
+        // to something, and a local declaration is something.
+        const declaredHere = new RegExp(
+          `(?:const|let|var|function)\\s+${name}\\b`
+        ).test(source);
+        if (!declaredHere && !HELPER_GUARDS.has(name) && !NOT_GUARDS.has(name)) {
+          strictFailures.push(
+            `${file} — preHandler names "${name}", which is not a known guard. ` +
+              `A misspelled guard is skipped at request time, not rejected at load. ` +
+              `Known: ${[...HELPER_GUARDS].sort().join(", ")}.`
+          );
+        }
+      }
+    }
+  }
+}
+
 if (asJson) {
-  console.log(JSON.stringify({ routes, concerns }, null, 2));
+  console.log(JSON.stringify({ routes, concerns, strictFailures }, null, 2));
 } else {
   console.log(`Routes enumerated: ${routes.length} across ${new Set(routes.map((r) => r.file)).size} files`);
   console.log(`  authenticated:         ${routes.filter((r) => r.auth).length}`);
@@ -192,6 +378,20 @@ if (asJson) {
   console.log(`Routes with an open question: ${concerns.length}`);
   for (const c of concerns) {
     console.log(`  ${c.method.padEnd(6)} ${c.url.padEnd(46)} ${c.problems.join("; ")}`);
+  }
+  // A gate that cannot fail is not a gate, and this one reported problems while
+  // exiting 0 — the finding was on screen and the build went green. `--strict`
+  // exists to be wired into the release job, so it has to set the exit code.
+  if (strictFailures.length > 0) process.exitCode = 1;
+
+  if (strict) {
+    console.log("");
+    if (strictFailures.length === 0) {
+      console.log("Strict: OK — every route has a guard or a written reason, every guard name resolves.");
+    } else {
+      console.log(`Strict: ${strictFailures.length} problem(s):`);
+      for (const f of strictFailures) console.log(`  ${f}`);
+    }
   }
   if (MOUNT.size < routeFiles.length) {
     console.log("");

@@ -1,8 +1,8 @@
 {
   "name": "@hilbras/keystone",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "license": "MIT",
-  "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
+  "description": "Hilbras Keystone \u2014 standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hilbras/Keystone.git"

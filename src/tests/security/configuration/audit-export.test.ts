@@ -18,13 +18,13 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 }
 
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-const { db } = await import("../../db/index.js");
-const { buildApp } = await import("../../index.js");
-const { loadSigningKeys } = await import("../../services/tokens.js");
-const { auditLog, users } = await import("../../db/schema.js");
-const { hashPassword } = await import("../../services/secrets/index.js");
-const { migrationsFolder } = await import("../helpers/paths.js");
-const { auditLogSubscriber } = await import("../../services/events/subscribers/auditLog.js");
+const { db } = await import("../../../db/index.js");
+const { buildApp } = await import("../../../index.js");
+const { loadSigningKeys } = await import("../../../services/tokens.js");
+const { auditLog, users } = await import("../../../db/schema.js");
+const { hashPassword } = await import("../../../services/secrets/index.js");
+const { migrationsFolder } = await import("../../helpers/paths.js");
+const { auditLogSubscriber } = await import("../../../services/events/subscribers/auditLog.js");
 
 const RUN_ID = crypto.randomBytes(6).toString("hex");
 const PASSWORD = "Audit-Export-Passw0rd!";
@@ -66,9 +66,9 @@ after(async () => {
   await app?.close();
   await db.delete(auditLog).where(eq(auditLog.userId, ownerId)).catch(() => {});
   await db.delete(users).where(eq(users.id, ownerId)).catch(() => {});
-  const { closeDb } = await import("../../db/index.js");
+  const { closeDb } = await import("../../../db/index.js");
   await closeDb().catch(() => {});
-  const { redis } = await import("../../services/redis.js");
+  const { redis } = await import("../../../services/redis.js");
   try {
     if (redis.status !== "end") await redis.quit();
   } catch {

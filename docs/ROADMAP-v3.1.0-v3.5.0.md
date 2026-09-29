@@ -400,6 +400,52 @@ recorded in `docs/API-REVIEW.md` so each one is a written decision.
 
 **Done when:** a route added without a guard fails the release.
 
+## 3.4 status — done, and narrower than planned
+
+`review:api --strict` is in the release gate. It fails on three things, and all
+three are mechanically decidable from the source:
+
+1. **A route with no authentication guard and no entry in `PUBLIC_BY_DESIGN`.**
+   The count is **zero** today, so this is a tripwire rather than a fix.
+2. **An entry in `PUBLIC_BY_DESIGN` with an empty reason.** An entry without a
+   reason is indistinguishable from a route nobody looked at.
+3. **A guard name that resolves to nothing.** This is the one that matters, and
+   the one nothing else could catch. A misspelled guard is not a load-time error:
+   Fastify evaluates `preHandler: [app.authentcate]` to `undefined` and skips it,
+   so the route ships unauthenticated and every test that does not happen to call
+   it still passes. Verified by misspelling `app.authenticate` on
+   `POST /auth/api-keys`, which produces both the lost-guard finding and the
+   unresolvable-name finding.
+
+**The other two reported categories are deliberately not gated.** "Authenticated,
+no authorization guard" is 27 routes and "state-changing, no rate limit" is 30,
+and neither is decidable by reading the source — whether a route should require an
+authorization guard, or what it is worth attacking, is a product judgement. The
+roadmap said the triaged exceptions belong in `docs/API-REVIEW.md` as written
+decisions. Writing 57 decisions nobody has made would have produced a document
+that reads as review and is not, and a gate encoding the same guesses would be
+worse than no gate. They stay in the report, which prints them every run, and this
+paragraph is the record of why they are not in the gate.
+
+Building the check took three attempts, and the two failures are the interesting
+part — both produced a *plausible* number rather than an obvious error:
+
+- Scanning the raw `preHandler` text found `api_keys` inside
+  `app.requireScopes("api_keys:read")` and reported **901** problems, none real.
+- Stripping string literals first, then splitting on commas, found
+  `config.LOGIN_MAX_ATTEMPTS` inside an options object and reported **40**.
+- Splitting at the top level only, but matching against the raw block, found the
+  word "so" — from a `//` comment inside a preHandler list, which also truncated
+  the match and swallowed the real guards after it — and reported **14**.
+
+The final version strips comments from the file, splits the array depth-aware, and
+accepts a guard that is declared in the same file. A gate that cries wolf gets
+switched off, and the cost of a wrong gate here is higher than the cost of no
+gate: it would have been red on day one, and the response to that is deletion.
+
+It also did not set an exit code. The finding was printed and the build went
+green, which is the exact failure §3.4 set out to end.
+
 ---
 
 # v3.4.0 — Behaviour, not just security

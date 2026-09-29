@@ -99,6 +99,24 @@ jobs:
         # gate exists to prevent.
         run: npm run reaudit:check
 
+      - name: Gate — every route has an authentication guard, and every guard name resolves
+        # `review:api` was a report nobody read, which protected nothing, and it
+        # was wrong four times before it was right. The mechanically decidable
+        # half is a gate now: a route with no guard and no written reason, an
+        # entry in PUBLIC_BY_DESIGN with no reason, or a guard name that resolves
+        # to nothing.
+        #
+        # The last of those is the one that matters most and the one that could
+        # not be caught any other way. A misspelled guard is not a load-time
+        # error: Fastify evaluates `preHandler: [app.authentcate]` to `undefined`
+        # and skips it, so the route ships unauthenticated and every test that
+        # does not happen to call it still passes.
+        #
+        # The two report-only categories — "authenticated, no authorization
+        # guard" (27 routes) and "state-changing, no rate limit" (30) — are not
+        # gated, and scripts/review-api-surface.mjs says why in full.
+        run: node scripts/review-api-surface.mjs --strict
+
       - name: Gate — no secrets in the repository or its history
         # The gitleaks *action* v2 requires a paid licence for organisations and
         # aborts before scanning, so the CLI is run from its container instead —
