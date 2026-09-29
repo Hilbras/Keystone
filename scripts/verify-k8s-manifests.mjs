@@ -21,11 +21,11 @@
  * an error rather than a silent skip, because a check that quietly ignores half
  * a file is worse than no check.
  */
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseYaml, loadYamlFile as loadYaml } from "./lib/yaml.mjs";
+import { loadYamlFile as loadYaml } from "./lib/yaml.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const K8S = path.join(root, "k8s");
@@ -106,7 +106,7 @@ async function isDirectory(p) {
 /** Apply the overlay transformations the base kustomization declares. */
 function applyKustomization(doc, kustomization, imagesByName) {
   if (kustomization.commonLabels && typeof doc === "object" && doc.metadata) {
-    doc.metadata.labels = { ...(kustomization.commonLabels ?? {}), ...(doc.metadata.labels ?? {}) };
+    doc.metadata.labels = { ...kustomization.commonLabels, ...doc.metadata.labels };
   }
   if (kustomization.namespace && doc?.metadata) doc.metadata.namespace = kustomization.namespace;
   if (kustomization.namePrefix && doc?.metadata?.name) {
@@ -296,5 +296,5 @@ if (problems.length > 0) {
 console.log("Kubernetes manifests OK.");
 console.log(`  version:  ${version} (manifest image tag matches package.json)`);
 console.log(`  probes:   liveness /health, readiness /ready`);
-console.log(`  env:      ${[...reachable].length} variables reachable, ${required.size} required by config.ts`);
+console.log(`  env:      ${reachable.size} variables reachable, ${required.size} required by config.ts`);
 for (const note of notes) console.log(`  rendered: ${note}`);

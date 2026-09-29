@@ -50,12 +50,12 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install backend dependencies
@@ -100,12 +100,12 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install backend dependencies
@@ -120,6 +120,14 @@ jobs:
 
       - name: Gate — every security finding points at a test and a document
         run: npm run registry:check
+
+      - name: Gate — the changelog describes the version being released
+        # 3.3.0 and 3.4.0 were both published with no entry at all: the file
+        # newest heading was [3.2.0] while the package was at 3.4.0. The existing
+        # release check verified the changelog *ships*; nothing checked that it was
+        # *current*. This also compares against the npm registry, so a version that
+        # reached the registry without a heading here fails the build.
+        run: node scripts/verify-changelog.mjs
 
       - name: Gate — documentation links resolve
         run: npm run check:docs
@@ -140,6 +148,43 @@ jobs:
         # incidents. Generating it and checking every series name against the live
         # registry turns that into a build failure instead of a blank graph at 3am.
         run: node scripts/generate-auth-dashboard.mjs
+
+      - name: Gate — the Node version is stated once and everything agrees
+        # The runtime version was written out in ten places, with no engines field
+        # and no .nvmrc — even though benchmark.yml already pointed setup-node at
+        # one that did not exist. Dependabot PR #34 changes the Dockerfile one of
+        # those ten, which is how a release ends up running a different Node major
+        # from the one the suite passed on.
+        run: node scripts/verify-node-version.mjs
+
+      - name: Gate — every third-party action is pinned to a commit SHA
+        # Every "uses:" was pinned to a major version (actions/checkout@v4), which
+        # looks pinned and is not: @v4 is a mutable tag, so whoever owns the action
+        # can re-point the code that ships in a release after the review that
+        # approved it. CodeQL flagged 8 of them.
+        run: node scripts/verify-action-pins.mjs
+
+      - name: Gate — the Docker image context carries no credentials
+        # verify-image-hygiene ran only in release.yml, which fires on a tag push.
+        # So .dockerignore and the build context were never checked on the pull
+        # request that could have broken them, and the built image was not inspected
+        # at all until release. This runs the context half on every PR; the
+        # built-image half needs a docker build and stays in release.yml.
+        run: node scripts/verify-image-hygiene.mjs
+
+      - name: Gate — every documentation sample compiles, and its imports resolves
+        # A sample is documentation, and documentation is not executed. A renamed
+        # endpoint or a changed option leaves it looking exactly as authoritative
+        # as the day it was written, and the first person to find out is a user with
+        # a broken integration. This found the guide importing
+        # @hilbras/keystone/sdk, a subpath the published package did not serve.
+        run: node scripts/verify-doc-samples.mjs
+
+      - name: Gate — the five SDK packages share the server version and declare their range
+        # They were all at 1.0.0 against a 3.4.0 server, with nothing anywhere
+        # saying which server each supports. A user installing a package cannot tell
+        # whether it works with the server in front of them.
+        run: node scripts/verify-sdk-packages.mjs
 
       - name: Gate — the Kubernetes manifests match the running software
         # The readiness probe pointed at /health — liveness, which answers 200
@@ -163,12 +208,12 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -183,7 +228,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build Docker image
         run: docker build -t hilbras-keystone:test .

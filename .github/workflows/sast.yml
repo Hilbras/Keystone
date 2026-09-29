@@ -41,20 +41,35 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Run project rules
-        # Scoped to the backend. The security-relevant logic is all in `src/`,
-        # and the frontend dashboard trips a parser error in Semgrep's TypeScript
-        # support (TSX generics versus JSX ambiguity) that aborts the whole scan
-        # rather than skipping one file.
+        # `src`, `packages` and `scripts` — not `src` alone.
+        #
+        # The scan was `src`-only on the stated grounds that "the security-relevant
+        # logic is all in `src/`". That was an assumption, and it was wrong in the
+        # way this repository keeps finding: `packages/` is 1,107 lines of
+        # published credential-handling code — PKCE verifiers, nonces, token
+        # storage, cookie handling — and `scripts/` is 2,924 lines that *are* the
+        # security controls. Four thousand lines no rule had ever been pointed at.
+        #
+        # The second stated ground was real and still is: `frontend/` is 69 `.tsx`
+        # files, and Semgrep's TypeScript support trips over TSX generics versus JSX
+        # ambiguity in a way that aborts the whole scan rather than skipping one
+        # file. `packages/keystone-react/src/index.tsx` was checked separately and
+        # parses at 100%, so the exclusion is `frontend/` and not TSX. A file
+        # extension is not a reason to skip a directory that shares it.
+        #
+        # Every rule in `.semgrep.yml` now carries a `paths` block stating where its
+        # construct can exist, so widening the scan widens the coverage rather than
+        # the noise.
         run: >
           semgrep scan
           --config .semgrep.yml
           --error
           --metrics off
           --sarif --output semgrep-project.sarif
-          src
+          src packages scripts
 
   semgrep-community-rules:
     name: Semgrep (community rules, advisory)
@@ -68,10 +83,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Run community rules
         # No --error. This job reports; it does not gate. See the header.
+        #
+        # Scoped the same way as the project rules, and for the same reason: the
+        # published packages handle tokens and cookies, which is the community
+        # rules' subject matter, and there is no reason to find out about them from
+        # a report rather than a gate.
         run: >
           semgrep scan
           --config p/default
@@ -79,11 +99,11 @@ jobs:
           --config p/owasp-top-ten
           --metrics off
           --sarif --output semgrep-community.sarif
-          src
+          src packages scripts
 
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3/upload-sarif
         with:
           sarif_file: semgrep-community.sarif
           category: semgrep-community
@@ -95,7 +115,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history, not just the tip. A secret introduced and removed
           # within a branch is still in the history and still in every clone.

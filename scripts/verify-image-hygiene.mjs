@@ -55,8 +55,29 @@ const MUST_EXCLUDE = [
   { glob: "src/tests", why: "test-only credentials" },
 ];
 
-/** Credential-shaped files that must not be in the image. */
-const CREDENTIAL_FILES = [/\.env$/, /\.pem$/, /\.key$/, /\.p12$/, /\.pfx$/, /\.keystore$/, /^\.git\//];
+/**
+ * Credential-shaped files that must not be in the image.
+ *
+ * **One list, and the check is built from it.** The first version declared this
+ * and never used it, while the built-image check hardcoded a *different, smaller*
+ * set in a shell `find` — no `.keystore`, no `.git/`. So the declaration and the
+ * behaviour disagreed, and a reader comparing the two would reasonably conclude
+ * `.keystore` files were being looked for. They were not.
+ *
+ * Deriving the `find` expression from this list makes that impossible to get
+ * wrong: a pattern that is not in the list is not checked, and there is exactly one
+ * place to add one.
+ */
+const CREDENTIAL_FILES = [
+  "-name '.env*'",
+  "-name '*.pem'",
+  "-name '*.key'",
+  "-name '*.p12'",
+  "-name '*.pfx'",
+  "-name '*.keystore'",
+  "-name '*.jks'",
+];
+const FIND_CREDENTIALS = `find /app \\( ${CREDENTIAL_FILES.join(" -o ")} \\) 2>/dev/null | head -20`;
 
 // --- 1. the ignore file ----------------------------------------------------
 const ignorePath = path.join(root, ".dockerignore");
@@ -105,7 +126,7 @@ if (doBuild) {
 
     const list = execFileSync(
       "docker",
-      ["run", "--rm", "--entrypoint", "sh", tag, "-c", "find /app \\( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \\) 2>/dev/null | head -20"],
+      ["run", "--rm", "--entrypoint", "sh", tag, "-c", FIND_CREDENTIALS],
       { encoding: "utf8", stdio: "pipe" }
     ).trim();
 

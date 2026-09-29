@@ -1,8 +1,11 @@
 {
   "name": "@hilbras/keystone",
-  "version": "3.4.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "version": "3.5.0",
   "license": "MIT",
-  "description": "Hilbras Keystone \u2014 standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
+  "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hilbras/Keystone.git"
@@ -36,7 +39,7 @@
     "start": "node dist/index.js",
     "start:setup": "KEYSTONE_SETUP_MODE=true node dist/setup-server.js",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src --deny-warnings",
+    "lint": "oxlint src packages scripts --deny-warnings",
     "verify:release": "node scripts/verify-release-metadata.mjs",
     "typecheck:all": "npm run typecheck && cd frontend && npm run build",
     "db:generate": "drizzle-kit generate",
@@ -57,6 +60,13 @@
     "review:api": "node scripts/review-api-surface.mjs",
     "verify:k8s": "node scripts/verify-k8s-manifests.mjs",
     "dashboard:auth": "node scripts/generate-auth-dashboard.mjs",
+    "verify:doc-samples": "node scripts/verify-doc-samples.mjs",
+    "verify:sdk": "node scripts/verify-sdk-packages.mjs",
+    "verify:action-pins": "node scripts/verify-action-pins.mjs",
+    "verify:node": "node scripts/verify-node-version.mjs",
+    "verify:changelog": "node scripts/verify-changelog.mjs",
+    "bump:version": "node scripts/bump-version.mjs",
+    "sync:sdk": "node scripts/sync-sdk-versions.mjs",
     "check:docs": "node scripts/check-doc-links.mjs",
     "plans:record": "node scripts/record-query-plans.mjs",
     "bench:hot": "npm run build && node dist/bench/hotPaths.js",
@@ -103,5 +113,17 @@
     "typescript": "^7.0.2"
   },
   "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "default": "./dist/sdk/index.js"
+    },
+    "./package.json": "./package.json",
+    "./dist/*": "./dist/*"
+  },
   "types": "./dist/index.d.ts"
 }

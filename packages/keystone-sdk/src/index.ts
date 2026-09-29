@@ -149,9 +149,6 @@ class KeystoneSdk {
 
   private fillUserFields(user: KeystoneUser | null): void {
     if (typeof document === "undefined") return;
-    const fields: Array<{ attr: string; value: string }> = [
-      { attr: "data-keystone-field", value: user?.email || "" },
-    ];
     if (user) {
       document.querySelectorAll<HTMLElement>("[data-keystone-field='email']").forEach((el) => {
         el.textContent = user.email;

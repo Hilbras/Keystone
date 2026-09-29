@@ -21,10 +21,20 @@ class NoOpEmailProvider implements EmailProvider {
 
 class ConsoleEmailProvider implements EmailProvider {
   async send(message: EmailMessage): Promise<void> {
-    console.log("[email] console provider:");
-    console.log(`To: ${message.to}`);
-    console.log(`Subject: ${message.subject}`);
-    console.log(message.text);
+    // One line, with every field JSON-encoded.
+    //
+    // The previous version printed `To:`, `Subject:` and the body on separate lines,
+    // so a newline in an email subject or body wrote log entries of its own.
+    // Anyone who can influence an email — a display name, a subject line, a
+    // signup form — could forge log lines, and a forged log line is how log
+    // integrity gets quietly lost: an incident review reading a log with
+    // attacker-written entries in it cannot tell which are real. JSON is the
+    // better answer than stripping, because it preserves the value while making
+    // its boundaries unambiguous. (SEC-058)
+    console.log(
+      "[email] console provider:",
+      JSON.stringify({ to: message.to, subject: message.subject, text: message.text })
+    );
   }
 }
 

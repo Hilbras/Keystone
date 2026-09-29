@@ -60,9 +60,6 @@ const panel = (title, description, targets, unit, thresholds) => ({
   options: { legend: { displayMode: "list", placement: "bottom", showLegend: true } },
 });
 
-const stat = (title, description, expr, unit, thresholds) =>
-  panel(title, description, [{ expr, legend: title }], unit, thresholds);
-
 const series = [
   {
     title: "Authentication outcomes",

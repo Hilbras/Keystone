@@ -877,7 +877,11 @@ is what would prompt somebody to delete a certificate the SAML tests need.
 
 # v3.5.0 — Operability and the SDK
 
-## 5.0 status — the audit's own scope, measured
+## 5.0 status (first pass) — the audit's own scope, measured
+
+> **Superseded.** This section measured the gap. The decision, the
+> CodeQL triage and the fixes are in
+> [5.0 status — the audit's own scope, decided rather than assumed](#50-status--the-audits-own-scope-decided-rather-than-assumed).
 
 Found while reconciling CodeQL after §4.3–§4.5, and recorded before the rest of
 this phase because it changes what the other items are worth.
@@ -983,6 +987,189 @@ not trigger a restart loop.
 
 **Gate:** a test that `/ready` fails with the database unreachable, and a test
 that `/health` still succeeds.
+
+## 5.0 status — the audit's own scope, decided rather than assumed
+
+### The scope was an assumption, and it was the same shape as everything else
+
+`src/`. That was the scope, stated by omission: nothing had ever said it, and
+`packages/` and `scripts/` fell outside it because nobody decided they should be
+inside, not because anyone decided they should be outside.
+
+What was in the gap:
+
+```
+packages/   1,107 lines   five packages published to npm, handling tokens,
+                          cookies, PKCE verifiers and nonces
+scripts/    2,924 lines   the security control suite — every gate in this
+                          repository is a file here
+```
+
+**The decision: the registry covers everything the repository publishes or runs.**
+`src/`, `packages/`, `scripts/`, `k8s/`, `.github/workflows/`. Three exclusions,
+each with a reason *and* its cost stated, because an exclusion whose cost is not
+written down is a claim the tree is clean:
+
+| excluded | why | cost |
+|---|---|---|
+| `frontend/` | 69 `.tsx` files, and Semgrep's TS support trips over TSX generics versus JSX ambiguity in a way that aborts a whole scan. The exclusion is `frontend/`, **not** TSX — `packages/keystone-react/src/index.tsx` parses at 100% and is scanned. | No lint, no semgrep, no registry coverage. This is the honest gap in the decision. |
+| `node_modules/` | Third-party, owned upstream. `npm audit` and `dependency-review-action` cover it. | — |
+| `examples/` | Not shipped, not reachable in a deployment. | Holds one live CodeQL finding, left in place on purpose. |
+
+The scope is a field in `registry.json`, the renderer emits it into
+`registry.md`, and the checker fails if it names a tree that does not exist or an
+exclusion without a reason. Verified by adding `a-tree-that-does-not-exist/`.
+
+### 63 CodeQL alerts, not 25
+
+The roadmap's count had drifted, which is itself the argument for recording the
+*grouping* rather than the count: 10 of the 14 rules are the same false positive
+repeated, and 21 alerts are one already-enumerated decision. A list of 63
+individually-dismissed alerts teaches nothing.
+
+Full triage in [`docs/security/codeql-triage.md`](security/codeql-triage.md).
+**Afterwards: 24 dismissed with a reason, 39 open, and every one of the 39 is
+real** — 16 of them fixed here and clearing on push, leaving the 21 unrated routes
+and 2 filesystem races as open decisions rather than defects.
+
+The real ones:
+
+- **SEC-058, low** — the console email provider interpolated subject and body into
+  log lines raw, so a newline in either forged a log entry. Now one
+  JSON-encoded line.
+- **SEC-059, medium** — `secrets/azureKeyVault.ts` encrypts with **AES-256-CBC**
+  while all four of its siblings use GCM. Unauthenticated and malleable, so
+  someone with write access to the stored ciphertext can flip plaintext bits
+  without the key — which is the position encrypting secrets at rest exists to
+  defend against. **Not fixed here, deliberately:** changing the cipher
+  invalidates every already-encrypted value, and a secrets provider has no safe
+  default for a value it cannot decrypt. `db/reencryptOidcSecrets.ts` has the
+  shape of the migration. Recorded so it is not lost.
+- **SEC-060, low** — `js/trivial-conditional` was dismissed in the first pass as
+  "CodeQL wants a switch", which is true and would have closed a real finding. The
+  alert's message is more specific: *"This use of variable `isOutOfScope` always
+  evaluates to false."* It is — and so does `triggerMismatch`, because line 145
+  returns early when either is set. Two provably dead branches in the workflow
+  `blockedReason` chain. The security behaviour was never affected; the
+  *explanation* was, so an out-of-scope event left no run record and no reason.
+  Removed. Reading the rule's name and stopping there is how a correct detector
+  gets dismissed.
+- **`actions/unpinned-tag`, 8** — every `uses:` was pinned to a *major version*.
+  `actions/checkout@v4` looks pinned and is not: `@v4` is a mutable tag, so
+  whoever owns the action chooses the code that ships in a release, after the
+  review that approved it. All 46 are now SHA-pinned with the version in a
+  comment, so the pin is reviewable rather than opaque, and
+  `scripts/verify-action-pins.mjs` fails a PR that adds an unpinned one — the
+  gate also fails a SHA pin with *no* version comment, because a correct pin
+  nobody can update on purpose is barely better than a tag.
+- **`js/missing-rate-limiting`, 21** — the §3.3 set, arriving again
+  independently. Still open, and uncomfortable: 21 unrated routes on an
+  authentication server. Closing it is a product judgement about which are
+  actually abusable, and that judgement has not been made.
+
+The most instructive dismissal is `gcm-no-tag-length`: 4 **errors** claiming the
+auth tag is 12 bytes. 12 bytes is the **IV** length. NIST SP 800-38D's strongest
+GCM tag is 128 bits, which is what Node defaults to and what WebCrypto mandates —
+following the rule would have weakened all four. And while checking the question
+the rule was actually asking (is the tag *verified on decrypt*?) the answer turned
+up SEC-059 instead.
+
+### Two dead declarations, one of them a gate
+
+Extending the linter to `packages/` and `scripts/` surfaced 16 warnings. Two were
+not tidiness:
+
+- `scripts/verify-image-hygiene.mjs` declared `CREDENTIAL_FILES` — "credential
+  files that must not be in the image" — and **never used it**, while the
+  built-image check hardcoded a *smaller* set in a shell `find`, with no
+  `.keystore` and no `.git/`. The declaration and the behaviour disagreed, and a
+  reader comparing them would reasonably conclude `.keystore` files were being
+  looked for. The `find` expression is now derived from the list.
+- `packages/keystone-sdk/src/index.ts` built a `fields` array and never used it;
+  the real work was three hardcoded `querySelectorAll` calls. Dead code in a
+  published package.
+
+### The image hygiene gate ran only on a tag push
+
+`verify-image-hygiene` existed in `release.yml` and nowhere else. So
+`.dockerignore` and the build context were never checked on the pull request that
+could have broken them, and the built image was not inspected at all until release.
+This is the same systemic gap §3.3 fixed for five gates, still open for this one.
+The context half now runs in `gates`; the built-image half needs a docker build and
+stays in `release.yml`.
+
+### semgrep: eight rules, 4,000 lines, never pointed at any of it
+
+Eight of the twelve `.semgrep.yml` rules had **no `paths` restriction** — but
+semgrep was only ever invoked against `src/`. Every rule now carries a `paths`
+block stating where its construct can exist, and the scan covers
+`src packages scripts`.
+
+Widening was not free, and the two failures are the point:
+
+| attempt | result | what it taught |
+|---|---|---|
+| extend `keystone-no-console-in-server` to `packages/**` | 5 findings, all a **browser** library correctly reporting a failed background connect with `console.error` | In a browser SDK the console is the only channel there is. The rule does not extend; the reason is recorded. |
+| widen the same rule to `src/**` | **151** findings, 60-odd in `src/cli.ts`, `src/bench/`, `src/db/seed.ts` | Widening coverage only helps if the rule's scope widens with it. |
+| unscoped run | `keystone-rate-limit-fails-open` matched `if (!file) { … return true; }` in a build script | A file-existence check has the *shape* of a limiter's failure path. Scoped to `src/**`, where a rate limiter can exist. |
+
+The scan is clean at 0 findings, and the console rule was verified to still fire
+on a planted `console.log` in a service.
+
+### A near-miss worth recording
+
+Checking "does every GCM site call `setAuthTag` before `final()`?" reported
+`azureKeyVault.ts` as **missing** `setAuthTag`. It is not missing: that provider
+uses CBC, so there is no auth tag to set. The check asked a GCM question of a
+non-GCM site and produced a confident, wrong, alarming answer.
+
+A check that turns up a serious-looking result in code nobody has read is exactly
+when to read the surrounding function rather than open a finding.
+
+### The Node version was written out in ten places, and one of them did not exist
+
+Deciding on Dependabot #34 (Docker `node:22-slim` → `26-slim`) turned up a
+dependency the decision could not be made without.
+
+```
+Dockerfile            2 places    FROM node:22-slim
+ci.yml                3 places    node-version: 22
+release.yml           2 places    node-version: 22
+supply-chain.yml      3 places    node-version: 22
+benchmark.yml         1 place     node-version-file: .nvmrc
+package.json          0 places    no engines field at all
+.nvmrc                            DOES NOT EXIST
+```
+
+**`benchmark.yml` already pointed `setup-node` at a `.nvmrc` that was never
+created.** So the runtime version had no authoritative home, ten copies, and one
+consumer reading a file that was not there. Dependabot's PR changes the Dockerfile
+— one of the ten — and merging it would have produced a container on Node 26 while
+CI tested 22. That is the mismatch that turns "the tests passed" into "the release
+does not work", and nothing in the build could see it.
+
+Now: `.nvmrc` holds the version, all nine `setup-node` steps read it,
+`package.json` declares `engines.node: ">=22"`, and
+`scripts/verify-node-version.mjs` fails if any of the four disagree — including
+the Dockerfile, which is the one that matters. Verified by moving the Dockerfile
+to 26, hardcoding a version back into `ci.yml`, and setting `engines.node` to
+`">=23"`.
+
+**PR #34 is closed, not merged.** Bumping the runtime is a decision with a test
+run behind it, and it is now a one-file change: `.nvmrc` plus the Dockerfile,
+which the gate then holds together.
+
+### A gate with a permissive fallback is worse than no gate
+
+The first version of the range check was a regex plus a fallback that **accepted
+every range it did not recognise** — so `engines.node: ">=23"` was admitted for a
+project running 22, and the check passed. The planted `>=23` did not fire it.
+
+That is the same shape as `return reply;` deadlocking a request and
+`containersOf` returning nothing: a control that reports success for the thing it
+exists to catch. The fallback now returns `false` and says so, and
+`rangeAdmits` is unit-checked against eighteen cases including the empty string,
+`">="` and `"nonsense"` — all of which must be rejected.
 
 ## 5.1 status — done, and the most important signal was silent
 
@@ -1202,6 +1389,71 @@ claim now gets checked against the file it is about.
 **Gate:** every code sample in the documentation compiles or runs. This is the
 documentation equivalent of a regression test, and it is the only thing that stops
 example code decaying into fiction.
+
+## 5.3 status — done, and the documentation imported a package that did not exist
+
+### The samples compile, and the specifiers resolve
+
+`scripts/verify-doc-samples.mjs` extracts every ```ts fence from
+`HOW-KEYSTONE-WORKS.md` and `INTEGRATION.md`, writes each to its own module, and
+compiles them with the repository's own `tsc` against the real `packages/*`.
+Fences that make no claim about this product's API are counted and listed, not
+compiled — padding the documentation to satisfy a linter produces worse
+documentation.
+
+**What it found: the guide told users to import `@hilbras/keystone/sdk`, a
+subpath the published package did not serve.** There was no `exports` map and no
+`sdk` directory, so it did not resolve for anybody who installed it. The
+`package.json` now has an `exports` map with `.`, `./sdk` and `./package.json`,
+which also closes the deep-import surface into a security product's internals.
+
+The important part of this gate is the part that is **not** the compile. The
+first version aliased `@hilbras/keystone/sdk` in a `tsconfig`, so the sample
+compiled and the documentation was still wrong. So every specifier is *also*
+resolved against the real `exports` map, and the entries are checked against the
+build output. Verified by deleting the `./sdk` entry.
+
+Two samples that genuinely are fragments — narrative sketches referring to
+`base64url`, `issuer`, `KEYSTONE` — now say so on their first line. The marker is
+in the documentation, so a reader who copies the fence learns from the fence that
+it is not standalone, and the gate and the reader are looking at the same thing.
+
+### One version, and a declared support range
+
+The five packages were all at `1.0.0` against a 3.4.0 server, which is the clearest
+possible statement that the constraint was never stated anywhere. They now share
+the server's version and declare:
+
+```json
+"keystonePeer": { "server": ">=3.4.0 <3.5.0" }
+```
+
+A range rather than the exact version, because that is what the cadence supports:
+a server at 3.5.0 satisfies the SDK published alongside it, and stating `3.5.0`
+exactly would be a promise nothing has measured.
+
+`keystonePeer` rather than `peerDependencies`, because `@hilbras/keystone` is not
+a package to resolve — it is *this* server, and putting it in `peerDependencies`
+would send npm looking for something that is not on the registry.
+
+`scripts/sync-sdk-versions.mjs` keeps the five together and recomputes their
+ranges; `scripts/verify-sdk-packages.mjs` fails if they drift, if a range excludes
+the version being released, if a sibling dependency is not the exact version, or if
+a package does not compile.
+
+**That gate's first run reported four of the five packages as broken** —
+`Cannot find name 'URL'`, `Cannot find name 'node:fs/promises'`. Not defects: the
+packages carry their own `typescript@5.9.3` and `@types/node`, and the gate was
+using the repository's TypeScript 7. A gate that reports a toolchain mismatch as
+a code defect is worse than no gate, because the fix it implies is wrong. It now
+uses each package's own compiler and reports the skew as a note, not a failure.
+
+`scripts/bump-version.mjs` does the release bump in one command across
+`package.json`, both manifests, `package-lock.json` (which carries the version
+twice) and the five packages. Its first version rewrote the *comment* above
+`newTag:` instead of the value, because the comment names the key — and its second
+replaced the whole image reference with a bare version number. Both were caught by
+`verify:k8s`; both fixes anchor on the line rather than on the text.
 
 ## 5.4 Kubernetes manifests that are current
 

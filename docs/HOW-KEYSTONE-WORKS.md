@@ -303,6 +303,7 @@ Public clients have no secret, so PKCE is what protects the code. Never put a
 client secret in browser code.
 
 ```ts
+// fragment: the middle of the paragraph above, not a standalone file
 // Generate a verifier and its S256 challenge, store the verifier in sessionStorage,
 // then redirect:
 const verifier = base64url(randomBytes(32));
@@ -341,6 +342,7 @@ POST /v1/authz/check
 ```
 
 ```ts
+// fragment: `KEYSTONE`, `accessToken` and `orgId` come from the surrounding code
 const { allowed } = await fetch(`${KEYSTONE}/v1/authz/check`, {
   method: "POST",
   headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
@@ -436,9 +438,13 @@ The internal service SDK, if you are extending Keystone itself:
 import { getSdk } from "@hilbras/keystone/sdk";
 
 const sdk = getSdk();
-const result = await sdk.authentication.login({ email, password });
-if (!result.success) return reply.status(401).json({ error: result.error.message });
-const tokens = result.data;   // { accessToken, refreshToken, expiresAt, user }
+
+export async function login(email: string, password: string) {
+  const result = await sdk.authentication.login({ email, password });
+  if (!result.success) return { error: result.error.message };
+  const tokens = result.data;   // { accessToken, refreshToken, expiresAt, user }
+  return { tokens };
+}
 ```
 
 Four namespaces: `authentication`, `identity`, `organization`, `authorization`.
