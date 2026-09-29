@@ -2,6 +2,9 @@ import { config } from "../../../config.js";
 import { queue } from "../../queue/index.js";
 import { signWebhookPayload } from "../../../lib/webhookSignature.js";
 import type { KeystoneEvent } from "../types.js";
+import { serviceLogger } from "../../../lib/logger.js";
+
+const moduleLog = serviceLogger("events");
 
 function shouldEmit(): boolean {
   return Boolean(config.AUDIT_WEBHOOK_URL || process.env.AUDIT_WEBHOOK_URL || config.AUDIT_CONSOLE_EXPORT === "true");
@@ -22,7 +25,10 @@ export async function webhookSubscriber(event: KeystoneEvent): Promise<void> {
   };
 
   if (config.AUDIT_CONSOLE_EXPORT === "true") {
-    console.log("[audit-export]", JSON.stringify(record));
+    // This is the export, not a diagnostic: AUDIT_CONSOLE_EXPORT=true means
+    // "write each audit record to stdout", so the logger is the right way to say it
+    // and `console.log` is what it replaced.
+    moduleLog.info({ record }, "audit console export");
   }
 
   const webhookUrl = config.AUDIT_WEBHOOK_URL || process.env.AUDIT_WEBHOOK_URL;

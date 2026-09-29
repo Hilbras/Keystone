@@ -335,6 +335,40 @@ cannot be a `Result`.
 **Done when:** `rg -c 'throw new' src/services/domain/` is zero, and a denied
 operation can no longer surface as a 500.
 
+## 3.2 status — done
+
+**The lint rule was already satisfied.** `rg -c 'throw new' src/services/domain/`
+is **zero**, and has been. The rule is a tripwire rather than a fix, which is the
+right shape for a rule about a convention: it costs nothing now and fails the build
+the first time somebody reaches for `throw` here out of habit. Verified by
+planting a throw.
+
+**`console.*` in server code: 101 call sites → 12.** The remaining twelve are the
+code where stdout *is* the output rather than a diagnostic — the `console` email
+and SMS providers, the audit console export, and the setup token an operator has
+to read. They are listed by name in the rule's exclusion list rather than allowed
+by pattern, so a fifth such file has to be added on purpose.
+
+Route call sites now use the injected logger, and where a route helper has no
+request in scope — `detectImpossibleTravel` in `auth.ts` — the logger is **passed
+in** rather than reached for, so the line still carries the request id that
+identifies the login that triggered it. Services, queue workers and event
+subscribers get `serviceLogger("<component>")` from a new `src/lib/logger.ts`,
+which reads the same `KEYSTONE_LOG_LEVEL` as Fastify's. That last part is the
+point: `console` ignores the level, which is how the 3.1.0 benchmark ended up
+measuring its own logging.
+
+**The 10 raw `status(500)` sites were reviewed and none changed.** Each is a
+genuine server-side failure, and six of them additionally log their cause. Two of
+them — `config.ts:43` and `config.ts:48` — echo the underlying error message to
+the client, which is normally a leak and here is not: all three `/config` routes
+are `requirePlatformRole("owner")`, and the operator who is about to restart the
+server needs to know whether the write failed on permissions or on a syntax
+error. Removing it would take away a diagnostic from the one principal who can
+act on it, for no security gain. Recorded here because "reviewed and left alone"
+is a decision, and a decision nobody wrote down is indistinguishable from an
+oversight.
+
 ## 3.3 Move the two misplaced test suites
 
 **Finding:** §2.9. `audit-export.test.ts` and `registry.test.ts` sit at the root
@@ -365,6 +399,52 @@ nothing.
 recorded in `docs/API-REVIEW.md` so each one is a written decision.
 
 **Done when:** a route added without a guard fails the release.
+
+## 3.4 status — done, and narrower than planned
+
+`review:api --strict` is in the release gate. It fails on three things, and all
+three are mechanically decidable from the source:
+
+1. **A route with no authentication guard and no entry in `PUBLIC_BY_DESIGN`.**
+   The count is **zero** today, so this is a tripwire rather than a fix.
+2. **An entry in `PUBLIC_BY_DESIGN` with an empty reason.** An entry without a
+   reason is indistinguishable from a route nobody looked at.
+3. **A guard name that resolves to nothing.** This is the one that matters, and
+   the one nothing else could catch. A misspelled guard is not a load-time error:
+   Fastify evaluates `preHandler: [app.authentcate]` to `undefined` and skips it,
+   so the route ships unauthenticated and every test that does not happen to call
+   it still passes. Verified by misspelling `app.authenticate` on
+   `POST /auth/api-keys`, which produces both the lost-guard finding and the
+   unresolvable-name finding.
+
+**The other two reported categories are deliberately not gated.** "Authenticated,
+no authorization guard" is 27 routes and "state-changing, no rate limit" is 30,
+and neither is decidable by reading the source — whether a route should require an
+authorization guard, or what it is worth attacking, is a product judgement. The
+roadmap said the triaged exceptions belong in `docs/API-REVIEW.md` as written
+decisions. Writing 57 decisions nobody has made would have produced a document
+that reads as review and is not, and a gate encoding the same guesses would be
+worse than no gate. They stay in the report, which prints them every run, and this
+paragraph is the record of why they are not in the gate.
+
+Building the check took three attempts, and the two failures are the interesting
+part — both produced a *plausible* number rather than an obvious error:
+
+- Scanning the raw `preHandler` text found `api_keys` inside
+  `app.requireScopes("api_keys:read")` and reported **901** problems, none real.
+- Stripping string literals first, then splitting on commas, found
+  `config.LOGIN_MAX_ATTEMPTS` inside an options object and reported **40**.
+- Splitting at the top level only, but matching against the raw block, found the
+  word "so" — from a `//` comment inside a preHandler list, which also truncated
+  the match and swallowed the real guards after it — and reported **14**.
+
+The final version strips comments from the file, splits the array depth-aware, and
+accepts a guard that is declared in the same file. A gate that cries wolf gets
+switched off, and the cost of a wrong gate here is higher than the cost of no
+gate: it would have been red on day one, and the response to that is deletion.
+
+It also did not set an exit code. The finding was printed and the build went
+green, which is the exact failure §3.4 set out to end.
 
 ---
 

@@ -15,6 +15,7 @@ import {
   DrizzleScimConnectionRepository,
   DrizzleScimGroupRepository,
   DrizzleWorkflowRepository,
+  DrizzlePlatformRepository,
 } from "./repositories/index.js";
 import { secretsProvider } from "./services/secrets/index.js";
 import { queue } from "./services/queue/index.js";
@@ -48,6 +49,7 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
   const scimConnectionRepository = new DrizzleScimConnectionRepository();
   const scimGroupRepository = new DrizzleScimGroupRepository();
   const workflowRepository = new DrizzleWorkflowRepository();
+  const platformRepository = new DrizzlePlatformRepository();
 
   const container: Container = {
     config,
@@ -62,6 +64,7 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
     scimConnectionRepository,
     scimGroupRepository,
     workflowRepository,
+    platformRepository,
     apiKeyRepository,
     samlConnectionRepository,
     oidcConnectionRepository,

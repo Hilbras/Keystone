@@ -1,4 +1,7 @@
 import { Redis } from "ioredis";
+import { serviceLogger } from "../lib/logger.js";
+
+const log = serviceLogger("cache");
 import { Counter } from "prom-client";
 import { config } from "../config.js";
 
@@ -30,7 +33,7 @@ class CacheProvider {
     if (config.REDIS_URL) {
       this.redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
       this.redis.on("error", (err) => {
-        console.warn("[cache] redis error, falling back to in-memory:", err.message);
+        log.warn({ err }, "redis error, falling back to the in-process map");
       });
     }
   }

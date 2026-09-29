@@ -1,5 +1,8 @@
 import type { KeystoneEvent, EventHandler, EventPayload } from "./types.js";
 import { normalizeEvent } from "./validate.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const log = serviceLogger("events");
 
 const subscribers = new Map<string, EventHandler[]>();
 const allSubscribers: EventHandler[] = [];
@@ -32,7 +35,7 @@ export async function emit(event: EmittableEvent): Promise<void> {
       try {
         await handler(fullEvent);
       } catch (err) {
-        console.error(`[event-bus] handler failed for ${fullEvent.type}:`, err);
+        log.error({ err, eventType: fullEvent.type }, "event handler failed");
       }
     })
   );

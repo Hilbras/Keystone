@@ -1,5 +1,8 @@
 import { Queue as BullQueue, Worker, type Job as BullJob } from "bullmq";
 import type { Queue, Job, JobHandler, QueueStats } from "./types.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("queue");
 
 export class BullMQQueue implements Queue {
   private queue: BullQueue;
@@ -29,7 +32,7 @@ export class BullMQQueue implements Queue {
 
   process(type: string, handler: JobHandler): void {
     if (this.handlers.has(type)) {
-      console.warn(`[bullmq-queue] handler for ${type} already registered`);
+      moduleLog.warn("queue");
       return;
     }
     this.handlers.set(type, handler);
@@ -53,7 +56,7 @@ export class BullMQQueue implements Queue {
     );
 
     worker.on("failed", (job, err) => {
-      console.error(`[bullmq-queue] job ${job?.name} ${job?.id} failed:`, err);
+      moduleLog.error({ err }, "queue");
     });
 
     this.workers.set(type, worker);

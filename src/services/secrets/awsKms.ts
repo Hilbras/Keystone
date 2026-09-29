@@ -2,6 +2,9 @@ import crypto from "node:crypto";
 import { generateKeyPair } from "jose";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("secrets");
 
 /**
  * AWS KMS secrets provider reference implementation.
@@ -64,7 +67,7 @@ export class AwsKmsSecretsProvider implements SecretsProvider {
 
     // In production: store privatePem/publicPem in AWS Secrets Manager encrypted by KMS.
     // eslint-disable-next-line no-console
-    console.warn(`[aws-kms] New signing key ${keyId} generated. In production, store it in AWS Secrets Manager.`);
+    moduleLog.warn("secrets");
 
     this.keyPair = { keyId, privateKey: pair.privateKey, publicKey: pair.publicKey };
     return this.keyPair;

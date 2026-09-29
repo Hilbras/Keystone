@@ -1,6 +1,9 @@
 import { db } from "../../../db/index.js";
 import { auditLog } from "../../../db/schema.js";
 import type { KeystoneEvent } from "../types.js";
+import { serviceLogger } from "../../../lib/logger.js";
+
+const moduleLog = serviceLogger("events");
 
 /**
  * A service-account principal is represented in-memory by an id of
@@ -55,6 +58,6 @@ export async function auditLogSubscriber(event: KeystoneEvent): Promise<void> {
     // A failure here means a security-relevant action went unrecorded, so it is
     // logged at error level and the reason is kept: an operator seeing a gap in
     // the audit log needs to know the write was attempted.
-    console.error("[audit-log-subscriber] failed to write event:", err);
+    moduleLog.error({ err }, "events");
   }
 }

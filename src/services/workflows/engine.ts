@@ -6,6 +6,9 @@ import { subscribe, emit } from "../events/bus.js";
 import type { KeystoneEvent } from "../events/types.js";
 import { queue } from "../queue/index.js";
 import { executeStep, isBlockedWorkflowStep, type WorkflowStep } from "./steps.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("workflows");
 
 export interface WorkflowDefinition {
   steps: WorkflowStep[];
@@ -204,7 +207,7 @@ export async function executeRunById(runId: string, workflowId: string): Promise
     .limit(1);
   const [workflow] = await db.select().from(workflows).where(eq(workflows.id, workflowId)).limit(1);
   if (!run || !workflow) {
-    console.error(`[workflow-engine] run or workflow not found: ${runId}, ${workflowId}`);
+    moduleLog.error("workflows");
     return;
   }
   await executeRun(run, workflow);

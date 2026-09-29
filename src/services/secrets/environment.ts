@@ -3,6 +3,9 @@ import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } fro
 import { config } from "../../config.js";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("secrets");
 
 let envKeyPair: SigningKeyPair | null = null;
 let envEncryptionKey: Buffer | null = null;
@@ -49,11 +52,11 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
     const privatePem = await exportPKCS8(pair.privateKey);
     const publicPem = await exportSPKI(pair.publicKey);
     // eslint-disable-next-line no-console
-    console.warn("[secrets] Generated ephemeral JWT keys. Set JWT_PRIVATE_KEY/JWT_PUBLIC_KEY in production.");
+    moduleLog.warn("secrets");
     // eslint-disable-next-line no-console
-    console.warn("[secrets] JWT_PRIVATE_KEY\n", privatePem);
+    moduleLog.warn("secrets");
     // eslint-disable-next-line no-console
-    console.warn("[secrets] JWT_PUBLIC_KEY\n", publicPem);
+    moduleLog.warn("secrets");
     envKeyPair = { keyId: "env-generated", privateKey: pair.privateKey, publicKey: pair.publicKey };
     return envKeyPair;
   }
@@ -87,7 +90,7 @@ export class EnvironmentSecretsProvider implements SecretsProvider {
     }
     envEncryptionKey = crypto.randomBytes(32);
     // eslint-disable-next-line no-console
-    console.warn("[secrets] Generated ephemeral encryption key. Set KEYSTONE_ENCRYPTION_KEY in production.");
+    moduleLog.warn("secrets");
     return envEncryptionKey;
   }
 

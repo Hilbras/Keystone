@@ -1,5 +1,8 @@
 import { config } from "../config.js";
 import type { AuditEvent } from "./audit.js";
+import { serviceLogger } from "../lib/logger.js";
+
+const moduleLog = serviceLogger("audit-export");
 
 export interface AuditExportRecord {
   event: AuditEvent;
@@ -54,6 +57,6 @@ export const auditSinks = createSinks();
 
 export async function exportAuditRecord(record: AuditExportRecord): Promise<void> {
   await Promise.all(auditSinks.map((sink) => sink.send(record).catch((err: unknown) => {
-    console.error("[audit-export] sink failed:", err);
+    moduleLog.error({ err }, "audit-export");
   })));
 }

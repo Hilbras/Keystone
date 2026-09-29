@@ -11,6 +11,9 @@ import type {
 import type { IdentityConnector } from "../connectors/types.js";
 import type { EmailProvider } from "../email.js";
 import type { SmsProvider } from "../sms.js";
+import { serviceLogger } from "../../lib/logger.js";
+
+const moduleLog = serviceLogger("plugins");
 
 const plugins: KeystonePlugin[] = [];
 const connectorFactories = new Map<string, (config?: Record<string, unknown>) => IdentityConnector>();
@@ -84,7 +87,7 @@ export function registerPlugin(plugin: KeystonePlugin): void {
 
   if (plugin.onRegister) {
     Promise.resolve(plugin.onRegister()).catch((err) => {
-      console.error(`Plugin ${plugin.metadata.name} onRegister failed:`, err);
+      moduleLog.error({ err }, "plugins");
     });
   }
 }
@@ -141,7 +144,7 @@ export function unregisterPlugin(name: string): boolean {
 
   if (plugin.onUnregister) {
     Promise.resolve(plugin.onUnregister()).catch((err) => {
-      console.error(`Plugin ${plugin.metadata.name} onUnregister failed:`, err);
+      moduleLog.error({ err }, "plugins");
     });
   }
 

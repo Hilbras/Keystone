@@ -210,7 +210,10 @@ export default async function scimRoutes(app: FastifyInstance) {
     if (message.includes("invalid input syntax for type uuid")) {
       return reply.status(404).send(scimError(404, "Resource not found"));
     }
-    console.error("[scim] unhandled error:", error);
+    // `reply.log`, not a module logger: this is a request, and a log line
+    // that cannot be joined to the request that produced it is much harder to
+    // work from at 3am than one that carries the request id.
+    reply.log.error({ err: error }, "unhandled SCIM error");
     return reply.status(500).send(scimError(500, "Internal error"));
   });
 

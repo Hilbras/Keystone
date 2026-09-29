@@ -591,7 +591,7 @@
       "release": "2.9.0",
       "issue": "`node --test` expands `**` as a single directory level rather than as globstar, so the discovery patterns stopped matching as soon as the security suites gained a directory level. 48 security tests \u2014 the entire authorization suite \u2014 stopped running, and the suite still reported success because the remaining files passed. A green run was reporting on less than the repository contained.",
       "fix": "package.json \u2014 one pattern per directory depth, with no overlap",
-      "test": "src/tests/security/registry.test.ts",
+      "test": "src/tests/security/process/registry.test.ts",
       "documentation": "docs/security/registry.md",
       "covers": []
     },
@@ -603,7 +603,7 @@
       "release": "2.9.0",
       "issue": "The CSV export quoted values containing a delimiter or a quote, but did not neutralise a value beginning with `=`, `+`, `-` or `@`. Several of the exported columns are attacker-supplied \u2014 the user agent above all \u2014 and a spreadsheet evaluates such a cell as a formula when the file is opened. An audit export is precisely the file an operator opens in a spreadsheet, so that is the expected consumer rather than an edge case. Found by Semgrep's `direct-response-write` rule during the triage for this release; the rule's own finding was a false positive, but the code it pointed at was not.",
       "fix": "src/routes/admin/platform.ts \u2014 a value with a formula prefix in first position is prefixed with an apostrophe before quoting",
-      "test": "src/tests/security/audit-export.test.ts",
+      "test": "src/tests/security/configuration/audit-export.test.ts",
       "documentation": "docs/security/audit.md",
       "covers": []
     },
