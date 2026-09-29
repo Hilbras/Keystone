@@ -513,6 +513,102 @@ different credential.
 **Gate:** the suite passes, and each rejection case fails when the check is
 removed.
 
+## 4.2 status — done, and WebAuthn did not work at all
+
+Seventeen cases against a **software authenticator** written for the suite
+(`src/tests/helpers/softwareAuthenticator.ts`): real CBOR, a real COSE ES256 key,
+a real ECDSA signature over `authData + sha256(clientDataJSON)`, checked by
+`@simplewebauthn/server` against the real stored public key. Nothing mocks the
+verifier — "the route calls the service" is not the claim worth making about a
+second factor.
+
+**SEC-050, high. Every passkey registration and every passkey sign-in returned
+400 `Invalid challenge`. The second factor could not be used at all.**
+
+Keystone generated a challenge, stored it, and passed it to
+`generateRegistrationOptions`. `@simplewebauthn/server` re-encodes a *string*
+challenge — `isoBase64URL.fromBuffer(isoUint8Array.fromUTF8String(c))` — so what it
+returns is the base64url encoding of the **ASCII bytes** of the string that went
+in. A different string, not a different encoding of the same bytes. The cookie
+carried one value and the store was keyed by the other, so the lookup missed every
+time.
+
+```
+createChallenge() returns  ekxKcGV5ZG9Eabcdefghijklmnop
+options.challenge is       ZWt4S2NHVjVaRzlFYWJjZGVmZ2hpamtsbW5vcA
+equal?                     false
+```
+
+The fix is not "encode it back" — it is to stop keeping two values. SimpleWebAuthn
+generates the challenge; `storeChallenge` is keyed on `options.challenge` verbatim.
+There is no second copy left to drift.
+
+**It survived because the only WebAuthn test asserted a refusal.**
+`mfa.test.ts` has `POST /register/verify` on a TOTP account with no password, and
+that refusal happens in `requireStepUp` — before the challenge is read. A test that
+only checks the *rejection* of a feature never establishes that the feature works.
+Same shape as SEC-049's sequential-replay test passing against a racy
+implementation: the test looked reasonable and asserted the wrong thing.
+
+**SEC-051, high. The challenge store was per-process.** A module-level `Map`, while
+`docs/DEPLOYMENT.md` recommends "multiple Keystone containers behind a load
+balancer" and `docs/ARCHITECTURE.md` lists "support horizontal scaling through
+Redis-backed state" as a principle. A challenge minted on one container cannot be
+redeemed on another, so with two containers roughly half of all ceremonies fail —
+intermittently, and only in a multi-instance deployment. Development is a single
+process and always agrees with itself, so this cannot be reproduced locally by any
+amount of trying.
+
+Now Redis, five-minute TTL, and `GETDEL` for redemption: one command, so two
+simultaneous ceremonies cannot both win, and the answer is the same on every
+container. A failed write **propagates** — handing out a challenge that provably
+cannot be redeemed is worse than refusing to start the ceremony.
+
+**Verified separately, because otherwise they look like one finding:**
+
+| restored behaviour | result |
+|---|---|
+| challenge stored under the pre-transform value (SEC-050) | **12 of 17 fail**, every ceremony `Invalid challenge` |
+| store moved back to a `Map`, challenge still correct (SEC-051) | **2 of 17 fail** — cross-instance and TTL; the ceremony itself works |
+| as shipped | 17 pass |
+
+The second row is what shows SEC-051 is a separate defect and not the same
+symptom seen twice: a *correct* challenge store in the *wrong place* breaks only
+multi-instance deployments.
+
+### A regression I introduced in 3.3.0, and the gate that let it through
+
+Chasing the two unused variables this suite's setup created surfaced a
+**real regression already merged into `main`**. The §3.2 `console.*` migration
+replaced a multi-line call in `src/services/secrets/environment.ts` line by line,
+and produced three bare `moduleLog.warn("secrets");` statements that discarded
+their messages — including the two that printed the generated JWT private and
+public PEMs. A developer running locally with no keys configured could no longer
+obtain them. `privatePem` and `publicPem` became unused; `npm run lint` reported
+6 warnings; and I read `tail -1` of the lint output, which is the *timing* line,
+not the verdict.
+
+`npm run lint` runs in **`.github/workflows/release.yml` only, which is triggered
+only on a `v*` tag push.** So it could not have stopped the merge, and would first
+have run after the tag existed. Five gates were in that position:
+
+```
+npm run lint            release.yml=1  ci.yml=0
+registry:check          release.yml=1  ci.yml=0
+check:docs              release.yml=1  ci.yml=0
+reaudit:check           release.yml=1  ci.yml=0
+review-api-surface      release.yml=2  ci.yml=0
+```
+
+They now run in a new `gates` job in `ci.yml`, and `gates` is a **required status
+check on `main`**. None of them need PostgreSQL or Redis, so the job has no
+services. A gate's value is in what it stops; a gate that runs after the merge
+annotates.
+
+This also qualifies §3.4. `review:api --strict` was described there as "a release
+gate", which is true and was misleading: in `release.yml` alone it could not
+prevent a merge.
+
 ## 4.3 Federation
 
 **Finding:** §2.8. Three test files reference it, against six connectors.

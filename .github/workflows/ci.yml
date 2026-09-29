@@ -70,6 +70,59 @@ jobs:
           KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
         run: npm test -- --test-timeout=60000
 
+  # The mechanical gates. Five checks that were in `release.yml` and nowhere else,
+  # which meant a pull request could merge with all of them red and they would
+  # first run after the tag existed — after the merge, with the release already in
+  # flight. §3.2 of v3.3.0 merged a real regression that way: a mangled multi-line
+  # call in `services/secrets/environment.ts` left `privatePem` and `publicPem`
+  # unused, `npm run lint` reported 6 warnings, and the only reason it was ever
+  # noticed is that §4.2 was writing a test in the same file.
+  #
+  # They live here rather than only in the release workflow because a gate's value
+  # is in what it stops. A gate that runs after the merge stops nothing; it
+  # annotates.
+  #
+  # None of these need PostgreSQL or Redis — they read the repository, not the
+  # database — so the job has no services and finishes in well under a minute.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Gate — no lint warnings
+        # `--deny-warnings` exits non-zero. The warnings themselves are not the
+        # interesting part: an unused variable in a file that also does something
+        # else is nearly always a statement whose *value* was dropped, which is how
+        # the `environment.ts` regression announced itself.
+        run: npm run lint
+
+      - name: Gate — every security finding points at a test and a document
+        run: npm run registry:check
+
+      - name: Gate — documentation links resolve
+        run: npm run check:docs
+
+      - name: Gate — the re-audit matrix regenerates and every claim verifies
+        run: npm run reaudit:check
+
+      - name: Gate — every route has an authentication guard, and every guard name resolves
+        # A misspelled guard is skipped at request time rather than rejected at
+        # load, so the route ships unauthenticated and every test that does not
+        # happen to call it still passes. Nothing else in the pipeline can see it.
+        run: node scripts/review-api-surface.mjs --strict
+
+      - name: Gate — release metadata is consistent
+        run: npm run verify:release
+
   frontend:
     runs-on: ubuntu-latest
     steps:

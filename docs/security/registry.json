@@ -654,6 +654,30 @@
       "test": "src/tests/security/authentication/email-verification.test.ts",
       "documentation": "docs/security/tokens.md",
       "covers": []
+    },
+    {
+      "id": "SEC-050",
+      "title": "WebAuthn registration and sign-in could never complete",
+      "severity": "high",
+      "component": "webauthn",
+      "release": "3.4.0",
+      "issue": "The ceremony challenge was stored under a different value than the one the client was given. `createChallenge()` returned a random base64url string, stored it in a Map, and passed it to `generateRegistrationOptions` as `challenge`. `@simplewebauthn/server` re-encodes a string challenge \u2014 `isoBase64URL.fromBuffer(isoUint8Array.fromUTF8String(c))` \u2014 so `options.challenge` is the base64url encoding of the *ASCII bytes* of the string that was passed in, which is a different string. The route put `options.challenge` in the cookie and looked it up in the store on the way back, so `consumeChallenge` missed on every request. Every passkey registration and every passkey sign-in returned 400 `Invalid challenge`. The feature did not work at all. Nothing caught it because the only WebAuthn test asserted a *refusal* \u2014 `POST /register/verify` with a TOTP account and no password \u2014 and that refusal happens in `requireStepUp`, before the challenge is ever read.",
+      "fix": "src/services/webauthn.ts \u2014 the challenge is no longer generated in Keystone and passed in. SimpleWebAuthn generates it and `storeChallenge` is keyed on `options.challenge` verbatim, so there is no second value that can drift out of step with the first. The store write is awaited rather than fired and forgotten, so a client is never handed a challenge whose record may not exist yet.",
+      "test": "src/tests/security/mfa/webauthn.test.ts",
+      "documentation": "docs/security/webauthn.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-051",
+      "title": "The WebAuthn challenge store was per-process, so it failed behind a load balancer",
+      "severity": "high",
+      "component": "webauthn",
+      "release": "3.4.0",
+      "issue": "Challenges lived in a module-level `Map`. `docs/DEPLOYMENT.md` recommends running 'multiple Keystone containers behind a load balancer' and `docs/ARCHITECTURE.md` lists 'support horizontal scaling through Redis-backed state' as a principle. A `Map` is per-process, so a challenge minted on one container could not be redeemed on another: with two containers roughly half of all ceremonies failed, intermittently, and only in a multi-instance deployment \u2014 never in development, where a single process always agrees with itself. Consumption was also a read-then-delete, the same race `singleUse.ts` exists to remove.",
+      "fix": "src/services/webauthn.ts \u2014 the store is Redis, keyed under the configured cache prefix, with a five-minute TTL. Redemption is `GETDEL`: one command, so two simultaneous ceremonies presenting the same challenge cannot both win, and the win is shared by every container. A failed write propagates rather than being swallowed, because handing out a challenge that provably cannot be redeemed is worse than refusing to start the ceremony.",
+      "test": "src/tests/security/mfa/webauthn.test.ts",
+      "documentation": "docs/security/webauthn.md",
+      "covers": []
     }
   ],
   "withdrawn": [

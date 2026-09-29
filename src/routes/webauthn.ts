@@ -99,7 +99,7 @@ export default async function webauthnRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Challenge expired or missing" });
       }
 
-      const stored = consumeChallenge(challenge);
+      const stored = await consumeChallenge(challenge);
       if (!stored || stored.userId !== user.id) {
         clearChallengeCookie(reply);
         return reply.status(400).send({ error: "Invalid challenge" });
@@ -136,7 +136,7 @@ export default async function webauthnRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Challenge expired or missing" });
     }
 
-    const stored = consumeChallenge(challenge);
+    const stored = await consumeChallenge(challenge);
     if (!stored) {
       clearChallengeCookie(reply);
       return reply.status(400).send({ error: "Invalid challenge" });
