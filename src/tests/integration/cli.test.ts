@@ -378,7 +378,15 @@ describe("CLI", () => {
       // `loadSigningKeys()`, so minting the first token threw "JWT signing keys
       // not loaded". The command that creates the platform owner did not work.
       assert.equal(res.code, 0, `user:create failed: ${res.stderr}`);
-      assert.match(res.stdout, new RegExp(email.replace(/\./g, "\\.")));
+      // `includes` rather than a regex built from the address. The address is
+      // test data and needs no pattern matching, and escaping it for a regex
+      // raised CodeQL's `js/incomplete-sanitization` — a backslash in a value
+      // would need escaping too, which is a real objection about the *approach*
+      // and not one this assertion needed to be making.
+      assert.ok(
+        res.stdout.includes(email),
+        `the command should name the address it created: ${res.stdout}`
+      );
 
       const [user] = await db.select().from(users).where(eq(users.email, email));
       assert.ok(user, "the user row was not written");
