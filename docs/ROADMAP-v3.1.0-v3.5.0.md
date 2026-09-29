@@ -877,6 +877,79 @@ is what would prompt somebody to delete a certificate the SAML tests need.
 
 # v3.5.0 — Operability and the SDK
 
+## 5.0 status — the audit's own scope, measured
+
+Found while reconciling CodeQL after §4.3–§4.5, and recorded before the rest of
+this phase because it changes what the other items are worth.
+
+**There are five published npm packages that no test, no Semgrep rule and no
+registry entry covers.**
+
+```
+packages/keystone-cli     342 lines   1 file   handles credentials
+packages/keystone-sdk     462 lines   1 file   handles credentials
+packages/keystone-vue     144 lines   1 file   handles credentials
+packages/keystone-node    102 lines   1 file   handles credentials
+packages/keystone-react   (no src/)   —        built artefact only
+```
+
+All five are named `@hilbras/keystone-*` and documented as part of the product in
+`docs/HOW-KEYSTONE-WORKS.md`. `release.yml` builds and packages
+`packages/keystone-sdk`. **Zero of the 634 tests reference `packages/`.** The
+Semgrep ruleset's `paths` cover `/src/routes/**` and `/src/services/**` and
+nothing else. The registry has 53 findings and does not mention CodeQL, or these
+packages, or `examples/`.
+
+So the registry is a complete record of what was audited, and what was audited was
+`src/`. Anything published under the same name that lives outside `src/` has never
+been looked at. That is a defensible scope decision — but it was never *made*, and
+the registry reads as the source of truth for all security claims, which is the
+part that is wrong.
+
+**CodeQL carries 25 open alerts across 10 rules, none of them in the registry:**
+
+```
+9  js/insufficient-password-hash         2  js/file-system-race
+7  js/unused-local-variable              1  js/incomplete-sanitization
+1  js/log-injection                      1  js/http-to-file-access
+1  js/file-access-to-http                1  js/remote-property-injection
+1  js/trivial-conditional
+1  javascript.express.security.injection.raw-html-format...
+```
+
+Spread over `scripts/`, `packages/`, `src/plugins/rateLimit.ts`,
+`src/services/workflows/engine.ts`, `src/services/email.ts`,
+`src/services/setup/configWriter.ts` and two test files. Most are likely
+false positives — `js/insufficient-password-hash` will fire on any call that
+passes a hash to a comparison — but "likely" is not a decision, and nobody has
+made one. A SAST surface that produces 25 unexamined alerts is a surface nobody
+reads, and a scanner whose output is never trialled is worse than no scanner
+because it looks like coverage.
+
+The one alert this phase's own work created was a false positive:
+`js/incomplete-sanitization` on `email.replace(/\./g, "\\.")` in
+`src/tests/integration/cli.test.ts`, because the value was being escaped for a
+regex. Replaced with `includes`, which the assertion wanted anyway — the address
+is test data and needed no pattern matching.
+
+**What 5.1–5.4 should therefore start with**, before the alerting metrics:
+
+1. Decide the scope of the registry explicitly — `src/` only, or everything
+   published — and say so in `docs/security/registry.md`. Whichever it is, the
+   other is a named exclusion with a reason.
+2. Triage the 25 CodeQL alerts into the registry, or dismiss them with a reason.
+   Either is a decision; leaving them open is not.
+3. Extend the Semgrep `paths` to cover `packages/` and `scripts/`, or record why
+   not.
+
+None of the three is urgent in the way a live defect is. All three are the
+difference between a security registry that means something and one that means
+"we looked here".
+
+---
+
+# v3.5.0 — Operability and the SDK
+
 ## 5.1 Instrumentation you can actually alert on
 
 **Builds on §1.3.** Four spans exist; nothing alerts.
