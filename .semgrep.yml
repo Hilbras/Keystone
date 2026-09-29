@@ -151,7 +151,7 @@ rules:
     pattern-regex: 'import\s+\{[^}]*\bdb\b[^}]*\}\s+from\s+"(\.\./)+db/index\.js"'
     paths:
       include:
-        - "src/routes/**"
+        - "/src/routes/**"
     message: >-
       A route must not import the database client. Routes parse, delegate and
       respond; data access belongs behind a repository interface in
@@ -173,7 +173,7 @@ rules:
     pattern-regex: 'import\s+[^;]*\bfrom\s+"drizzle-orm"'
     paths:
       include:
-        - "src/routes/**"
+        - "/src/routes/**"
     message: >-
       A route must not import a query builder. Even with no `db` in scope this is a
       route deciding how data is read, which is the repository's job. Move the

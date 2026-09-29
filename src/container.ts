@@ -11,6 +11,7 @@ import type {
   ScimConnectionRepository,
   ScimGroupRepository,
   WorkflowRepository,
+  PlatformRepository,
 } from "./repositories/types.js";
 import type { ApiKeyRepository } from "./repositories/apiKey.js";
 import type { SamlConnectionRepository } from "./repositories/samlConnection.js";
@@ -31,6 +32,7 @@ export interface Container {
   scimConnectionRepository: ScimConnectionRepository;
   scimGroupRepository: ScimGroupRepository;
   workflowRepository: WorkflowRepository;
+  platformRepository: PlatformRepository;
   apiKeyRepository: ApiKeyRepository;
   samlConnectionRepository: SamlConnectionRepository;
   oidcConnectionRepository: OidcConnectionRepository;

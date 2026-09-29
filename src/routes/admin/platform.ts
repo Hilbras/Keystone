@@ -1,7 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, sql, desc, gte, count, isNull } from "drizzle-orm";
-import { db } from "../../db/index.js";
-import { users, organizations, applications, auditLog, refreshTokens } from "../../db/schema.js";
 import { requirePlatformRole, sendResultError } from "./helpers.js";
 import { toPublicUser } from "../../types.js";
 import { getSdk } from "../../sdk/index.js";
@@ -36,47 +33,15 @@ export default async function platformRoutes(app: FastifyInstance) {
 
   // Platform-level owner-only endpoints.
   app.get("/platform/users", { preHandler: [requirePlatformRole("owner")] }, async () => {
-    const allUsers = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        username: users.username,
-        name: users.name,
-        role: users.role,
-        isActive: users.isActive,
-        accountReviewRequired: users.accountReviewRequired,
-        emailVerified: users.emailVerified,
-        createdAt: users.createdAt,
-      })
-      .from(users)
-      .orderBy(users.createdAt);
-    return { users: allUsers };
+    return { users: await app.container.platformRepository.listUsers() };
   });
 
   app.get("/platform/organizations", { preHandler: [requirePlatformRole("owner")] }, async () => {
-    const allOrganizations = await db.select().from(organizations).orderBy(organizations.createdAt);
-    return { organizations: allOrganizations };
+    return { organizations: await app.container.platformRepository.listOrganizations() };
   });
 
   app.get("/platform/applications", { preHandler: [requirePlatformRole("owner")] }, async () => {
-    const allApplications = await db
-      .select({
-        id: applications.id,
-        orgId: applications.orgId,
-        clientId: applications.clientId,
-        name: applications.name,
-        redirectUris: applications.redirectUris,
-        allowedOrigins: applications.allowedOrigins,
-        allowedIps: applications.allowedIps,
-        blockedIps: applications.blockedIps,
-        branding: applications.branding,
-        isActive: applications.isActive,
-        createdAt: applications.createdAt,
-        updatedAt: applications.updatedAt,
-      })
-      .from(applications)
-      .orderBy(applications.createdAt);
-    return { applications: allApplications };
+    return { applications: await app.container.platformRepository.listApplications() };
   });
 
   app.get("/platform/audit-logs", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
@@ -149,88 +114,30 @@ export default async function platformRoutes(app: FastifyInstance) {
     const days = Math.min(Math.max(Number(query.days) || 30, 1), 365);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    const dateSql = sql<string>`date(${auditLog.createdAt})`;
-    const rows = await db
-      .select({
-        date: dateSql,
-        logins: sql<number>`count(*) filter (where ${auditLog.event} = 'user_login')`.mapWith(Number),
-        failedLogins: sql<number>`count(*) filter (where ${auditLog.event} = 'user_login_failed')`.mapWith(Number),
-        signups: sql<number>`count(*) filter (where ${auditLog.event} = 'user_registered')`.mapWith(Number),
-        dau: sql<number>`count(distinct ${auditLog.userId}) filter (where ${auditLog.event} = 'user_login')`.mapWith(Number),
-      })
-      .from(auditLog)
-      .where(gte(auditLog.createdAt, since))
-      .groupBy(dateSql)
-      .orderBy(dateSql);
+    const series = await app.container.platformRepository.dailySeries(since);
 
-    return { days, series: rows };
+    return { days, series };
   });
 
   app.get("/platform/security-summary", { preHandler: [requirePlatformRole("owner")] }, async () => {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const [loginEvents] = await db
-      .select({ total: count() })
-      .from(auditLog)
-      .where(and(eq(auditLog.event, "user_login"), gte(auditLog.createdAt, since)));
-    const [failedLoginEvents] = await db
-      .select({ total: count() })
-      .from(auditLog)
-      .where(and(eq(auditLog.event, "user_login_failed"), gte(auditLog.createdAt, since)));
-    const [activeSessions] = await db
-      .select({ total: count() })
-      .from(refreshTokens)
-      .where(and(isNull(refreshTokens.revokedAt), gte(refreshTokens.expiresAt, new Date())));
-    const [mfaUsers, totalUsers] = await Promise.all([
-      db.select({ total: count() }).from(users).where(eq(users.totpEnabled, true)),
-      db.select({ total: count() }).from(users),
-    ]);
-    const recentLogins = await db
-      .select({
-        id: auditLog.id,
-        event: auditLog.event,
-        userId: auditLog.userId,
-        ipAddress: auditLog.ipAddress,
-        userAgent: auditLog.userAgent,
-        createdAt: auditLog.createdAt,
-      })
-      .from(auditLog)
-      .where(eq(auditLog.event, "user_login"))
-      .orderBy(desc(auditLog.createdAt))
-      .limit(10);
-
-    const [newDeviceEvents] = await db
-      .select({ total: count() })
-      .from(auditLog)
-      .where(and(eq(auditLog.event, "new_device_detected"), gte(auditLog.createdAt, since)));
-    const recentFailedLogins = await db
-      .select({
-        id: auditLog.id,
-        event: auditLog.event,
-        userId: auditLog.userId,
-        ipAddress: auditLog.ipAddress,
-        userAgent: auditLog.userAgent,
-        createdAt: auditLog.createdAt,
-      })
-      .from(auditLog)
-      .where(and(eq(auditLog.event, "user_login_failed"), gte(auditLog.createdAt, since)))
-      .orderBy(desc(auditLog.createdAt))
-      .limit(10);
-
+    const summary = await app.container.platformRepository.securitySummary(new Date());
     return {
       last24h: {
-        logins: loginEvents.total,
-        failedLogins: failedLoginEvents.total,
+        logins: summary.logins,
+        failedLogins: summary.failedLogins,
       },
-      activeSessions: activeSessions.total,
+      activeSessions: summary.activeSessions,
       mfa: {
-        enabled: mfaUsers[0].total,
-        total: totalUsers[0].total,
+        enabled: summary.mfaUsers,
+        total: summary.totalUsers,
+        adoption:
+          summary.totalUsers === 0
+            ? 0
+            : Math.round((summary.mfaUsers / summary.totalUsers) * 1000) / 10,
       },
-      anomalies: {
-        newDevices24h: newDeviceEvents.total,
-        recentFailedLogins,
-      },
-      recentLogins,
+      newDeviceEvents: summary.newDeviceEvents,
+      recentLogins: summary.recentLogins,
+      recentFailedLogins: summary.recentFailedLogins,
     };
   });
 
