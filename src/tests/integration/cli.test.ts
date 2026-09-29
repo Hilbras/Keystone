@@ -197,14 +197,63 @@ describe("CLI", () => {
   });
 
   describe("keys:list", () => {
-    it("exits on its own and lists a key", async () => {
+    it("exits on its own", async () => {
       // The hang, asserted directly. This command touches the database, and before
       // the fix the process never returned: an open pool is a live handle, so the
       // event loop never emptied.
       const res = await cli(["keys:list"]);
-      assert.equal(res.timedOut, false, "keys:list hung — the database pool is never released");
+      assert.equal(res.timedOut, false, "keys:list hung — the connections are never released");
+      assert.equal(res.code, 0, res.stderr);
+    });
+
+    it("prints nothing and still exits 0 when there is no key yet", async () => {
+      // The behaviour a fresh deployment has, and the one that was wrong in the
+      // first version of this suite: it asserted a key line was printed, which
+      // passed on a development database that had been rotated a hundred times and
+      // failed on a clean CI database with none. An empty list is the truth, and
+      // the command should say so by saying nothing.
+      //
+      // Asserted on a database that definitely has no active key: the
+      // `secrets:rotate` cases above create one, and test files share a process,
+      // so the state cannot be assumed either way.
+      const { db: direct } = await import("../../db/index.js");
+      const { secrets, and, eq, isNull } = { ...(await import("../../db/schema.js")), ...(await import("drizzle-orm")) };
+      await direct
+        .update(secrets)
+        .set({ isActive: false })
+        .where(and(eq(secrets.type, "jwt_signing"), isNull(secrets.expiresAt)));
+
+      const res = await cli(["keys:list"]);
+      assert.equal(res.code, 0, res.stderr);
+      assert.equal(
+        res.stdout.trim(),
+        "",
+        "with no active key the command should print nothing and exit 0, not a line of prose"
+      );
+
+      // Put the key back so later cases see a normal database.
+      const { getActiveSigningKey } = await import("../../services/secrets/index.js");
+      await getActiveSigningKey();
+    });
+
+    it("lists the active key once one exists", async () => {
+      // Seeded explicitly in this process, rather than inherited from whatever the
+      // database happened to contain. A suite that depends on pre-existing state
+      // passes locally and fails in CI, and the failure looks like a product bug.
+      const { getActiveSigningKey } = await import("../../services/secrets/index.js");
+      const expected = await getActiveSigningKey();
+
+      const res = await cli(["keys:list"]);
       assert.equal(res.code, 0, res.stderr);
       assert.match(res.stdout, /created=/, `expected a key line, got: ${res.stdout}`);
+      assert.ok(
+        res.stdout.includes(expected.keyId),
+        `the active key ${expected.keyId} should be listed; got: ${res.stdout}`
+      );
+      assert.ok(
+        !/BEGIN PRIVATE KEY/.test(res.stdout),
+        "keys:list must not print private key material"
+      );
     });
   });
 
