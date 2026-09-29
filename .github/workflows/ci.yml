@@ -111,6 +111,29 @@ jobs:
       - name: Install backend dependencies
         run: npm ci
 
+      # Two gates below read the **compiled** output: the dashboard generator
+      # imports the real modules to learn which series are registered, and the
+      # documentation-sample check confirms each `exports` entry points at a file
+      # that is actually in the build. Both failed on the first run of this branch,
+      # in 13 seconds, because this job installed dependencies and then ran gates —
+      # it never built. A gate that depends on a build artefact needs the build.
+      - name: Build
+        run: npm run build
+
+      # The SDK packages each declare their own `typescript` and `@types/node`, and
+      # `verify:sdk` compiles them with their own compiler rather than the
+      # repository's — using the root's TypeScript 7 reported four of the five as
+      # broken, which was a toolchain mismatch and not a code defect. So they are
+      # installed properly here, rather than left as an assumption about what
+      # `npm ci` at the root happens to reach.
+      - name: Install SDK package dependencies
+        run: |
+          for pkg in packages/*/; do
+            echo "::group::$pkg"
+            npm ci --prefix "$pkg" --no-audit --no-fund
+            echo "::endgroup::"
+          done
+
       - name: Gate — no lint warnings
         # `--deny-warnings` exits non-zero. The warnings themselves are not the
         # interesting part: an unused variable in a file that also does something
