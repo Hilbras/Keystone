@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { redis } from "./redis.js";
+import { recordDependencyState } from "../plugins/operationalMetrics.js";
 
 /**
  * What the probes are allowed to know about.
@@ -102,13 +103,20 @@ export async function buildReadinessReport(): Promise<ReadinessReport> {
   // reason.
   const [database, cache] = await Promise.all([checkDatabase(), checkRedis()]);
 
+  const checks = { database, redis: cache };
+
+  // Published here rather than polled on a timer, so the metric and this endpoint
+  // cannot disagree — and so the gauge moves even when nothing scrapes, because a
+  // probe is a probe.
+  recordDependencyState({ checks });
+
   if (!database.ok) {
-    return { status: "unavailable", checks: { database, redis: cache } };
+    return { status: "unavailable", checks };
   }
   if (!cache.ok) {
     // Redis down means the queue is in-process and the distributed rate limiter is
     // on its local fallback: degraded, not unavailable. Auth still works.
-    return { status: "degraded", checks: { database, redis: cache } };
+    return { status: "degraded", checks };
   }
-  return { status: "ready", checks: { database, redis: cache } };
+  return { status: "ready", checks };
 }

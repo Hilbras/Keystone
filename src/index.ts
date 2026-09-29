@@ -241,7 +241,17 @@ export async function buildApp() {
 
   app.addHook("onRequest", async (request, reply) => {
     const path = request.routeOptions?.url ?? request.url.split("?")[0];
-    if (path === "/health" || path === "/ready") return;
+    // `/metrics` is here for the same reason as the probes, and the probe run is
+    // what found it: with Redis unreachable, a single login produced
+    // `keystone_rate_limit_redis_errors_total{key_prefix="global"} 3` — the login,
+    // plus the two `/metrics` fetches around it.
+    //
+    // A scrape endpoint behind a rate limiter fails the way a dashboard failing at
+    // 3am fails: the scraper gets 429s and stops, and the metrics are gone exactly
+    // when something is wrong and they are the thing that would have said so.
+    // Prometheus has no way to back off politely; the scrape is cheap and the
+    // caller is infrastructure.
+    if (path === "/health" || path === "/ready" || path === "/metrics") return;
     return globalLimiter(request, reply);
   });
   // Note the bare `return`. An earlier version of this skipped the probes with

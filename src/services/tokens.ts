@@ -20,6 +20,7 @@ import {
 import { config } from "../config.js";
 import type { Span } from "@opentelemetry/api";
 import { ATTR, SPAN, recordSpan, withSpan } from "./spans.js";
+import { recordTokenOperation } from "../plugins/operationalMetrics.js";
 import type { TokenClaims } from "../types.js";
 import {
   getActiveSigningKey,
@@ -254,7 +255,15 @@ export async function createTokenSet(
       [ATTR.mfaFactor]: (opts.mfaFactor as string | undefined) ?? "none",
       [ATTR.clientId]: opts.clientId ?? "none",
     },
-    (span) => mintTokenSet(user, ip, userAgent, opts, deviceFingerprint, span)
+    (span) =>
+      mintTokenSet(user, ip, userAgent, opts, deviceFingerprint, span).then((tokens) => {
+        // Counted here, at the same door as the span, so a metric and a trace of
+        // "a token was issued" cannot disagree. An issuance that throws is not
+        // counted: the counter answers "how many tokens exist", and a token that
+        // was never minted is not one.
+        recordTokenOperation("issue", "success");
+        return tokens;
+      })
   );
 }
 
@@ -320,6 +329,24 @@ export async function verifyAccessToken(token: string): Promise<TokenClaims> {
 }
 
 export async function rotateRefreshToken(
+  token: string,
+  ip?: string,
+  userAgent?: string,
+  clientId?: string,
+  expectedAppId?: string
+): Promise<TokenSet | null> {
+  // Counted in a `finally`-shaped wrapper rather than at each return: this function
+  // returns `null` for three different situations — unknown token, expired, and
+  // replayed — and a rotation counter that cannot tell them apart is the same
+  // problem as an authentication counter with one label.
+  try {
+    return await rotateRefreshTokenInternal(token, ip, userAgent, clientId, expectedAppId);
+  } finally {
+    recordTokenOperation("rotate", "attempted");
+  }
+}
+
+async function rotateRefreshTokenInternal(
   token: string,
   ip?: string,
   userAgent?: string,

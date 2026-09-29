@@ -9,6 +9,7 @@ import { createHumanUser, verifyPassword as verifyZitadelPassword } from "../zit
 import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
 import { isPasswordBreached } from "../hibp.js";
 import { isFailedLoginAnomaly } from "../anomalyDetection.js";
+import { recordAuthentication } from "../../plugins/operationalMetrics.js";
 import { emit } from "../events/bus.js";
 import type { UserRepository, ApplicationRepository, OrganizationRepository, MfaFlow } from "../../repositories/types.js";
 import type { IssuedMfaChallenge, MfaFactor, MfaService } from "../mfa.js";
@@ -165,7 +166,41 @@ export class AuthenticationDomainService {
     return ok({ user, tokens, context });
   }
 
+  /**
+   * Authenticate, and count the outcome once.
+   *
+   * The counting lives here rather than at each `return` because `login` has ten
+   * of them, and instrumenting ten call sites is ten chances to add a new one and
+   * forget it — which would make a metric quietly wrong in exactly the direction
+   * that matters, since a failure nobody counts is a failure nobody sees.
+   *
+   * `outcome` and `reason` are separate labels because the question an operator
+   * asks is not "are logins failing" but "why". A sudden `invalid_credentials` is a
+   * spray; a sudden `mfa_failed` is a user with a broken second factor; a sudden
+   * `rate_limited` is a client with a bug. One label for all three reads as "logins
+   * are failing" and none of them is actionable.
+   */
   async login(input: LoginInput): Promise<Result<LoginResult>> {
+    const result = await this.loginInternal(input);
+    if (result.success) {
+      recordAuthentication(
+        "success",
+        result.data.status === "requires_mfa" ? "mfa_required" : "none"
+      );
+    } else {
+      // `TOO_MANY_ATTEMPTS` is a limiter decision rather than a credential
+      // problem, and the two want different responses, so it gets its own label
+      // rather than being folded into the failure it is not.
+      const rateLimited = result.error.code === "TOO_MANY_ATTEMPTS";
+      recordAuthentication(
+        rateLimited ? "rate_limited" : "failure",
+        rateLimited ? "too_many_attempts" : result.error.code.toLowerCase()
+      );
+    }
+    return result;
+  }
+
+  private async loginInternal(input: LoginInput): Promise<Result<LoginResult>> {
     const user = await this.users.findByEmail(input.email);
 
     if (!user) {

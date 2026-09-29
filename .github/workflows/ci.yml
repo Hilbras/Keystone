@@ -133,6 +133,14 @@ jobs:
         # happen to call it still passes. Nothing else in the pipeline can see it.
         run: node scripts/review-api-surface.mjs --strict
 
+      - name: Gate — the authentication dashboard names series that exist
+        # A dashboard is the one artefact in this repository that nobody runs, so a
+        # renamed series leaves its panels pointing at nothing and it fails
+        # silently — a panel with no data looks exactly like a panel with no
+        # incidents. Generating it and checking every series name against the live
+        # registry turns that into a build failure instead of a blank graph at 3am.
+        run: node scripts/generate-auth-dashboard.mjs
+
       - name: Gate — the Kubernetes manifests match the running software
         # The readiness probe pointed at /health — liveness, which answers 200
         # whenever the process is listening — because /ready did not exist. So a

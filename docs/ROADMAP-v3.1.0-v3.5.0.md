@@ -984,6 +984,102 @@ not trigger a restart loop.
 **Gate:** a test that `/ready` fails with the database unreachable, and a test
 that `/health` still succeeds.
 
+## 5.1 status — done, and the most important signal was silent
+
+`src/plugins/operationalMetrics.ts` holds the series, incremented at the
+chokepoints that already existed. The headline:
+
+**The emergency local limiter engaged with no signal at all.** Both limiters run on
+Redis so the budget is shared across the fleet. When Redis is unavailable the
+per-endpoint ones fall back to a per-process budget and **the global one fails
+open** — every request allowed. Before this, the `catch` in `checkLimit` returned a
+decision with no counter, no log line and no event.
+
+A counter of *refusals* would not have caught it. Under per-process limits the
+refusal rate looks normal, because each instance is still enforcing a budget. What
+is anomalous is the **fallback engaging**, and that was the thing with no counter.
+
+Measured against a server whose Redis is unreachable, one request:
+
+```
+keystone_rate_limit_redis_errors_total{key_prefix="global"}            1
+keystone_rate_limit_redis_errors_total{key_prefix="login"}             1
+keystone_rate_limit_redis_errors_total{key_prefix="login-per-address"}  1
+keystone_emergency_local_limiter_total{key_prefix="login",outcome="allowed"}            1
+keystone_emergency_local_limiter_total{key_prefix="login-per-address",outcome="allowed"} 1
+keystone_authentication_attempts_total{outcome="failure",reason="invalid_credentials"}   1
+```
+
+Two series rather than one, because they answer different questions: "Redis was
+unreachable" says something is broken, and "the fallback engaged" says protection
+is degraded. A counter that only moved when a fallback happened to be enabled
+would not move at all for the global limiter — the more serious of the two.
+
+`outcome="allowed"` is the label to watch. Denials are visible to users; allowances
+are invisible and are what hide the degradation.
+
+### The rest
+
+| series | what an operator asks it |
+|---|---|
+| `keystone_authentication_attempts_total{outcome,reason}` | is authentication healthy, and if not, *why* |
+| `keystone_token_operations_total{operation,outcome}` | issuance, rotation, and replays |
+| `keystone_deliveries_total{kind,outcome}` | SCIM and webhook delivery |
+| `keystone_delivery_duration_seconds{kind}` | which consumer is slow, not that something is |
+| `keystone_dependency_up{dependency}` | is PostgreSQL or Redis answering |
+
+`outcome` and `reason` are separate labels on the authentication counter. Folded
+into one, a spray, a broken second factor and a buggy client all read as "logins are
+failing", and none of them is actionable.
+
+Counting is placed where the work already happens: issuance at the same door as its
+§1.3 span, so a metric and a trace of "a token was issued" cannot disagree. The
+rotation counter is incremented in a wrapper rather than at each `return`, because
+`rotateRefreshToken` returns `null` for three different situations — unknown,
+expired, replayed — and a counter that cannot tell them apart is the same problem
+as an authentication counter with one label.
+
+### The dashboard, and the gate on it
+
+`docs/dashboards/authentication.json` is **generated** by
+`scripts/generate-auth-dashboard.mjs`, and the generator fails if a panel names a
+series that is not registered. A dashboard is the one artefact in this repository
+that nobody runs, so a renamed series leaves its panels pointing at nothing and it
+fails silently — a panel with no data looks exactly like a panel with no incidents.
+Verified by misspelling `keystone_token_operations_total`.
+
+The gate produced two false reports on its first run, both worth naming:
+
+- `keystone_delivery_duration_seconds_bucket` is a histogram's *scrape* name, not a
+  registered metric. Checking the suffixed name against the registry reports a
+  metric that does exist.
+- `keystone_dependency_up` was a series the dashboard referenced and nothing had
+  built. Rather than delete the panel, the gauge was added and fed from the
+  readiness report — so §5.2's probe became alertable, and the metric and the
+  endpoint cannot disagree because they are the same call.
+
+The general liveness gate carries over from §4.4: **every registered Keystone series
+must have a call site in `src/`**, so a rename or a deletion fails the build.
+
+### `/metrics` was rate limited
+
+The dead-Redis probe produced `key_prefix="global"` **three** times for one request:
+the login, plus the two `/metrics` fetches around it. A scrape endpoint behind a
+rate limiter fails the way a dashboard failing at 3am fails — the scraper gets 429s
+and stops, and the metrics are gone exactly when something is wrong. Exempted with
+the probes, and the count dropped to one per limiter per request.
+
+### Two mistakes in the test, both of which looked like missing metrics
+
+- The scrape helper appended `_count` to **every** series, so counters landed under
+  a key nobody looked up and three tests failed against counters that were moving
+  correctly. The §4.4 suite has the right form and this one was mis-transcribed
+  from it.
+- `samplesFor` was synchronous and called `.split` on the promise from
+  `register.metrics()`. The failure was
+  `register.metrics.split is not a function`, which reads like the metric was
+  missing rather than like the test forgot an `await`, and cost three test runs.
+
 ## 5.2 status — done, and the deployment had no readiness probe at all
 
 **`/ready` did not exist.** The roadmap's claim that "`/health` and `/ready`

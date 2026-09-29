@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { rateLimitRedisErrors, recordEmergencyFallback } from "./operationalMetrics.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { redis } from "../services/redis.js";
 import { clientAddress } from "../services/trustedProxies.js";
@@ -92,10 +93,21 @@ function localDecision(
   key: string,
   maxAttempts: number,
   windowSeconds: number,
-  useEmergencyLocal: boolean
+  useEmergencyLocal: boolean,
+  keyPrefix: string
 ): LimitDecision {
   if (!useEmergencyLocal) return { allowed: true, limiter: "none" };
   const result = localRateLimit(key, maxAttempts, windowSeconds);
+  // **The fallback engaging is counted here, and nowhere else.**
+  //
+  // Before this, the catch below returned a local decision with no counter, no log
+  // line and no event, so a deployment could be running on per-process budgets —
+  // every instance limiting independently, which is the exact weakness the
+  // distributed limiter exists to remove — and nothing said so. A counter of
+  // *refusals* would not have caught it either: under per-process limits the
+  // refusal rate looks normal, because each instance is still enforcing a budget.
+  // Only the fallback engaging is anomalous, and that was the thing with no signal.
+  recordEmergencyFallback(keyPrefix, result.allowed ? "allowed" : "denied");
   return result.allowed
     ? { allowed: true, limiter: "local" }
     : { allowed: false, limiter: "local", retryAfterSeconds: result.retryAfterSeconds };
@@ -105,7 +117,8 @@ async function checkLimit(
   key: string,
   maxAttempts: number,
   windowSeconds: number,
-  useEmergencyLocal: boolean
+  useEmergencyLocal: boolean,
+  keyPrefix: string
 ): Promise<LimitDecision> {
   // No readiness check before the command, and the reason is worth recording.
   //
@@ -143,13 +156,21 @@ async function checkLimit(
   } catch {
     // A Redis error is the same situation as Redis being down, which is the only
     // thing that should reach the local budget.
-    return localDecision(key, maxAttempts, windowSeconds, useEmergencyLocal);
+    //
+    // Counted separately from the fallback below, because the two answer different
+    // questions. "Redis was unreachable" says something is broken; "the fallback
+    // engaged" says protection is degraded. A limiter configured *without*
+    // `emergencyLocalLimit` fails open on a Redis outage, and that is the more
+    // serious event of the two — so it gets its own series rather than being
+    // folded into a counter that only moves when a fallback happens to be enabled.
+    rateLimitRedisErrors.inc({ key_prefix: keyPrefix });
+    return localDecision(key, maxAttempts, windowSeconds, useEmergencyLocal, keyPrefix);
   }
 }
 
 /** Kept for callers that only need a yes/no, such as a pre-authentication budget. */
 async function isAllowed(key: string, maxAttempts: number, windowSeconds: number): Promise<boolean> {
-  const decision = await checkLimit(key, maxAttempts, windowSeconds, false);
+  const decision = await checkLimit(key, maxAttempts, windowSeconds, false, "pre-auth");
   return decision.allowed;
 }
 
@@ -225,7 +246,8 @@ export function rateLimit(options: RateLimitPluginOptions) {
       key,
       options.maxAttempts,
       options.windowSeconds,
-      options.emergencyLocalLimit === true
+      options.emergencyLocalLimit === true,
+      options.keyPrefix
     );
     if (!decision.allowed) {
       await reportLimited(request, options, decision);
@@ -245,7 +267,7 @@ export function globalRateLimit(options: GlobalRateLimitOptions = {}) {
   return async function onRequest(request: FastifyRequest, reply: FastifyReply) {
     const id = clientIdentifier(request);
     const key = `${keyPrefix}:${id}`;
-    const decision = await checkLimit(key, maxRequests, windowSeconds, false);
+    const decision = await checkLimit(key, maxRequests, windowSeconds, false, keyPrefix);
     if (!decision.allowed) {
       await reportLimited(request, { keyPrefix, maxAttempts: maxRequests, windowSeconds }, decision);
       return reply
