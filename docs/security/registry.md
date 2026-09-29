@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**62 findings.**
+**63 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 33 |
 | medium | 18 |
-| low | 5 |
+| low | 6 |
 
 ## Scope
 
@@ -865,5 +865,19 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Fix.** src/services/totp.ts — NOT FIXED, deliberately, for the same reason as SEC-059: a TOTP seed that cannot be decrypted is a seed nobody can log in with, so the read path has to stay. src/tests/security/secrets/ and scripts/verify-secrets-cipher.mjs — both legacy reads are now *counted* in ALLOWED_LEGACY_READS, so a new one fails the build and the last one going away is a visible, deliberate change rather than an accident nobody notices until a customer cannot log in.
 
 **Test.** `scripts/verify-secrets-cipher.mjs`
+
+**Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-065 — The setup config writer resolved its path twice, and followed a symlink in the steady state
+
+*Fixed in v3.5.2. Component: `setup`.*
+
+**Issue.** src/services/setup/configWriter.ts wrote .env and config/keystone.json by resolving the path twice. EnvFileConfigWriter.write did `fs.stat(path)`, checked the result was a regular file, and then called `fs.writeFile(path, …)`. Those are two resolutions of the same name with a window between them, which CodeQL flagged as js/file-system-race on two sites. The race is the NARROW half, and the wide half is worse: fs.writeFile follows a symbolic link by design, so a .env that is a link is not a race at all — it is the ordinary case. The writer would read the target, merge into it, and overwrite it with mode 0600. No timing required, and a fix that only closed the window would have left this untouched. The primitive handed over is 'write 0600 to any path this process can write'. Severity is low and deliberately not inflated: this writes inside the application directory, and anyone who can plant a symlink there can already achieve more than one stray write. It is also the last two open CodeQL alerts, both real. The JSON writer had the same shape without even the stat, and both writers' backup() did stat-then-copyFile.
+
+**Fix.** src/services/setup/safeFile.ts (new) — one descriptor per file, opened with O_NOFOLLOW, and every read and write goes through that one handle, so there is no second path resolution left to attack. `O_NOFOLLOW` is the part that removes the steady-state problem, and it is the part a stat-then-write fix misses. Both writers' read, write and backup are rewired onto it, and backups are created with O_EXCL so a name that already exists or a link planted at the backup path is refused rather than written through. src/services/setup/configWriter.ts — the merge behaviour is deliberately unchanged: routes/config.ts passes a fully merged set (it has already applied redaction and will not send back a secret it was shown as a bullet sequence), while routes/setup.ts passes only new values and relies on the merge to preserve the rest of the file. Unifying those would change what one of them writes. The refusals are mapped from codes measured on the platform rather than assumed: a directory is EISDIR, a final symlink is ELOOP, and with O_EXCL an existing name is EEXIST. A FIFO, a socket and a device node all OPEN successfully and are caught only by the fstat afterwards, so that branch is live rather than dead — which is not obvious from the EISDIR case and was assumed the wrong way round first. TWO LIMITS, STATED: O_NOFOLLOW covers the final path component only, and a symlink in a PARENT directory is still followed — closing that needs openat with O_NOFOLLOW on every component, which Node's fs does not expose. And O_NOFOLLOW is undefined on Windows, so the flag is omitted and the protection is genuinely gone; symlinkProtection reports which of the two a caller is getting rather than implying one. keystone-config-writes-by-descriptor in .semgrep.yml keeps a future writer from going back to the name.
+
+**Verified by breaking, and the more useful half is what the break showed.** 21 cases. The one that matters asserts the symlink target's content is unchanged, because every other assertion here can pass against the old code if it is weak enough. It is also not sufficient on its own, which is the more useful finding: with write() reverted but read() still hardened, the end-to-end test stayed GREEN, because read() refused first and the write was never reached. So the write is tested at the descriptor with nothing in front of it, and the semgrep rule is what catches a writer that stops using the primitive. Both were verified by reverting: the behavioural suite fails 2 of 21 and keystone-config-writes-by-descriptor reports the reverted site. Restored: 21 of 21.
+
+**Test.** `src/tests/security/setup/configWriterSymlink.test.ts`
 
 **Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)

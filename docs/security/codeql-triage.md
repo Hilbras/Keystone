@@ -27,9 +27,15 @@ filesystem races, both recorded below as open decisions rather than defects.
 | deliberately not limited | 3 | written down, so the omission is a decision rather than an oversight |
 | authenticated | 1 | needs a WebAuthn signature — a possession factor a session thief lacks |
 
-**62 alerts triaged, 2 open, and both are real.** What is left is two
-`js/file-system-race` in `src/services/setup/configWriter.ts`, recorded below as an
-open decision.
+**62 alerts triaged, 2 open, and both are real** — two `js/file-system-race` in
+`src/services/setup/configWriter.ts`, which 3.5.2 fixes as SEC-065 below.
+
+Whether they actually close is a prediction, not a claim: `keystone-config-writes-by-descriptor`
+keeps any path-based write out of that module, so there is no second resolution of a
+name left for the rule to find. The re-analysis will say. Recording it as done before
+the analysis has run would be the exact shape of mistake this file exists to prevent,
+and it is the reason the entry above reads "will clear when it is pushed" rather than
+"cleared".
 
 A number that is wrong in the *safe* direction is worse than one that is wrong in
 the dangerous direction, because it trains people to dismiss the tool. Nine of 21
@@ -423,3 +429,98 @@ rather than a thing to remember.
 
 Both rules were verified by reverting the provider to CBC and confirming the
 first one fires, and by the bisection table above.
+
+## SEC-065, low — the last two open alerts, and what they were pointing at
+
+`js/file-system-race` × 2, `src/services/setup/configWriter.ts`.
+
+### The rule was right about the race and silent about the symlink
+
+`EnvFileConfigWriter.write` did this:
+
+```ts
+const stats = await fs.stat(this.filePath);
+if (stats && !stats.isFile()) return err(…);
+…
+await fs.writeFile(this.filePath, body, { mode: 0o600 });
+```
+
+Two resolutions of one name with a window between them. Correct, and CodeQL said so.
+
+What the rule could not see is that **`fs.writeFile` follows a symlink by design**, so
+a `.env` that is a link is not a race at all — it is the ordinary case. The writer
+reads the target, merges into it, and overwrites it with mode `0600`. No timing
+required, and a fix that only closed the window would have left the larger half in
+place. `fs.stat` follows too, so the "is it a regular file" check happily reported
+that the *target* was a regular file.
+
+Severity is **low** and deliberately not inflated: this writes inside the application
+directory, and anyone who can plant a symlink there can already do more than one stray
+write. The primitive it hands over — *write `0600` to any path this process can write* —
+is the part worth closing. The JSON writer had the same shape without even the `stat`,
+and both writers' `backup()` did stat-then-`copyFile`.
+
+### One descriptor, opened once
+
+`src/services/setup/safeFile.ts` opens each file once with `O_NOFOLLOW` and routes
+every read and write through that one handle, so there is no second resolution left to
+attack and no window to close. `O_NOFOLLOW` is the part that removes the steady-state
+problem. Backups are created with `O_EXCL`, so a name that already exists — or a link
+planted at the backup path — is refused rather than written through.
+
+The merge behaviour is deliberately unchanged. `routes/config.ts` passes a **fully
+merged** set, because it has already applied redaction and will not send back a secret
+it was shown as `••••`; `routes/setup.ts` passes only new values and relies on the
+writer's merge to preserve the rest of the file. Unifying those would change what one
+of them writes.
+
+### The error codes, measured
+
+`open` refuses some paths before a descriptor exists, and the codes are not what the
+manual suggests. Probed rather than assumed:
+
+| what is at the path         | `open` with `O_NOFOLLOW` | code   |
+|-----------------------------|--------------------------|--------|
+| a directory                 | refused                  | EISDIR |
+| a symlink (final component) | refused                  | ELOOP  |
+| a symlink, with `O_EXCL`    | refused                  | EEXIST |
+| a FIFO, a socket, a device  | **opens**                | —      |
+
+The last row is why the `fstat` is not dead code. The first draft handled only the
+fstat, and the directory test then failed with a bare `EISDIR` — so the conclusion
+"the stat check must be unreachable" was available and wrong. The FIFO case is what
+proves it is not.
+
+An earlier draft also mapped `ENOTDIR` to a symlink, reasoning that some filesystems
+report a refused link that way. `ENOTDIR` means a path *component* is not a directory:
+a different problem, and folding it in would have produced a message pointing at the
+wrong thing.
+
+### Two limits, stated rather than glossed
+
+- `O_NOFOLLOW` covers the **final** component only. A symlink in a *parent* directory
+  is still followed; closing that needs `openat` with `O_NOFOLLOW` on every component,
+  which Node's `fs` does not expose. Anyone who can replace a parent of your config
+  file can already replace the config file, so it is not a meaningful escalation — but
+  "this closes the symlink problem" would be an overstatement.
+- `O_NOFOLLOW` is `undefined` on Windows, so the flag is omitted and the protection is
+  genuinely gone. `symlinkProtection` reports which of the two a caller is getting,
+  rather than implying one.
+
+### The test that passed against the defect
+
+The end-to-end assertion — *the symlink target's content is unchanged* — **stayed green
+with `write()` reverted.** Because `write()` also called `read()` on the way through,
+and `read()` is hardened too, the read refused first and the write was never reached.
+
+A test that passes for the wrong reason is worse than a missing one, because it looks
+like coverage. So the write is now also tested at the descriptor, with nothing in front
+of it, and `keystone-config-writes-by-descriptor` in `.semgrep.yml` is what catches a
+writer that stops using the primitive. Both were verified by reverting:
+
+```
+behavioural suite, write() reverted    -> 2 of 21 fail
+keystone-config-writes-by-descriptor   -> configWriter.ts:154
+restored                               -> 21 of 21, 0 semgrep findings over 204 paths
+```
+
