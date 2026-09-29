@@ -85,6 +85,14 @@ for (const name of dirs) {
     continue;
   }
 
+  // Compare-and-swap, for the same reason as bump-version.mjs: an edit landing
+  // between the read and the write would be lost, and this runs during a release.
+  const now = await readFile(file, "utf8");
+  if (now !== original) {
+    console.error(`  packages/${name} changed while this script was running; refusing to overwrite it.`);
+    console.error("  Re-run, or commit the change first and re-run.");
+    process.exit(1);
+  }
   await writeFile(file, after, "utf8");
   console.log(`  ${name.padEnd(18)} ${was} -> ${server.version}, supports ${range}`);
 }

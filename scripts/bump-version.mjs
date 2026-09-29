@@ -39,6 +39,35 @@ async function read(file) {
   return JSON.parse(await readFile(path.join(root, file), "utf8"));
 }
 
+/** The exact text of a repo file, for the compare-and-swap below. */
+async function readText(file) {
+  return readFile(path.join(root, file), "utf8");
+}
+
+/**
+ * Write only if the file is still what we read.
+ *
+ * Both release scripts read a file, transform it, and write it back — and CodeQL's
+ * `js/file-system-race` is right that an edit landing between the read and the
+ * write is silently lost. During a release bump that is the worst possible moment
+ * to lose a change: the version moves, the manifest moves, and the edit vanishes
+ * with no error anywhere.
+ *
+ * The fix is a compare-and-swap: re-read immediately before writing and refuse if
+ * it differs from what we transformed. It is the same lesson as
+ * `scripts/lib/patch.mjs` — a write that does not land, or a write that lands on
+ * something other than what you read, should be loud rather than quiet.
+ */
+async function writeIfUnchanged(file, before, after) {
+  const now = await readFile(file, "utf8");
+  if (now !== before) {
+    console.error(`  ${file} changed while this script was running; refusing to overwrite it.`);
+    console.error("  Re-run, or commit the change first and re-run.");
+    process.exit(1);
+  }
+  await writeFile(file, after, "utf8");
+}
+
 /** The scalar on a `key:` line, ignoring comments — the same anchoring as the writer. */
 function scalarOnLine(source, key, { tagOnly = false } = {}) {
   for (const line of source.split("\n")) {
@@ -79,13 +108,14 @@ if (!target || !/^\d+\.\d+\.\d+$/.test(target)) {
 }
 
 const pkgPath = path.join(root, "package.json");
-const pkg = await read("package.json");
+const pkgBefore = await readText("package.json");
+const pkg = JSON.parse(pkgBefore);
 const from = pkg.version;
 if (from === target) {
   console.log(`  already at ${target}`);
 } else {
   pkg.version = target;
-  await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf8");
+  await writeIfUnchanged(pkgPath, pkgBefore, `${JSON.stringify(pkg, null, 2)}\n`);
   console.log(`  package.json          ${from} -> ${target}`);
 }
 
@@ -142,7 +172,7 @@ for (const [file, key, keepPrefix] of [
     console.error("  Refusing to write a manifest that cannot be applied.");
     process.exit(1);
   }
-  await writeFile(full, out, "utf8");
+  await writeIfUnchanged(full, before, out);
   console.log(`  ${file.padEnd(23)} -> ${target} (${changed} line${changed === 1 ? "" : "s"})`);
 }
 
@@ -150,12 +180,13 @@ for (const [file, key, keepPrefix] of [
 
 const lockPath = path.join(root, "package-lock.json");
 if (existsSync(lockPath)) {
+  const lockBefore = await readFile(lockPath, "utf8");
   const lock = JSON.parse(await readFile(lockPath, "utf8"));
   // Two places: the top-level `version`, and `packages[""].version` for the root
   // package. `verify-release-metadata` checks both, and reported both.
   lock.version = target;
   if (lock.packages?.[""]) lock.packages[""].version = target;
-  await writeFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+  await writeIfUnchanged(lockPath, lockBefore, `${JSON.stringify(lock, null, 2)}\n`);
   console.log(`  package-lock.json      -> ${target} (2 places)`);
 }
 

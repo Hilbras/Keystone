@@ -221,6 +221,48 @@ access at that moment. Recorded, not fixed — the honest fix is `open` with
 
 ---
 
+## Six alerts this work introduced, and what happened to each
+
+CodeQL's PR check counts alerts **in the code the pull request changed**, so a
+triage that dismisses other people's findings and writes its own still shows red.
+These were all in new files in this release:
+
+### `js/file-system-race` × 3 — fixed, not dismissed
+
+`scripts/bump-version.mjs` and `scripts/sync-sdk-versions.mjs` read a file,
+transform it, and write it back. An edit landing between the read and the write is
+silently lost — and during a release bump that is the worst possible moment to
+lose one, because the version moves, the manifest moves, and the change vanishes
+with no error anywhere.
+
+Both now do a **compare-and-swap**: re-read immediately before writing, and refuse
+if the file differs from what was transformed. Verified by extracting the helper,
+pointing it at a file whose contents had moved, and confirming it refuses and
+leaves the file alone.
+
+This is the same lesson as `scripts/lib/patch.mjs`, reached from a different
+direction: a write that lands on something other than what you read should be loud
+rather than quiet.
+
+### `js/http-to-file-access` × 3 — suppressed in the source, with a reason
+
+`src/tests/helpers/deadDatabaseProbe.ts` and `operationalProbe.ts` boot a server,
+call it, and write the response body to a file the parent test reads.
+
+That is a false positive: the destination is a path the parent created with
+`mkdtemp`, and no untrusted path is involved. The alternative — printing to stdout —
+is a parsing problem both files' headers already explain at length, having been
+built after the first attempt at stdout extraction proved it.
+
+Suppressed with a `// codeql[js/http-to-file-access]` comment carrying that reason,
+rather than left to fail a check, because the behaviour is intended and the reason
+belongs next to it. **The suppression syntax could not be verified locally** — the
+CodeQL CLI image is not reachable from this environment — so the PR's own CodeQL
+check is the verification. A suppression that does not work shows up as a red
+check, not as a silent pass.
+
+---
+
 ## SEC-058, medium — one secrets provider encrypts with unauthenticated CBC
 
 Found while triaging `gcm-no-tag-length`, by asking the question the rule was
