@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { emailVerificationTokens, users, type User } from "../db/schema.js";
 import { emailProvider } from "./email.js";
+import { consumeEmailVerificationTokenRow } from "./singleUse.js";
 
 const TOKEN_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 
@@ -27,30 +28,23 @@ export async function storeVerificationToken(userId: string, tokenHash: string) 
   return record;
 }
 
+/**
+ * Verify an address from a token, exactly once.
+ *
+ * The claim is atomic and lives in `singleUse.ts` with the other three single-use
+ * credentials. It used to be a read followed by an update, which is not a claim:
+ * two requests arriving together both saw `usedAt IS NULL`, both wrote it, and
+ * both returned the user. Verification is idempotent so nothing extra was granted,
+ * but "single use" was not true, and the old shape is the one people copy.
+ */
 export async function consumeVerificationToken(token: string): Promise<User | undefined> {
-  const tokenHash = hashToken(token);
-  const now = new Date();
-
-  const [record] = await db
-    .select()
-    .from(emailVerificationTokens)
-    .where(
-      and(
-        eq(emailVerificationTokens.tokenHash, tokenHash),
-        gt(emailVerificationTokens.expiresAt, now),
-        isNull(emailVerificationTokens.usedAt)
-      )
-    )
-    .limit(1);
-
-  if (!record) return undefined;
-
-  await db.update(emailVerificationTokens).set({ usedAt: now }).where(eq(emailVerificationTokens.id, record.id));
+  const result = await consumeEmailVerificationTokenRow(hashToken(token), new Date());
+  if (result.outcome !== "consumed" || !result.record) return undefined;
 
   const [user] = await db
     .update(users)
-    .set({ emailVerified: true, updatedAt: now })
-    .where(eq(users.id, record.userId))
+    .set({ emailVerified: true, updatedAt: new Date() })
+    .where(eq(users.id, result.record.userId))
     .returning();
 
   return user;

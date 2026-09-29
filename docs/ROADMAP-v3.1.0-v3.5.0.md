@@ -466,6 +466,41 @@ same atomic claim the magic link uses.
 
 **Gate:** the suite passes, and reverting the single-use claim fails it.
 
+## 4.1 status — done, and it found a live defect
+
+Twelve cases: the lifecycle, sequential replay, expiry, a deleted user, the
+uniform response shape across unknown / unverified / verified addresses, no
+re-mail to a verified account, the authenticated re-send, and that only a digest
+is stored.
+
+**SEC-049, medium. The email-verification token was not single-use under
+concurrency.** `consumeVerificationToken` read the row with `usedAt IS NULL` and
+then updated it — a read that hopes, not a claim. Two requests arriving together
+both pass the read before either writes, both update, and both are told the token
+was valid. `src/services/singleUse.ts` existed for exactly this and already served
+magic links, password resets and SMS OTP codes atomically; email verification was
+the fourth token type and the only one not routed through it.
+
+Measured against the old implementation: **2 of 8** simultaneous requests through
+`GET /auth/email-verification/verify` were each told the token was valid. Not 8 of
+8 — the connection pool serialises some of them, which is exactly what makes a
+race look intermittent and therefore unlikely.
+
+Two things are worth recording about how it survived:
+
+- The flow had no test at all. `emailVerification.ts` appeared once in the suite,
+  in a list of rate-limit prefixes.
+- **The obvious test would have passed anyway.** A sequential replay test — use
+  the token, assert the second use is refused — passes against the broken
+  implementation, because the second request arrives after the first has written.
+  Only the concurrent case catches it. That is why the concurrency test is in the
+  suite and not left to the reader's judgement.
+
+The severity is medium rather than high, and deliberately: verifying an address is
+idempotent, so a replay grants nothing new. It is a finding because the stated
+property of the flow was **false**, and because this shape is the one people copy.
+Full write-up in [`docs/security/tokens.md`](security/tokens.md).
+
 ## 4.2 WebAuthn, end to end
 
 **Finding:** §2.8. One test file references it. Passkey registration and
@@ -477,6 +512,102 @@ different credential.
 
 **Gate:** the suite passes, and each rejection case fails when the check is
 removed.
+
+## 4.2 status — done, and WebAuthn did not work at all
+
+Seventeen cases against a **software authenticator** written for the suite
+(`src/tests/helpers/softwareAuthenticator.ts`): real CBOR, a real COSE ES256 key,
+a real ECDSA signature over `authData + sha256(clientDataJSON)`, checked by
+`@simplewebauthn/server` against the real stored public key. Nothing mocks the
+verifier — "the route calls the service" is not the claim worth making about a
+second factor.
+
+**SEC-050, high. Every passkey registration and every passkey sign-in returned
+400 `Invalid challenge`. The second factor could not be used at all.**
+
+Keystone generated a challenge, stored it, and passed it to
+`generateRegistrationOptions`. `@simplewebauthn/server` re-encodes a *string*
+challenge — `isoBase64URL.fromBuffer(isoUint8Array.fromUTF8String(c))` — so what it
+returns is the base64url encoding of the **ASCII bytes** of the string that went
+in. A different string, not a different encoding of the same bytes. The cookie
+carried one value and the store was keyed by the other, so the lookup missed every
+time.
+
+```
+createChallenge() returns  ekxKcGV5ZG9Eabcdefghijklmnop
+options.challenge is       ZWt4S2NHVjVaRzlFYWJjZGVmZ2hpamtsbW5vcA
+equal?                     false
+```
+
+The fix is not "encode it back" — it is to stop keeping two values. SimpleWebAuthn
+generates the challenge; `storeChallenge` is keyed on `options.challenge` verbatim.
+There is no second copy left to drift.
+
+**It survived because the only WebAuthn test asserted a refusal.**
+`mfa.test.ts` has `POST /register/verify` on a TOTP account with no password, and
+that refusal happens in `requireStepUp` — before the challenge is read. A test that
+only checks the *rejection* of a feature never establishes that the feature works.
+Same shape as SEC-049's sequential-replay test passing against a racy
+implementation: the test looked reasonable and asserted the wrong thing.
+
+**SEC-051, high. The challenge store was per-process.** A module-level `Map`, while
+`docs/DEPLOYMENT.md` recommends "multiple Keystone containers behind a load
+balancer" and `docs/ARCHITECTURE.md` lists "support horizontal scaling through
+Redis-backed state" as a principle. A challenge minted on one container cannot be
+redeemed on another, so with two containers roughly half of all ceremonies fail —
+intermittently, and only in a multi-instance deployment. Development is a single
+process and always agrees with itself, so this cannot be reproduced locally by any
+amount of trying.
+
+Now Redis, five-minute TTL, and `GETDEL` for redemption: one command, so two
+simultaneous ceremonies cannot both win, and the answer is the same on every
+container. A failed write **propagates** — handing out a challenge that provably
+cannot be redeemed is worse than refusing to start the ceremony.
+
+**Verified separately, because otherwise they look like one finding:**
+
+| restored behaviour | result |
+|---|---|
+| challenge stored under the pre-transform value (SEC-050) | **12 of 17 fail**, every ceremony `Invalid challenge` |
+| store moved back to a `Map`, challenge still correct (SEC-051) | **2 of 17 fail** — cross-instance and TTL; the ceremony itself works |
+| as shipped | 17 pass |
+
+The second row is what shows SEC-051 is a separate defect and not the same
+symptom seen twice: a *correct* challenge store in the *wrong place* breaks only
+multi-instance deployments.
+
+### A regression I introduced in 3.3.0, and the gate that let it through
+
+Chasing the two unused variables this suite's setup created surfaced a
+**real regression already merged into `main`**. The §3.2 `console.*` migration
+replaced a multi-line call in `src/services/secrets/environment.ts` line by line,
+and produced three bare `moduleLog.warn("secrets");` statements that discarded
+their messages — including the two that printed the generated JWT private and
+public PEMs. A developer running locally with no keys configured could no longer
+obtain them. `privatePem` and `publicPem` became unused; `npm run lint` reported
+6 warnings; and I read `tail -1` of the lint output, which is the *timing* line,
+not the verdict.
+
+`npm run lint` runs in **`.github/workflows/release.yml` only, which is triggered
+only on a `v*` tag push.** So it could not have stopped the merge, and would first
+have run after the tag existed. Five gates were in that position:
+
+```
+npm run lint            release.yml=1  ci.yml=0
+registry:check          release.yml=1  ci.yml=0
+check:docs              release.yml=1  ci.yml=0
+reaudit:check           release.yml=1  ci.yml=0
+review-api-surface      release.yml=2  ci.yml=0
+```
+
+They now run in a new `gates` job in `ci.yml`, and `gates` is a **required status
+check on `main`**. None of them need PostgreSQL or Redis, so the job has no
+services. A gate's value is in what it stops; a gate that runs after the merge
+annotates.
+
+This also qualifies §3.4. `review:api --strict` was described there as "a release
+gate", which is true and was misleading: in `release.yml` alone it could not
+prevent a merge.
 
 ## 4.3 Federation
 

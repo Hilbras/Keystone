@@ -1,7 +1,12 @@
 import { and, eq, gt, isNull, type SQL } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { db } from "../db/index.js";
-import { magicLinks, passwordResetTokens, smsOtpCodes } from "../db/schema.js";
+import {
+  emailVerificationTokens,
+  magicLinks,
+  passwordResetTokens,
+  smsOtpCodes,
+} from "../db/schema.js";
 
 /**
  * Atomic consumption of single-use credentials.
@@ -169,5 +174,34 @@ export function consumeSmsOtpCodeRow(
     codeHash,
     now,
     eq(smsOtpCodes.userId, userId)
+  );
+}
+
+export type EmailVerificationTokenRow = typeof emailVerificationTokens.$inferSelect;
+
+/**
+ * Atomically consume an email-verification token.
+ *
+ * The fourth of these, and the one that was missing. `consumeVerificationToken`
+ * used to read the row, check `usedAt IS NULL`, and then update — which is not a
+ * claim, it is a read that hopes. Two requests arriving together both pass the
+ * read, both update, and both are told the token was valid. The other three token
+ * types in this file have used the atomic form since the security programme; this
+ * one was left out, and nothing exercised it.
+ *
+ * The practical effect is bounded, because verifying an address is idempotent: a
+ * replayed token grants nothing new. But the stated property of the flow was
+ * false, and this shape is one people copy. A link captured in a proxy log or a
+ * shared inbox could still be replayed after the legitimate user had used it.
+ */
+export function consumeEmailVerificationTokenRow(
+  tokenHash: string,
+  now: Date
+): Promise<ConsumeResult<EmailVerificationTokenRow>> {
+  return claimAndClassify<EmailVerificationTokenRow>(
+    emailVerificationTokens,
+    emailVerificationTokens.tokenHash,
+    tokenHash,
+    now
   );
 }
