@@ -5,6 +5,118 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.12] - 2026-09-30
+
+*The Ingress was in the base. A document said the shipped manifests kept /metrics internal, and a gate that could not see an Ingress agreed.*
+
+### SEC-073, medium — three controls, none of which measured the thing
+
+`/metrics` is unauthenticated by decision, and 3.5.10 wrote that decision down
+properly. It then added a sentence about the deployment:
+
+> `k8s/base/service.yaml` is a `ClusterIP`, so in the shipped manifests `/metrics`
+> is reachable from inside the cluster and not from outside it.
+
+**False, for the manifests this repository ships.** `k8s/base/ingress.yaml`
+declared an Ingress at `path: /` with `pathType: Prefix` — which matches
+`/metrics` like any other path — and `k8s/base/kustomization.yaml` listed it as a
+base resource, so `overlays/dev` and `overlays/production` both inherited it. A
+ClusterIP keeps a Service internal *from the Service*. The Ingress was sitting in
+front of the Service.
+
+The sentence was written in the same release that first asked why this route was
+public, and it was checked against the Service. Nobody looked at the Ingress.
+
+### The gate could not see it
+
+`verify-k8s-manifests.mjs` rendered every resource in `k8s/` and then branched on
+`doc.kind === "Deployment"` for every check it performed. The Ingress was in the
+rendered set — counted, on screen, in `base: 9 resources` — and never examined:
+
+```
+Kubernetes manifests OK.
+  version: 3.5.11 (manifest image tag matches package.json)
+  probes:  liveness /health, readiness /ready
+```
+
+This is the same defect as the `containersOf` bug already documented in §5.4 of
+that file, reached by a different route: that one read `spec.containers` where a
+Deployment keeps them at `spec.template.spec.containers`; this one never matched
+on `kind` at all. Both are a check that cannot fail. Both were found by reading
+the file the check is about, not by reading the check's output — which is the
+whole of the argument for doing that.
+
+The gate now reads Ingress rules. A path that is exactly `/metrics`, or a `Prefix`
+path that is `/` or starts with `/metrics`, is a publication; an annotation whose
+key matches `/snippet/i` and whose value names the path is an exclusion. A
+published path with no exclusion fails, naming the file — once, not once per
+overlay that inherits it, because four identical lines read as a stuck gate.
+
+### The Ingress is now opt-in
+
+The base is ClusterIP-only, which is what makes the safety claim true rather than
+merely stated. The Ingress is `k8s/overlays/ingress`, which builds on
+`overlays/production` and carries the host, the TLS secret and the exclusion
+together; the Ingress patches that used to live in the two overlays are gone,
+because they patched a resource that is no longer in the base.
+
+`kubectl apply -k overlays/ingress` instead of `overlays/production`. A deployment
+that never wanted a public hostname applies `overlays/dev` or
+`overlays/production` and is internal by default — which is the usual case for a
+scrape endpoint, since Prometheus normally runs in the cluster.
+
+### The prescribed remedy was itself inert
+
+The 3.5.10 text told an operator to exclude the path with
+`nginx.ingress.kubernetes.io/server-snippet`. That annotation **is ignored unless
+the cluster sets `allow-snippet-annotations: "true"` on the ingress-nginx
+ConfigMap, and `false` is the default** — it became the default in the fix for
+CVE-2021-25742, where a user with permission to create an Ingress could read every
+Secret in the cluster through a snippet.
+
+So on a current cluster the annotation is dropped *silently*. The Ingress applies
+cleanly, `kubectl apply` succeeds, `/metrics` is still public, and there is no
+error to notice. An operator following the documented remedy to the letter would
+have believed they were protected and been wrong. The documented way to make the
+annotation work is to set the flag that re-opens the CVE.
+
+The exclusion is kept in the overlay, with the caveat in the file, because a
+cluster that has already decided about snippets is entitled to use one — and
+because deleting a working option to make a point is its own kind of inaccuracy.
+The gate's own output repeats the warning, so the caveat travels with the verdict.
+The two approaches that need nothing from the controller are documented instead.
+
+### The registry's own checker rejected the house style
+
+Writing the entry failed the registry check twice, both times on a path that
+exists. `resolveFixPath` strips backticks implicitly only in its `src/….ts`
+branch, where the regex stops at the closing tick; a `scripts/….mjs` path has no
+such branch, so `existsSync` was asked about `` `scripts/….mjs` `` — a filename
+with backticks in it, which has never existed. The file's prose convention is to
+write paths in backticks, so the checker rejected the house style for every
+non-`.ts` path. Backticks are now stripped explicitly.
+
+### Regression
+
+`src/tests/security/infrastructure/ingressDoesNotPublishMetrics.test.ts`, four
+cases. The load-bearing one rebuilds the original Ingress in a scratch tree and
+requires the gate to exit non-zero, so the check is exercised rather than
+trusted. Verified both ways:
+
+| restored | result |
+|---|---|
+| as shipped in 3.5.11 | **1 pass, 3 fail** — gate exits 0 on a publishing Ingress |
+| the Ingress block deleted from the script | **3 pass, 1 fail** — the blind-gate case |
+| this release | 4 pass |
+
+### Also
+
+- `review-api-surface.mjs`: the `/metrics` `PUBLIC_BY_DESIGN` reason repeated the
+  same false ClusterIP claim, and that is the text a reader of the API review
+  would have believed. It now states the exposure and points at the overlay.
+- `k8s/README.md`: documents the third overlay, which command to apply, and why
+  the base has no Ingress.
+
 ## [3.5.11] - 2026-09-30
 
 *Two releases shipped with two changelog sections each, and the gate that checks the changelog could not see it.*

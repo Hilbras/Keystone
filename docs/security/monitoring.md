@@ -426,30 +426,90 @@ counts and duration histograms by method/route/status, error rates, failed-login
 and process metrics. **It exposes no tenant data** — no email addresses, no organization
 names, no token material.
 
-`k8s/base/service.yaml` is a `ClusterIP`, so in the shipped manifests `/metrics` is
-reachable from inside the cluster and not from outside it.
+## The shipped manifests, and what they now say
 
-### If you put an Ingress in front of Keystone, exclude `/metrics`
+**Until 3.5.12 the repository shipped an Ingress**, at `path: /` in
+`k8s/base/ingress.yaml`, and both overlays inherited it. So the paragraph above
+was wrong for the configuration this repository actually ships: the ClusterIP
+Service keeps `/metrics` internal *from the Service*, and the Ingress was sitting
+in front of the Service, matching every path on the app's port including
+`/metrics`. The decision recorded below — unauthenticated, rate-limit exempt —
+was being published to whatever host that Ingress named.
 
-This is the part that is easy to get wrong by accident. The shipped Service is internal, so
-a deployment that never adds an Ingress is fine. A deployment that adds one inherits every
-path on the app's port, `/metrics` included, and will publish the route table and traffic
-shape to the internet unless the Ingress says otherwise.
+`path: /` with `pathType: Prefix` is the shape almost every Ingress has, and
+nothing about the file says "this also exposes your metrics endpoint".
+
+The Ingress is now an **opt-in overlay**, `k8s/overlays/ingress`, and the base is
+ClusterIP-only. A deployment that wants a public hostname applies that overlay;
+one that does not, applies `overlays/dev` or `overlays/production` and is internal
+by default. `scripts/verify-k8s-manifests.mjs` now reads Ingress rules and fails
+on any Ingress that serves a path matching `/metrics` without an exclusion, so the
+Ingress cannot be put back into the base unnoticed.
+
+### `server-snippet` is the wrong tool, and it fails silently
+
+The overlay excludes `/metrics` with the annotation this section recommends:
 
 ```yaml
-# the exclusion, not a whole resource
 nginx.ingress.kubernetes.io/server-snippet: |
   location /metrics { deny all; return 404; }
 ```
 
-Verify it after deploying, rather than trusting the annotation:
+**That annotation is dropped unless the cluster sets
+`allow-snippet-annotations: "true"` on the ingress-nginx ConfigMap, and `false`
+is the default** — it became the default in the fix for CVE-2021-25742, where a
+user with permission to create an Ingress could read every Secret in the cluster
+by way of a snippet. So on a current cluster the annotation above is **silently
+ignored**: the Ingress applies cleanly, `kubectl` reports success, and `/metrics`
+is still public. There is no error to notice.
+
+So the remedy written here was, in its turn, a control that reports success for
+something other than what it measures — the same failure as the Ingress it was
+meant to cover. Two ways out, both of which need verifying after deploying:
+
+| approach | needs | caveat |
+|---|---|---|
+| a **separate Ingress** for `/metrics` with a different host, and no catch-all for it on the public host | nothing on the controller | the scrape host must still resolve and still reach the ClusterIP |
+| **no public path to `/metrics` at all** — keep the base ClusterIP and let a Prometheus *inside* the cluster scrape it | nothing | the usual case, and what the base is now shaped for |
+| `server-snippet` | `allow-snippet-annotations: "true"` | **do not set it** to make this work; that is the CVE |
+
+Kept in the overlay anyway, with the caveat in the file, because a cluster that
+has already made its own decision about snippets is entitled to use it. It is not
+the default advice and the file says so.
+
+Verify whichever you chose, rather than trusting the annotation:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' https://your-host/metrics   # want 404, not 200
 ```
 
-**Recorded 3.5.10.** The requirement was previously implied by `ClusterIP` and stated
-nowhere, which is the same shape as the tooling gap fixed in that release:
-`review-api-surface.mjs` had never seen this route, so no tool had ever asked why it was
-public. It is in `PUBLIC_BY_DESIGN` — including this obligation — because a decision that
-carries an obligation should say so where the obligation is easy to find.
+**Recorded 3.5.10**, and this paragraph is the correction: the requirement was
+previously implied by `ClusterIP` and stated nowhere, which is the same shape as
+the tooling gap fixed in that release — `review-api-surface.mjs` had never seen
+this route, so no tool had ever asked why it was public. It is in
+`PUBLIC_BY_DESIGN`, including the obligation, because a decision that carries an
+obligation should say so where the obligation is easy to find. Stating the
+obligation turned out to be the easy half: the manifests contradicted it.
+
+### The check, and the specific lie it told
+
+`verify-k8s-manifests.mjs` rendered every resource in `k8s/` and then only ever
+looked at `kind: Deployment`. An Ingress was in the rendered set, on screen in
+the resource count, and never examined. The script printed:
+
+```
+Kubernetes manifests OK.
+  version: 3.5.11 (manifest image tag matches package.json)
+  probes:  liveness /health, readiness /ready
+```
+
+while the repository published `/metrics`. It is the same defect as the
+`containersOf` bug documented above — a check that cannot fail — reached by a
+different route: that one read the wrong key, this one never matched on `kind`.
+
+`src/tests/security/infrastructure/ingressDoesNotPublishMetrics.test.ts` rebuilds
+the original Ingress in a scratch tree and requires the gate to exit non-zero, so
+the check is exercised rather than trusted. Deleting the Ingress block from the
+script makes that test fail; so does putting the Ingress back in the base.
+
+

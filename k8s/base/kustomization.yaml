@@ -10,7 +10,13 @@ resources:
   - secret.example.yaml
   - deployment.yaml
   - service.yaml
-  - ingress.yaml
+  # **No ingress.yaml here, and its absence is the control.** The base Service is
+  # a ClusterIP, so /metrics is reachable only from inside the cluster. An
+  # Ingress at `path: /` matches /metrics like any other route, so the moment one
+  # is added to this list the unauthenticated scrape endpoint is published to
+  # whatever host the Ingress names. The Ingress therefore lives in the opt-in
+  # `overlays/ingress`, which carries the exclusion that makes it safe —
+  # `verify:k8s` fails if an Ingress appears in the base without one.
   - hpa.yaml
   - pdb.yaml
 
@@ -21,7 +27,7 @@ images:
   # decorative. scripts/verify-k8s-manifests.mjs checks the rendered result against
   # package.json, so this is bumped with each release.
   - name: ghcr.io/hilbras-dev/hilbras-keystone
-    newTag: 3.5.11
+    newTag: 3.5.12
 
 commonLabels:
   app.kubernetes.io/name: keystone

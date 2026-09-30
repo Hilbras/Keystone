@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1
+kind: Kustomization
+
+# The public deployment: `overlays/production` **plus** an Ingress.
+#
+# Apply THIS instead of overlays/production, not in addition to it — it already
+# includes production, and applying both would apply the same resources twice:
+#
+#   kubectl apply -k overlays/ingress
+#
+# Why the Ingress is not in the base: the base Service is a ClusterIP, so
+# /metrics is reachable only from inside the cluster. An Ingress at `path: /`
+# matches /metrics like any other route, so a base that ships one publishes the
+# unauthenticated scrape endpoint to whatever host it names. It was in the base
+# until 3.5.12, and `verify:k8s` did not notice, because the check only ever read
+# `kind: Deployment`.
+#
+# `namespace` and `namePrefix` are repeated deliberately: this overlay's own
+# ingress.yaml is not one of production's resources, so production's settings do
+# not reach it, and an Ingress named `keystone` in namespace `keystone` would sit
+# next to a deployment called `prod-keystone` in `keystone-prod` — a public route
+# the cluster operator is not looking at. For a dev-facing host, point this at
+# `../dev` and use the dev namespace/prefix.
+namespace: keystone-prod
+namePrefix: prod-
+
+resources:
+  - ../production
+  - ingress.yaml

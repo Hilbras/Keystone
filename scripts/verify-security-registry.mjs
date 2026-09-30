@@ -72,10 +72,20 @@ function resolveFixPath(fix) {
   // read as "does not resolve to a file in the repository" about a file that is in
   // the repository, which is the least useful form this message takes: it sends a
   // reader looking for a missing file instead of at the check.
+  //
+  // The backticks are stripped too, and that is a smaller version of the same
+  // mistake. The `src/….ts` branch above removes them implicitly, because the regex
+  // stops at the closing tick — so every `src/` entry has always passed whether or
+  // not it was written in backticks. A `scripts/….mjs` entry has no such branch, so
+  // the leading token arrived as `` `scripts/….mjs` `` with the ticks attached and
+  // `existsSync` was asked about a filename that has never existed. The prose
+  // convention in this file is to write paths in backticks, so the checker was
+  // rejecting the house style for every non-`.ts` path.
   const leading = String(fix)
     .trim()
     .split(/\s+—|\s+-\s/)[0]
     .trim()
+    .replace(/`/g, "")
     .replace(/\s*\([^)]*\)\s*$/, "");
   return fs.existsSync(path.join(root, leading)) ? leading : null;
 }
