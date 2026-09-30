@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 // Connection lifecycle, not the client. This route establishes the pool against a
@@ -17,6 +16,7 @@ import {
 import { MfaService } from "../services/mfa.js";
 import { validateDatabase, validateRedis, validateEmail, validateSms } from "../services/setup/validation.js";
 import { createConfigWriter } from "../services/setup/configWriter.js";
+import { writeSetupMarker } from "../services/setup/setupMarker.js";
 import { getSetupToken, validateSetupToken } from "../services/setup/token.js";
 import { runSetupDiagnostics } from "../services/setup/diagnostics.js";
 import { redactConfigurationValues } from "../services/configuration/profiles.js";
@@ -314,8 +314,16 @@ export default async function setupRoutes(app: FastifyInstance) {
       action: "setup_bootstrap",
     });
 
+    // Through a descriptor, like every other write in the setup flow (SEC-065). This file
+    // was simply outside `keystone-config-writes-by-descriptor`'s scope until 3.5.9, which
+    // is why it still called `fs.writeFile` — a rule scoped to the directory that happened
+    // to hold the code being fixed stops being about the defect and starts being about the
+    // folder. See `setupMarker.ts` for the shape.
+    //
+    // A refusal is logged and ignored, exactly as before: the marker records that setup
+    // completed, and failing to record it must not fail the setup that did.
     try {
-      await fs.writeFile(SETUP_MARKER_PATH, new Date().toISOString(), "utf-8");
+      await writeSetupMarker(SETUP_MARKER_PATH, new Date().toISOString());
     } catch (err) {
       request.log.warn({ err }, "Could not write setup completion marker");
     }

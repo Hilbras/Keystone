@@ -36,7 +36,7 @@ Evaluating the codebase? See the
 
 ## Installation
 
-Requires **Node.js 22+**, **PostgreSQL 16+** and **Redis 7+**.
+Requires **Node.js 26+**, **PostgreSQL 16+** and **Redis 7+**.
 
 ```bash
 npm install -g @hilbras/keystone

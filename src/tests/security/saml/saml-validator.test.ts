@@ -33,7 +33,14 @@ async function createSignedSamlFixture() {
     name: "CN=saml-test-idp.example",
     notBefore: new Date(Date.now() - 60 * 60 * 1000),
     notAfter: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    keys,
+    // `@types/node` 26's `webcrypto.KeyUsage` includes "decapsulateBits" and
+    // "encapsulateBits" for ML-KEM; the DOM `KeyUsage` this resolves against does not.
+    // So TypeScript reports Node's own `CryptoKeyPair` as unassignable to the ambient
+    // `CryptoKeyPair` `@peculiar/x509` declares — a real difference in the unions, not a
+    // nominal-aliasing quirk. The two differ *only* by those post-quantum members, and
+    // this key's usages are ["sign", "verify"], present in both, so the cast cannot
+    // change what is passed. Added by the Node 26 bump; it was not a suppressed error.
+    keys: keys as unknown as CryptoKeyPair,
   });
   const certificatePem = certificate.toString("pem");
   const privateKeyPem = pemPrivateKey(await webcrypto.subtle.exportKey("pkcs8", keys.privateKey));

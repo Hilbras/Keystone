@@ -310,6 +310,16 @@ rules:
     paths:
       include:
         - "/src/services/setup/**"
+        # Widened in 3.5.9. The rule was scoped to the directory that happened to
+        # contain the code being fixed, which is how a rule stops being about the
+        # defect and starts being about the folder. `src/routes/setup.ts` wrote the
+        # setup marker with `fs.writeFile` on a computed path - the same shape, in the
+        # same flow, one file over. It is now on the descriptor primitive.
+        #
+        # A scope naming the places known to be wrong is a scope that grows by
+        # remembering, so this is a starting point to widen from rather than a
+        # boundary that is correct.
+        - "/src/routes/**"
 
   # The companion, and the one that caught a fix which had moved rather than solved
   # something.

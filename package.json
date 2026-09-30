@@ -1,9 +1,9 @@
 {
   "name": "@hilbras/keystone",
   "engines": {
-    "node": ">=22"
+    "node": ">=26"
   },
-  "version": "3.5.8",
+  "version": "3.5.9",
   "license": "MIT",
   "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
@@ -106,7 +106,7 @@
   },
   "devDependencies": {
     "@peculiar/x509": "^2.1.0",
-    "@types/node": "^20.14.0",
+    "@types/node": "^26.6.3",
     "@types/nodemailer": "^8.0.1",
     "drizzle-kit": "^0.31.10",
     "light-my-request": "^6.0.0",
