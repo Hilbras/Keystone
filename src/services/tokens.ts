@@ -314,13 +314,75 @@ export async function verifyAccessToken(token: string): Promise<TokenClaims> {
   if (!activeKey) await loadSigningKeys();
 
   const header = decodeProtectedHeader(token);
-  const keyPair = header.kid ? validKeys.get(header.kid) : undefined;
-  const publicKey = keyPair?.publicKey ?? activeKey?.publicKey;
 
-  if (!publicKey) {
-    throw new Error("JWT signing keys not loaded");
+  /**
+   * **Strict `kid` resolution** — SEC-076.
+   *
+   * This used to be:
+   *
+   * ```ts
+   * const publicKey = keyPair?.publicKey ?? activeKey?.publicKey;
+   * ```
+   *
+   * so an unknown `kid` silently fell back to the active key. Two things wrong
+   * with that, and the first is the one that matters:
+   *
+   * 1. **It is not a bypass.** A token signed by *any* other key still fails
+   *    signature verification, so an attacker gains nothing by naming a `kid`
+   *    this server does not know. The plan describes this as validation to add;
+   *    it was never a live exploit and the entry says so.
+   * 2. **It is a diagnostic lie.** A token from a retired key, a token from a
+   *    different issuer, or a forged token with an invented `kid` all produce
+   *    the *same* signature error as an expired or tampered token from a key
+   *    this server does hold. An operator rotating keys cannot tell "this token
+   *    predates the rotation and its key is gone" from "this token was forged",
+   *    because the two are indistinguishable in the output. Rejecting an unknown
+   *    `kid` *before* the signature check is what makes those two different
+   *    errors.
+   *
+   * **Rotation is not broken by this.** `listValidSigningKeys()` returns the
+   * active key plus every key still inside its grace period, and `validKeys` is
+   * populated from exactly that set. A token signed by a key rotated out an hour
+   * ago still resolves, because its key is still in the map. Only a key that has
+   * genuinely left the grace period is refused — which is the point of a grace
+   * period, and which the old fallback silently defeated by verifying such a
+   * token against the *wrong* key and reporting a signature failure.
+   */
+  if (header.kid) {
+    const keyPair = validKeys.get(header.kid);
+    if (!keyPair) {
+      // A named key this server does not hold. Distinct from a signature failure
+      // and it must stay distinct: the message is the operator's only clue about
+      // whether a rotation went wrong.
+      throw new Error(`unknown key id: ${header.kid}`);
+    }
+    return verifyWithKey(token, keyPair.publicKey);
   }
 
+  // **No `kid` at all** — the explicit legacy policy, unchanged.
+  //
+  // Tokens issued before `kid` was added carry no key id, and they are verified
+  // against the active key. That is a deliberate, documented compatibility
+  // allowance rather than the same accident as an unknown `kid`: the difference
+  // is that a token with *no* `kid` makes no claim about which key signed it,
+  // while one with an unrecognised `kid` makes a claim this server cannot
+  // honour, and honouring it by guessing is how the old line went wrong.
+  if (!activeKey) {
+    throw new Error("JWT signing keys not loaded");
+  }
+  return verifyWithKey(token, activeKey.publicKey);
+}
+
+/**
+ * Verify against one specific key.
+ *
+ * The parameter type is `CryptoKey` because that is what `jose`'s
+ * `importSPKI`/`generateKeyPair` return and what `SigningKeyPair.publicKey`
+ * holds. Narrowing it to `crypto.KeyObject` compiles only because
+ * `jwtVerify` accepts both, and then fails on the call site — which is why the
+ * first version of this helper annotated it as `KeyObject` and did not build.
+ */
+async function verifyWithKey(token: string, publicKey: CryptoKey): Promise<TokenClaims> {
   const { payload } = await jwtVerify(token, publicKey, {
     issuer: issuer(),
     audience: "hilbras",

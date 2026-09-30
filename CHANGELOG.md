@@ -5,6 +5,111 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] - 2026-09-30
+
+*Two ordering mistakes, and neither is the bypass the plan assumed either was.*
+
+### SEC-077, medium — a failed PKCE proof destroyed the authorization code it was proving anything about
+
+`/oauth2/token` ran `consumeAuthorizationCode` and *then* called `verifyPKCE`:
+
+```ts
+const record = await consumeAuthorizationCode(body.code, application.id, body.redirect_uri);
+if (!record) return reply.status(400).send({ error: "invalid_grant" });
+
+const pkceRequired = requiresPkce(application.clientSecretHash);
+if (!body.code_verifier && pkceRequired) { /* reject */ }
+if (!verifyPKCE(record.challenge, …)) { /* reject */ }
+```
+
+So **any** pre-PKCE rejection marked the code used. A request with a wrong or
+missing `code_verifier` burned a perfectly good code: the legitimate client,
+holding the correct verifier, found it spent and received `invalid_grant` — the
+same answer as an expired or already-redeemed code, with nothing to tell the three
+apart.
+
+A single malformed request destroys a user's grant, and for a confidential client
+a mistyped `client_secret` had the identical effect. Anyone who can obtain a code
+can invalidate it for the legitimate holder, because the code is single-use and
+one bad request is permanently enough.
+
+**Not a bypass.** Without the verifier an attacker still gets nothing. The
+severity is availability and diagnosability, not a token reaching the wrong party.
+
+`peekAuthorizationCode` (new) is a read-only lookup under the same conditions as
+the consume. The endpoint now peeks, verifies, and **only then** consumes. The
+consume is untouched and is still the only thing that marks the row used — two
+parallel redemptions may both read, and `usedAt IS NULL` lets exactly one match.
+That is why the peek is a read and not a replacement.
+
+Both PKCE rejections now **audit with a distinct outcome** (`pkce_verifier_missing`,
+`pkce_failed`), which they did not before. That is what makes the next occurrence
+diagnosable.
+
+**Already true, and not credited:** the consume was already atomic — a single
+`UPDATE … WHERE used_at IS NULL … RETURNING`. The plan's §4.1 asked for it; it
+needed no work, and claiming otherwise would have credited a fix that never
+happened.
+
+### SEC-076, low — an unknown `kid` was verified against the active key
+
+```ts
+const publicKey = keyPair?.publicKey ?? activeKey?.publicKey;
+```
+
+**It was never a bypass.** A token signed by any other key still fails signature
+verification; an attacker naming an unknown `kid` gains nothing. Low is the honest
+severity, and the plan's framing of it as validation to add would have implied
+more.
+
+What it *was* is a diagnostic lie. Four materially different situations produced
+the identical `signature verification failed`: a token signed by a key retired
+past its grace period, a token from another issuer, a forged token with an
+invented `kid`, and an ordinary expired token. An operator mid-rotation could not
+distinguish the first from the third.
+
+Now an unrecognised `kid` is rejected **before** any signature work, so the two
+situation produce different errors. A token with **no** `kid` keeps the documented
+legacy behaviour — it makes no claim, which is why the two cases are treated
+differently on purpose.
+
+**Rotation is unaffected**, which is the thing to check first. `validKeys` is
+populated from `listValidSigningKeys()` — active plus everything inside its grace
+period. The old fallback actually *undermined* the grace period: it verified such
+a token against the wrong key and reported a signature failure.
+
+The `env` key id is the regression that could plausibly break every token in an
+env-configured deployment, so it is asserted explicitly.
+
+### Regression
+
+12 cases across two suites. Both verified by restoring the original defect:
+
+| restored | result |
+|---|---|
+| `kid` fallback reinstated; consume moved above PKCE | **5 pass, 7 fail** |
+| this release | 12 pass |
+
+Three separate consume-early cases fail without the fix — wrong verifier, missing
+verifier, and mismatched `redirect_uri` — because "a failed proof must not consume"
+is a property of the *ordering*, not of one error path.
+
+### Notes from writing the tests
+
+Three failures during this work were the tests being wrong, not the code, and
+each is recorded in the file that carries it:
+
+- A case asserted that an unknown `kid` and a *truncated* token produce different
+  messages. They do not, and should not: the `kid` is in the header, so truncation
+  leaves it intact and the unknown-`kid` check fires first. That precedence is
+  correct. The honest contrast is against a bad signature on a *held* key.
+- The structural ordering assertion used `indexOf` on the compiled module and
+  found both function names in the **import statement** on line 13, reporting the
+  consume first against correct code.
+- The same assertion resolved `../../../dist/routes/oauth2.js` from a test that runs
+  *inside* `dist/`, giving `dist/dist/…` and ENOENT. Correct in `src/`, broken
+  where it actually runs.
+
 ## [3.6.0] - 2026-09-30
 
 *The repository already contained a complete SSRF guard. It was wired to the route a platform owner configures, and not to the one an organization admin configures.*

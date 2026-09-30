@@ -14,6 +14,7 @@ import { config } from "../config.js";
 import {
   storeAuthorizationCode,
   consumeAuthorizationCode,
+  peekAuthorizationCode,
   verifyPKCE,
   requiresPkce,
   findConsent,
@@ -275,21 +276,59 @@ export default async function oauth2Routes(app: FastifyInstance) {
           }
         }
 
-        const record = await consumeAuthorizationCode(body.code, application.id, body.redirect_uri);
-        if (!record) {
+        // **PKCE before the consume** — SEC-077.
+        //
+        // Previously: `consumeAuthorizationCode` ran here and `verifyPKCE` ran
+        // below it, so a request with a wrong `code_verifier` marked the code
+        // used. The legitimate client, holding the correct verifier, then found
+        // it spent and received `invalid_grant` — indistinguishable from an
+        // expired or replayed code. A failed proof destroyed the thing it was
+        // proving anything about.
+        //
+        // The peek is read-only; the consume below is still the only thing that
+        // marks the row used, so a parallel redemption still cannot both win —
+        // both callers may read the row, and the `usedAt IS NULL` predicate lets
+        // exactly one consume match.
+        const peeked = await peekAuthorizationCode(body.code, application.id, body.redirect_uri);
+        if (!peeked) {
           return reply.status(400).send({ error: "invalid_grant" });
         }
 
         const pkceRequired = requiresPkce(application.clientSecretHash);
         if (!body.code_verifier && pkceRequired) {
+          // Recorded on the *read*, so a client that repeatedly omits the
+          // verifier leaves a trace. It did not consume the code, and deliberately
+          // so: an attacker who omits it must not be able to burn the code for
+          // the real client either.
+          await request.audit("oauth2_token", {
+            appId: application.id,
+            clientId: application.clientId,
+            grantType: "authorization_code",
+            outcome: "pkce_verifier_missing",
+          });
           return reply.status(400).send({
             error: "invalid_request",
             error_description: "code_verifier is required for this client",
           });
         }
 
-        if (!verifyPKCE(record.challenge, record.challengeMethod, body.code_verifier, { requireChallenge: pkceRequired })) {
+        if (!verifyPKCE(peeked.challenge, peeked.challengeMethod, body.code_verifier, { requireChallenge: pkceRequired })) {
+          await request.audit("oauth2_token", {
+            appId: application.id,
+            clientId: application.clientId,
+            grantType: "authorization_code",
+            outcome: "pkce_failed",
+          });
           return reply.status(400).send({ error: "invalid_grant", error_description: "PKCE verification failed" });
+        }
+
+        // Consume only now that the proof has passed.
+        const record = await consumeAuthorizationCode(body.code, application.id, body.redirect_uri);
+        if (!record) {
+          // Reachable when a parallel redemption won the race between the peek
+          // and here. `invalid_grant` rather than a 500: the code *was* already
+          // spent, which is a client error, not a server fault.
+          return reply.status(400).send({ error: "invalid_grant" });
         }
 
         const user = await findUserById(record.userId);

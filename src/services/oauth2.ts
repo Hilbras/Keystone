@@ -52,6 +52,57 @@ export async function storeAuthorizationCode(input: AuthorizationCodeInput) {
   return { ...record, code };
 }
 
+/**
+ * Read an authorization code **without consuming it**.
+ *
+ * Added for SEC-077. The token endpoint used to call `consumeAuthorizationCode`
+ * first and verify PKCE afterwards, so a request with a wrong `code_verifier`
+ * burned a perfectly good code: the legitimate client, holding the right
+ * verifier, found it already used and got `invalid_grant` with no way to tell
+ * why. The verifier is a *proof* about the code, and a failed proof should not
+ * consume the thing it is a proof of.
+ *
+ * The lookup is deliberately not a substitute for the consume. It answers "is
+ * this code claimable, and what does it say" so the PKCE check can run first;
+ * the consume still happens afterwards and is still the only thing that marks
+ * the row used, because that is what makes a single use single under
+ * concurrency. Reading then consuming has a window between the two, and the
+ * `usedAt IS NULL` predicate in the consume closes it — two parallel redemptions
+ * both read the row, and exactly one consume matches.
+ *
+ * Returning `undefined` here means the same thing it means in the consume: no
+ * such code, wrong app, expired, or already used. The caller must not be able to
+ * tell those apart either, so the shape matches.
+ */
+export async function peekAuthorizationCode(
+  code: string,
+  appId: string,
+  redirectUri?: string
+): Promise<typeof oauth2AuthorizationCodes.$inferSelect | undefined> {
+  const codeHash = crypto.createHash("sha256").update(code).digest("hex");
+  const now = new Date();
+
+  const conditions = [
+    eq(oauth2AuthorizationCodes.codeHash, codeHash),
+    eq(oauth2AuthorizationCodes.appId, appId),
+    gt(oauth2AuthorizationCodes.expiresAt, now),
+    isNull(oauth2AuthorizationCodes.usedAt),
+  ];
+  if (redirectUri) {
+    // Same exact-match rule as the consume, and for the same reason: tolerating a
+    // missing stored value would let a stolen code be redeemed against any
+    // redirect URI.
+    conditions.push(eq(oauth2AuthorizationCodes.redirectUri, redirectUri));
+  }
+
+  const [record] = await db
+    .select()
+    .from(oauth2AuthorizationCodes)
+    .where(and(...conditions))
+    .limit(1);
+  return record;
+}
+
 export async function consumeAuthorizationCode(
   code: string,
   appId: string,
