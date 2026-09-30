@@ -968,6 +968,18 @@
       "test": "src/tests/security/infrastructure/ingressDoesNotPublishMetrics.test.ts",
       "documentation": "docs/security/monitoring.md",
       "covers": []
+    },
+    {
+      "id": "SEC-074",
+      "title": "Sixteen gate steps reported success or failure, and nothing had established that any of them could fail",
+      "severity": "low",
+      "component": "tooling",
+      "release": "3.5.13",
+      "issue": "The `gates` job runs 16 mechanical checks, all of which print a verdict and exit with a code. **Nothing in the repository had ever asked whether any of those verdicts could be wrong.**\n\nThis is the session's dominant defect class applied to the apparatus that hunts for it: ~45 instances so far, every one a control reporting success for something other than what it measures. The obvious next question is whether the controls themselves are measurable, and the honest answer was that nobody knew. The most recent instance, SEC-073, was a gate that could not see a whole Kubernetes resource kind — found by reading the file, not by any signal the tooling produced.\n\nThe gates are not broken. Probing twelve of them against defects each is *named* for shows all twelve fail correctly, which is a real result and worth having. The defect is that this was unknowable without writing the probe, and the probe is a single file that runs in 35 seconds.\n\nNot overstated: this is a low-severity gap in assurance, not a live defect. No gate is passing on something it should catch today, and no vulnerability follows from the gap. What follows is that a gate could stop working — be rewritten to check the wrong key, lose a branch, match on a path that no longer exists — and **the build would stay green**, which is precisely the SEC-073 failure arriving by a different route.",
+      "fix": "`scripts/probe-gates.mjs` (new, and wired into `ci.yml` as a 17th gate step) — for each of twelve named gates, a mutation that the gate is documented to catch is applied to a **scratch copy** of the tree, and the gate is required to exit non-zero. Nothing is written to the working directory, and no database, Redis or network is needed, so it runs in the `gates` job alongside the checks it audits.\n\nThe twelve mutations are the defects this project has actually hit: the Dockerfile drifting from `.nvmrc`, a readinessProbe at `/health`, a container with no memory limit, the SEC-073 base Ingress, a missing changelog entry, the 3.5.11 duplicate-heading defect, `engines.node` disagreeing with `.nvmrc`, a registry entry naming a test that does not exist, a withdrawn id with no reason, documentation naming an npm script that does not exist, an SDK package version drifting from the server, and an action pinned to a tag rather than a SHA.\n\n**Verified by breaking the thing it audits.** Deleting the `readinessProbe !== \"/ready\"` branch from `verify-k8s-manifests.mjs` — the check that script exists for — drops the probe to 11/12 and names the right gate. Restored: 12/12.\n\nThe step is in `ci.yml` rather than in a document because a probe nobody runs rots, and a rotting probe is the same failure at a third level: it would keep reporting 12/12 about gates that had moved on. Every pull request now re-establishes the property.\n\nTwelve of the sixteen steps are probed. The four not yet covered are the two build-dependent ones (`generate-auth-dashboard.mjs`, `verify-doc-samples.mjs`, which need `dist/`), lint, and `review-api-surface.mjs --strict`; they are listed in the file's own `PROBES` table as the next four rather than left as a silent omission.",
+      "test": "scripts/probe-gates.mjs",
+      "documentation": "docs/security/registry.md",
+      "covers": []
     }
   ],
   "withdrawn": [

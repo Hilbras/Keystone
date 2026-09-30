@@ -249,6 +249,26 @@ jobs:
         # every variable config.ts insists on is reachable.
         run: node scripts/verify-k8s-manifests.mjs
 
+      # **The gates, checked against the gates.** Every step above reports success
+      # or failure, and this is the step that asks whether any of them *can* fail.
+      # It breaks the repository twelve ways — each a defect a named gate claims to
+      # catch — in a scratch copy, and requires that gate to exit non-zero. A gate
+      # that passes on a defect it is supposed to catch is a check that cannot
+      # fail, which is the defect class this project has now found ~45 times.
+      #
+      # It is here because a probe nothing runs rots. Run by hand, it is a thing
+      # somebody has to remember; run on every pull request, it is a property of
+      # the repository. 35 seconds, no database, no network.
+      #
+      # This step caught its own author within an hour of being written: the first
+      # version mutated `/ready` in deployment.yaml and hit the *comment* eight
+      # lines above the field, left the manifest untouched, and reported the
+      # readiness check as "NOT CAUGHT" — a false accusation against a gate that
+      # was working. Hence the guard inside it that refuses to report a result for
+      # a mutation that changed nothing.
+      - name: Gate — the gates above fail when the defect they name is present
+        run: node scripts/probe-gates.mjs
+
       # `verify:release` is deliberately NOT here. It checks that `main`, `types`
       # and `bin` point at files that exist in `dist/`, so it has to run after a
       # build — and the `backend` job already builds and already runs it. Repeating
