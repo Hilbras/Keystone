@@ -524,3 +524,72 @@ keystone-config-writes-by-descriptor   -> configWriter.ts:154
 restored                               -> 21 of 21, 0 semgrep findings over 204 paths
 ```
 
+
+## `js/missing-rate-limiting` cannot see a route that shares its options object
+
+**Added 3.5.8.** Two alerts, both on the enterprise OIDC callback, both dismissed as
+false positives — and this one is worth writing down because **this repository
+introduced the pattern**, unlike the 21 SEC-061 dismissed before it.
+
+### What happened
+
+The SEC-062 fix registers the callback at two paths so the legacy `/sso/sso/oidc/...`
+keeps working for an IdP that was configured against it:
+
+```ts
+const callbackOptions = { preHandler: [ rateLimit({ keyPrefix: "oidc-enterprise-callback", … }) ] };
+
+app.get("/oidc/:connectionId/callback",        callbackOptions, callbackHandler);
+app.get("/sso/oidc/:connectionId/callback",    callbackOptions, callbackHandler);
+```
+
+`js/missing-rate-limiting` looks for a `rateLimit(` call in a route's own arguments. The
+call is not textually in either registration, so both routes were reported as having no
+rate limit. They have one.
+
+### Why it was not "fixed" by inlining the limiter twice
+
+Because two copies of a security-critical literal are how they drift apart. If the alias
+ever ended up with its own `keyPrefix`, it would be a **second** allowance for one
+endpoint, and an attacker could alternate between the two paths to double the number of
+authorization-code guesses available.
+
+That is not hypothetical: it is the specific defect the refactor exists to prevent, and
+it is covered by a test. Inlining the limiter twice to satisfy a scanner would trade a
+real, silent security regression for a cosmetic scanner result. The shared object makes
+the drift impossible by construction.
+
+### The evidence that the limit is present, and shared
+
+`src/tests/security/oidc/enterpriseCallbackIsServed.test.ts` spends the entire budget on
+the canonical path and then requires the legacy path to **already** answer 429:
+
+```
+both paths share one budget          -> 3 of 3 pass
+alias given a second keyPrefix       -> 1 of 3 fail, the budget test
+alias removed, canonical only        -> 2 of 3 fail
+restored                             -> 3 of 3 pass
+```
+
+`src/tests/security/rateLimit/unauthenticatedSurface.test.ts` separately asserts the
+canonical callback returns 429 within 12 attempts against a forced 5-request budget.
+
+### The same blind spot existed in this repository's own tool
+
+The first version of this fix made `review-api-surface.mjs` report **27** routes with rate
+limiting instead of **28**, and **no gate failed**. `findRoutes` captured an options
+object only when the argument after the path began with `{`; a bare name yielded an empty
+string. So a rate limit that was present was reported as absent — the same failure this
+file keeps running into, one level down.
+
+`findRoutes` now resolves a named options object before a route's guards are read, the
+count went 28 → 29 (both callback paths), and a test pins it. A shared options object is
+therefore covered by this repository's own control even where CodeQL is blind to it.
+
+### Standing limitation
+
+Any future route in this repository that shares its options behind a local `const` will
+produce the same pair of CodeQL alerts. They are false positives, they are safe to
+dismiss, and the reason to dismiss rather than restructure is written down here. The
+alternative — inlining security-critical options at every registration — is worse, and
+this is the example that shows why.
