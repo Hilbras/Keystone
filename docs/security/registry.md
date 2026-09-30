@@ -4,13 +4,13 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**64 findings.**
+**65 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 33 |
-| medium | 19 |
+| medium | 20 |
 | low | 6 |
 
 ## Scope
@@ -794,15 +794,23 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
-### SEC-064 — The API surface review does not analyse a quarter of the route files, and eight of its reasons were inert
+### SEC-064 — The API surface review did not analyse a quarter of the route files
 
-*Fixed in v3.5.1. Component: `tooling`.*
+*Fixed in v3.5.6. Component: `tooling`.*
 
 **Issue.** `scripts/review-api-surface.mjs` is the gate on the API surface, and it resolves the mount prefix for a route file by matching `import <name> from "./routes/<file>.js"` against `register(<name>, { prefix })`. It does not follow **composition**: `src/routes/admin/*.ts` are composed by `admin/index.ts` and registered once at `/v1/admin`, and `health.ts`, `sso.ts` and others are not matched either. 8 of 25 route files therefore have no resolved prefix and are not analysed at all. The tool reports 79 routes across 22 files and does not say which 8 it skipped beyond a list at the end. A second consequence turned up with it: **8 of 23 PUBLIC_BY_DESIGN reasons were inert** — they named route paths the server does not serve, so `get()` returned undefined for the route each was written about while the entry read as if it were doing work. They were noticed only because adding a `preHandler` array to six routes made the parser see them at all, at which point `--strict` failed and pointed at three that had never been checked. `/setup` named a path that does not exist; the setup plugin is mounted at `/setup` and serves `/setup/status` and `/setup/init`.
 
-**Fix.** scripts/review-api-surface.mjs — the reason table is now checked in **both** directions. It already failed a route with no reason; it now also reports a reason that matches no route, distinguishing **inert** (the path appears in no route file) from **unverified** (the route is real, but in a file the parser cannot place). The comparison is on trailing segments, because a plugin's prefix is not declared in its file: `/auth/refresh` is declared as a refresh route in a file mounted at `/auth`. The genuinely-wrong `/setup` entry is removed. **The unresolved-prefix gap is recorded, not fixed**: 8 files remain unanalysed, the tool prints them and the count, and this entry says so. Following composition is a real change to how routes are discovered, and an entry marked 'unverified' is a truthful middle state between claiming coverage and claiming nothing.
+**Fix.** scripts/review-api-surface.mjs — FIXED in 3.5.6, and the fix was three separate bugs stacked, each of which independently produced the same symptom.
+1. THE FILE WALKER MISLABELLED NESTED DIRECTORIES. It recursed into admin/ but built each label from the TOP-LEVEL name, so src/routes/admin/platform.ts was read as src/routes/platform.ts — a path that does not exist. `read()` returns "" for a missing file rather than throwing, so all seven admin files reported zero routes and nothing said they could not be read.
+2. THE ROUTE PATTERN REQUIRED TWO COMMAS. It matched `app.get(path, {opts}, handler)` and not `app.get(path, handler)` — the other ordinary way to write a route, and the one admin/*.ts uses. Even with a correctly-named file, 74 routes went unseen.
+3. THE PREFIX WALK WAS ONE HOP. admin/*.ts are reached through routes/admin.ts (a one-line barrel) and then routes/admin/index.ts, and health.ts is registered as `app.register(healthRoutes)` with no options object at all, which a pattern requiring `prefix:` could not match.
+THE TELL WAS A RATIO ABOVE ONE: "prefixes resolved: 40/31 route files" was printed on every run and read as a quirk rather than as a contradiction. You cannot resolve more files than exist.
+79 -> 176 routes across 29 files; 31/31 route files placed. The 97 that appeared have never been checked for an authentication guard, a rate limit, or audit logging, and they include the entire platform-owner administration surface.
+Two false-positive classes surfaced with the newly visible routes and are now derived rather than tabulated: local guard aliases (`const requireSsoReader = requireOrganizationRole(...)` in admin/sso.ts, used in every preHandler — the tool knew the defining call and not the name, and reported ten SSO and SCIM routes as unauthenticated), and guards called in the handler body rather than a preHandler (every /setup route guards with `if (!assertSetupToken(request, reply)) return;`, which reported eleven open including /setup/init). A guard now counts anywhere in the route's own declaration — options or handler — which is the same unit a reader uses.
+`--strict` now FAILS when any route file has no resolved prefix, which it did not: reverting the walker's label left --strict passing with seven files unplaced and 74 routes unexamined. A strict mode that cannot tell a reviewed surface from an unreviewed one reports a clean surface over one it never looked at.
+`--explain` prints each file's derivation chain, because a prefix with no recorded derivation is a claim with nothing behind it and the admin chain is three hops deep.
 
-**Test.** `scripts/review-api-surface.mjs`
+**Test.** `src/tests/security/reviewApiSurface.test.ts`
 
 **Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
@@ -817,6 +825,24 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Test.** `scripts/verify-action-pin-versions.mjs`
 
 **Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-067 — The OAuth token revocation endpoint was unauthenticated and unbounded
+
+*Fixed in v3.5.6. Component: `oauth2`.*
+
+**Issue.** src/routes/oauth2.ts registered `app.post("/revoke", async (request) => {` with no preHandler, no plugin-level hook, and no rate limit. It takes a token from the request body and calls revokeRefreshToken(), which revokes by hash with no owner check — so any unauthenticated caller who can name a token can invalidate it.
+This is a conformance gap and a missing control, and the two halves have different fixes.
+RFC 7009 §2.1 requires client authentication on this endpoint: "The client also includes its authentication credentials as described in Section 2.3 of [RFC6749]", and "The authorization server first validates the client credentials ... and then verifies whether the token was issued to the client making the revocation request. If this validation fails, the request is refused." Neither half was present, and the second is not implementable without the first — there is no client to check the token against.
+RFC 7009 §5: "Malicious clients could attempt to use the new endpoint to launch denial-of-service attacks on the authorization server. Appropriate countermeasures, which should be in place for the token endpoint as well, MUST be applied to the revocation endpoint." None was.
+Severity is medium and stated precisely, because the harm is denial and not disclosure. Revoking a token you hold achieves little: the RFC's own analysis says an attacker who guesses a token "could do much worse damage by using the token elsewhere than by revoking it ... No further damage is done and the guessed token is now worthless." The real exposure is that a token which leaks — a log, a referrer, a shared machine — can be invalidated by anyone who reads it, and the endpoint is unbounded so it can be called as fast as the attacker likes. It is also not a token-validity oracle: §2.2 requires 200 for an invalid token, and the route returns {success: true} regardless.
+
+**Fix.** src/routes/oauth2.ts — the rate limit RFC 7009 §5 requires, which is the cheaper half of the requirement and cannot break a conforming client: keyPrefix oauth2-revoke, maxAttempts config.LOGIN_MAX_ATTEMPTS, windowSeconds config.LOGIN_WINDOW_SECONDS, emergencyLocalLimit true.
+src/routes/auth.ts — the same for POST /auth/logout, which is also unauthenticated (the caller proves themselves by presenting the token being revoked) and was also unbounded.
+THE CLIENT-AUTHENTICATION HALF IS RECORDED, NOT FIXED. Adding required client credentials to a public endpoint is a behaviour change that would break any client not already sending them, and the file already has extractClientCredentials for /oauth2/token, so the follow-up is a matter of applying it here. That belongs in a release with a migration note, not a patch.
+
+**Test.** `src/tests/security/rateLimit/unauthenticatedSurface.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
 ## Low
 

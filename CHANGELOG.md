@@ -5,6 +5,115 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.6] - 2026-09-30
+
+*A quarter of the API surface had never been reviewed. Fixing that found a real one.*
+
+### SEC-064, medium, now fixed — 97 routes had never been checked
+
+`review-api-surface.mjs` is the gate on the API surface. It reported **"79 routes across
+22 files"** while the repository declares far more, and it was three separate bugs
+stacked, each of which independently produced that number.
+
+1. **The file walker mislabelled nested directories.** It recursed into `admin/` but
+   built each label from the *top-level* name, so `src/routes/admin/platform.ts` was read
+   as `src/routes/platform.ts` — a path that does not exist. `read()` returns `""` for a
+   missing file rather than throwing, so all seven admin files reported zero routes, and
+   nothing said they could not be read.
+2. **The route pattern required two commas.** It matched
+   `app.get(path, {opts}, handler)` and not `app.get(path, handler)` — the other
+   ordinary way to write a route, and the one `admin/*.ts` uses.
+3. **The prefix walk was one hop.** The admin files are reached through `routes/admin.ts`
+   (a one-line barrel) and then `routes/admin/index.ts`, and `health.ts` is registered as
+   `app.register(healthRoutes)` with *no options object at all*, which a pattern
+   requiring `prefix:` could not match.
+
+**The tell was a ratio above one.** "prefixes resolved: **40/31** route files" was
+printed on every run and read as a quirk rather than as a contradiction. You cannot
+resolve more files than exist.
+
+**79 → 176 routes, 31/31 files placed.** The 97 that appeared have never been checked
+for an authentication guard, a rate limit, or audit logging — and they include the
+entire platform-owner administration surface.
+
+Two false-positive classes surfaced with them, and both are now *derived* rather than
+tabulated:
+
+- **Local guard aliases.** `admin/sso.ts` builds
+  `const requireSsoReader = requireOrganizationRole(…)` and uses the alias in every
+  `preHandler`. The tool knew the defining call and not the name, and reported ten SSO
+  and SCIM administration routes as unauthenticated. Tabulating three names would have
+  needed editing on every rename and left a list a reader would assume was verified.
+- **Guards called in the handler body.** Every `/setup` route guards with
+  `if (!assertSetupToken(request, reply)) return;`, which is the right shape for a guard
+  that has to answer with a body. Testing only the options object reported eleven open,
+  including `/setup/init`, which creates the first owner.
+
+A guard now counts anywhere in the route's own declaration — options or handler — which
+is the same unit a reader uses.
+
+### `--strict` could not tell a reviewed surface from an unreviewed one
+
+Putting the walker's label back left `--strict` **passing** with seven files unplaced
+and 74 routes unexamined. A strict mode that reports a clean surface over one it never
+looked at is the failure this whole tool exists to prevent, one level up. It now fails
+when any route file has no resolved prefix, and `--explain` prints each file's
+derivation chain, because a prefix with no recorded derivation is a claim with nothing
+behind it.
+
+### SEC-067, medium — the token revocation endpoint was unauthenticated and unbounded
+
+`POST /oauth2/revoke` had no `preHandler`, no plugin hook and no rate limit. It takes a
+token from the body and revokes it by hash with no owner check, so anyone who can name a
+token can invalidate it.
+
+RFC 7009 asks for two different things here:
+
+- **§5 — a countermeasure MUST be applied.** "Appropriate countermeasures, which should
+  be in place for the token endpoint as well, MUST be applied to the revocation
+  endpoint." That is a rate limit, it is cheap, and it cannot break a conforming client.
+  **Done.**
+- **§2.1 — client authentication.** "The client also includes its authentication
+  credentials … The authorization server first validates the client credentials and then
+  verifies whether the token was issued to the client making the revocation request."
+  Neither is present, and the second **cannot be implemented without the first** — there
+  is no client to check the token against. **Recorded, not fixed**: requiring credentials
+  on a live public endpoint breaks any client not already sending them.
+
+Severity is medium, and the harm is **denial, not disclosure**. The RFC's own analysis
+says an attacker who guesses a token "could do much worse damage by using the token
+elsewhere than by revoking it … No further damage is done and the guessed token is now
+worthless." What stays true is that a token which *leaks* can be invalidated by anyone
+who reads it. It is also not a validity oracle — §2.2 requires 200 for an invalid token.
+
+`POST /auth/logout` was unbounded too, and is unauthenticated by design, since the caller
+proves themselves by presenting the token being revoked. Limited.
+
+### A break that did not happen, and read as a result
+
+Verifying the new test took six cases. Five were caught on the first pass; the sixth —
+restoring the two-comma route pattern — reported **"0 of 9 fail"**, which reads exactly
+like a test that does not work. The substitution had silently matched nothing, and the
+only reason I checked was that the number was implausible.
+
+The honest conclusion would have been to weaken the test. Instead the harness now
+asserts that each substitution **changed the file** before running anything, and the
+count in its output is read from the run rather than hardcoded. All six now apply and
+all six are caught:
+
+```
+the file walker mislabels nested directories   ->  5 of 10 fail
+the route pattern requires two commas again    ->  3 of 10 fail
+the prefix walk stops at one hop               ->  4 of 10 fail
+local guard aliases are no longer resolved     ->  3 of 10 fail
+a guard in the handler body is not seen        ->  4 of 10 fail
+strict mode no longer fails on an unplaced file ->  1 of 10 fail
+```
+
+That last one needed a test that **plants** the condition: asserting `strictFailures` is
+empty cannot show the check exists, because an empty array is what a tool with no such
+check also returns on a clean tree. So the test writes a route file nothing registers,
+requires strict mode to fail, and removes it in a `finally`.
 ## [3.5.5] - 2026-09-30
 
 *The new pin gate had a bug in it, and the scanner found it in the same release.*
