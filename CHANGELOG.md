@@ -5,6 +5,77 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.7] - 2026-09-30
+
+*Two alerts in the code 3.5.6 added, both found by the scanner in the same release.*
+
+### A check-then-write in the new test, which CodeQL called `js/file-system-race`
+
+The test that plants an unplaceable route file asked `existsSync(planted)` and then
+wrote. That is a check-then-write, and CodeQL reported it on
+`src/tests/security/reviewApiSurface.test.ts` — correctly, and two hours after I wrote
+it.
+
+**Fixed rather than dismissed, and the fix is smaller than the problem.** The exclusive
+create *is* the assertion:
+
+```ts
+handle = openSync(planted, "wx");   // fails if a previous run left one behind
+```
+
+There is no window, and no separate statement that can disagree with the create. The
+message on `EEXIST` says what to do and why it matters — a leftover means a run was
+interrupted between planting and cleanup.
+
+### A dynamic `RegExp` built from a captured name
+
+`localGuardAliases` compiled ``new RegExp(`\\b${name}\\b`)`` per alias, and
+`detect-non-literal-regexp` is right that a name taken from the source is an untrusted
+pattern. The practical exposure here is nil — the name comes from this repository's own
+route files, and the identifier charset cannot express a ReDoS pattern — but a rule
+that fires on every run trains people to dismiss the tool, and the alternative is four
+lines.
+
+The subtle part is what *not* to write instead. `block.includes(name)` is the obvious
+replacement and it is **wrong**: `requireSso` is a prefix of `requireSsoOwner`, so a
+substring test would report a route as guarded by an alias it does not use. That errs
+toward *fewer* findings, which is the dangerous direction — it retires a real concern
+rather than adding a false one.
+
+So the replacement checks identifier boundaries explicitly:
+
+```ts
+function containsIdentifier(text, name) {
+  const isWord = (c) => /[A-Za-z0-9_$]/.test(c);
+  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+    const before = at === 0 ? "" : text[at - 1];
+    const after = text[at + name.length] ?? "";
+    if (!isWord(before) && !isWord(after)) return true;
+  }
+  return false;
+}
+```
+
+This is the third time in two releases that a dynamic regex has come up in this
+repository — `bump-version.mjs` in 3.5.3, `verify-action-pin-versions.mjs` in 3.5.4, and
+now here — and the pattern holds each time: the regex was not solving a problem, and
+the string operation is both clearer and safer.
+
+### The break harness, reporting itself honestly
+
+Retargeting the alias break made its pattern absent, and the harness printed
+`SKIPPED (pattern absent)` rather than counting it as a pass. That is the behaviour
+worth having: a break that cannot be applied is a failed experiment, and the only way
+to tell it from a successful one is to check. All six apply and all six are caught:
+
+```
+the file walker mislabels nested directories     ->  5 of 10 fail
+the route pattern requires two commas again      ->  3 of 10 fail
+the prefix walk stops at one hop                 ->  4 of 10 fail
+local guard aliases are no longer resolved       ->  3 of 10 fail
+a guard in the handler body is not seen          ->  4 of 10 fail
+strict mode no longer fails on an unplaced file ->  1 of 10 fail
+```
 ## [3.5.6] - 2026-09-30
 
 *A quarter of the API surface had never been reviewed. Fixing that found a real one.*

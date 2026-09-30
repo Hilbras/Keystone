@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone-node",
-  "version": "3.5.6",
+  "version": "3.5.7",
   "description": "Server-side SDK for the Hilbras Keystone identity platform — JWT verification, user management",
   "type": "module",
   "main": "dist/index.js",

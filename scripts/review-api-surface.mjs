@@ -345,9 +345,35 @@ function localGuardAliases(source) {
   const known = /require(AuthAndRole|PlatformRole|Owner|OrganizationRole|Scopes)|app\.(authenticate|requirePermission)|authenticateOrApiKey/;
   const out = [];
   for (const m of source.matchAll(/const\s+(\w+)\s*=\s*([A-Za-z_][\w.]*)\s*\(/g)) {
-    if (known.test(m[2])) out.push(new RegExp(`\\b${m[1]}\\b`));
+    if (known.test(m[2])) out.push(m[1]);
   }
   return out;
+}
+
+/**
+ * Whether `text` contains `name` as a whole identifier.
+ *
+ * Written out rather than compiled into a `RegExp` per alias, for two reasons.
+ *
+ * **CodeQL's `detect-non-literal-regexp` is right that a name taken from the source is
+ * an untrusted pattern.** Every alias here comes from this repository's own route
+ * files, so the practical exposure is nil — and the identifier charset means a ReDoS
+ * pattern cannot be formed from one anyway. But a rule that fires on every run is a
+ * rule that trains people to dismiss the tool, and the alternative is four lines.
+ *
+ * **A plain substring test would be the wrong kind of lazy.** `requireSso` is a prefix
+ * of `requireSsoOwner`, so `block.includes("requireSso")` would report a route as
+ * guarded by an alias it does not use. That errs toward *fewer* findings, which is the
+ * dangerous direction: it retires a real concern rather than adding a false one.
+ */
+function containsIdentifier(text, name) {
+  const isWord = (c) => /[A-Za-z0-9_$]/.test(c);
+  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+    const before = at === 0 ? "" : text[at - 1];
+    const after = text[at + name.length] ?? "";
+    if (!isWord(before) && !isWord(after)) return true;
+  }
+  return false;
 }
 
 const routeFiles = [];
@@ -514,8 +540,8 @@ for (const file of routeFiles) {
       file,
       method: method.toUpperCase(),
       url: full,
-      auth: guarded(AUTH) || aliases.some((r) => r.test(block)) || SCIM.test(full) || HOOK_AUTH.has(file),
-      authorization: guarded(AUTHORIZATION) || aliases.some((r) => r.test(block)),
+      auth: guarded(AUTH) || aliases.some((name) => containsIdentifier(block, name)) || SCIM.test(full) || HOOK_AUTH.has(file),
+      authorization: guarded(AUTHORIZATION) || aliases.some((name) => containsIdentifier(block, name)),
       rateLimit: RATE_LIMIT.some((r) => r.test(opts)),
       audit: fileAudits,
     });

@@ -1,7 +1,7 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { readdirSync, existsSync, writeFileSync, rmSync } from "node:fs";
+import { readdirSync, existsSync, rmSync, openSync, writeSync, closeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -151,23 +151,45 @@ describe("the API surface review's coverage (SEC-064)", () => {
     //
     // So this one plants a route file that nothing registers — the state the check
     // exists to catch — and requires strict mode to fail, then removes it. The name is
-    // distinctive and the file is deleted in a `finally`, because a stray file under
+    // distinctive and the file is removed in a `finally`, because a stray file under
     // `src/routes/` is picked up by the route walk and by anything else that
     // enumerates the directory.
+    //
+    // **Created with `O_EXCL`, which is both the write and the assertion.** The first
+    // version asked `existsSync` and then wrote, which is a check-then-write — and
+    // CodeQL reported it as `js/file-system-race` on this file, correctly, in the same
+    // release that created it. The exclusive create makes "a previous run left its
+    // fixture behind" atomic with the creation, so there is no window and no separate
+    // statement to get wrong.
     const planted = path.join(root, "src/routes/zz-unplaced-for-test.ts");
-    assert.equal(existsSync(planted), false, "a previous run left its fixture behind");
-    writeFileSync(
-      planted,
-      [
-        "// Planted by src/tests/security/reviewApiSurface.test.ts, and removed by it.",
-        "// Nothing imports or registers this module, so the tool cannot place it —",
-        "// which is the condition strict mode must refuse.",
-        "export const unplaced = true;",
-        "",
-      ].join("\n"),
-      "utf-8"
-    );
+    let handle: number;
     try {
+      handle = openSync(planted, "wx");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      assert.fail(
+        "planting the fixture must be exclusive, so a leftover from a previous run is " +
+          `reported rather than overwritten (got ${code}). If one is present, remove ${planted} — ` +
+          "it means a run was interrupted between planting and cleanup."
+      );
+    }
+    try {
+      // A Buffer, not a string: writeSync's string overload takes a *position* as its
+      // third argument, so the two obvious spellings both fail to typecheck.
+      writeSync(
+        handle,
+        Buffer.from(
+          [
+            "// Planted by src/tests/security/reviewApiSurface.test.ts, and removed by it.",
+            "// Nothing imports or registers this module, so the tool cannot place it —",
+            "// which is the condition strict mode must refuse.",
+            "export const unplaced = true;",
+            "",
+          ].join("\n"),
+          "utf-8"
+        )
+      );
+      closeSync(handle);
       const withStray = runSync(["--json", "--strict"]);
       assert.ok(
         withStray.strictFailures.some((f) => f.includes("no resolved mount prefix")),
@@ -175,6 +197,11 @@ describe("the API surface review's coverage (SEC-064)", () => {
           JSON.stringify(withStray.strictFailures)
       );
     } finally {
+      try {
+        closeSync(handle);
+      } catch {
+        // Closed above; closing twice is not a failure worth reporting.
+      }
       rmSync(planted, { force: true });
       assert.equal(existsSync(planted), false, "the fixture must not survive the test");
     }
