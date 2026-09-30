@@ -5,6 +5,110 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-09-30
+
+*The repository already contained a complete SSRF guard. It was wired to the route a platform owner configures, and not to the one an organization admin configures.*
+
+### SEC-075, high — webhook delivery fetched an administrator-supplied URL with no validation
+
+`src/services/webhooks.ts` called `fetch(endpoint.url, …)` on a URL taken
+straight from an API caller. `createEndpoint` stored whatever string it was
+given, and `deliverNow` requested it — on a queue worker, from inside the
+network, with the server's own identity and egress.
+
+**The guard already existed.** `ssoEndpointPolicy.ts` classifies private and
+reserved addresses, resolves DNS and checks *every* answer, pins the connection
+to the address it validated so a rebind cannot change the destination between
+check and connect, and refuses redirects. It was applied to SSO and OIDC
+endpoints.
+
+Those are configured by a **platform owner**. Webhooks are configured by **any
+organization admin**. The stronger control was on the more privileged route, and
+that inversion is why the gap survived a release that audited SSO endpoint policy
+specifically.
+
+What the missing validation permitted:
+
+- **Cloud metadata** — `169.254.169.254` is link-local, which the existing
+  classifier already treats as private. An operator pointed a webhook at it and
+  read instance credentials.
+- **Lateral reach** — `127.0.0.1:6379`, `postgres.internal`, any RFC1918 address.
+- **The response came back to the operator** — `deliverNow` persists the response
+  body and `GET /platform/webhook-deliveries/:id` returns it. The SSRF is not
+  blind: a successful request hands the content to the org admin.
+- **A signing secret in cleartext** — §1.2's transport rule. `X-Keystone-Signature`
+  over plain HTTP is a credential in every proxy log between here and the consumer.
+
+High, not critical: creating a webhook requires an authenticated owner token. The
+privilege is real but ordinary, and the primitive it buys is reaching networks the
+tenant could not otherwise address.
+
+### The fix delegates rather than reimplements
+
+`src/services/outboundPolicy.ts` is new and **carries no private-IP table of its
+own**. It calls `ssoEndpointPolicy` for the classification and the resolution.
+Two implementations of the same rule drift apart silently, and a check covering
+less than it appears to is the failure this entry exists to remove — the
+`containersOf` bug and the Ingress blind spot in 3.5.12 were both a control
+covering less than it looked like.
+
+Checked at **three** points, and none is redundant:
+
+| when | catches | resolves DNS |
+|---|---|---|
+| `createEndpoint` | private literal, credential, `file://` | no |
+| `updateEndpoint`, only when `url` changes | the same, on repoint | no |
+| `deliverNow`, before the request | a name that *now* resolves privately | yes |
+
+The delivery-time check is the one that matters most, and the reason is DNS
+rebinding: a name can resolve publicly when the endpoint is saved and to
+`127.0.0.1` when the delivery runs.
+
+### A refusal is not retried
+
+`OutboundUrlRejected` is a named type rather than a bare `Error`, because the two
+call sites need different outcomes from one rejection: the admin API answers
+**400** (a 500 would tell the operator to retry something that can never
+succeed), and the worker records the delivery **failed without retrying it**.
+
+The retry ladder is for transient network faults. Five attempts against
+`169.254.169.254` would be five requests the operator should never have
+received. Network failures still retry — the two are separated by error type,
+not by message, so a reworded string cannot change which branch runs.
+
+`ALLOW_PRIVATE_WEBHOOK_TARGETS` is a development affordance defaulting to the
+existing SSO flag. Narrower on purpose: the SSO flag also disables resolution and
+pinning, which `http://localhost:3000` does not need and `169.254.169.254`
+absolutely does.
+
+### An existing suite was using loopback, and said so
+
+`chokepoints.test.ts` delivers to a collector it starts on `127.0.0.1`, because
+asserting a span exists for a delivery needs a real HTTP exchange. It now sets
+the flag explicitly. The first full-suite run failed with
+`OutboundUrlRejected` thrown from `createEndpoint` — which is the policy working,
+and a demonstration that it is wired into the path the test exercises.
+
+### Regression
+
+36 cases across two suites, in `src/tests/security/webhooks/`.
+
+| | result |
+|---|---|
+| the policy check removed from the compiled worker | **33 pass, 3 fail** |
+| restored | 36 pass |
+
+The wiring suite asserts the check *precedes* the request by index comparison, so
+a check moved after the `fetch` fails — which a "contains" assertion would not
+catch.
+
+### Also
+
+- `docs/security/webhooks.md` (new) — the three check points, what is refused, and
+  why a refusal is terminal. It also records that **no gate validates
+  `ALLOW_PRIVATE_WEBHOOK_TARGETS` for production**; that belongs to the
+  production-configuration work (plan §6.1), stated rather than implied away.
+
 ## [3.5.13] - 2026-09-30
 
 *Sixteen gate steps report a verdict. Nothing had established that any of them could report the wrong one.*

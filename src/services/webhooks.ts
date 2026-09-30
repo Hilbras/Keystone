@@ -8,6 +8,7 @@ import { decryptSecret, encryptSecret } from "./totp.js";
 import { queue } from "./queue/index.js";
 import type { KeystoneEvent } from "./events/types.js";
 import { serviceLogger } from "../lib/logger.js";
+import { assertSafeWebhookUrl, validateWebhookUrl, OutboundUrlRejected } from "./outboundPolicy.js";
 
 const moduleLog = serviceLogger("webhooks");
 
@@ -75,6 +76,11 @@ export async function createEndpoint(input: {
   description?: string;
   events?: string[];
 }): Promise<WebhookEndpoint & { signingSecret: string }> {
+  // Validated before it is stored, not only before it is used. A private address
+  // in the column is a row an operator can read back and mistake for a working
+  // configuration, and it means the endpoint was accepted by the API that
+  // advertises itself as validating it.
+  validateWebhookUrl(input.url);
   const secret = `whsec_${crypto.randomBytes(24).toString("base64url")}`;
   const [endpoint] = await db
     .insert(webhookEndpoints)
@@ -94,6 +100,10 @@ export async function updateEndpoint(
   id: string,
   input: Partial<{ url: string; description: string | null; events: string[]; isActive: boolean }>
 ) {
+  // Validated only when the URL is *changing*. Validating unconditionally would
+  // make an unrelated `isActive` toggle fail for an endpoint created before this
+  // policy existed, which is the wrong trade: the address is not being re-read.
+  if (input.url !== undefined) validateWebhookUrl(input.url);
   const [updated] = await db
     .update(webhookEndpoints)
     .set({ ...input, updatedAt: new Date() })
@@ -169,6 +179,18 @@ export async function deliverNow(deliveryId: string): Promise<void> {
   const now = new Date();
 
   try {
+    // Re-checked at delivery, not only at creation. Three reasons this cannot be
+    // a creation-time check alone:
+    //
+    // 1. DNS rebinding — a name that resolved to a public address when the
+    //    endpoint was created can resolve to 127.0.0.1 when the delivery runs,
+    //    which is the whole point of the attack.
+    // 2. Rows written before this policy existed were never validated, and
+    //    migrations are not required to fix existing data.
+    // 3. The URL is tenant-controlled, so the trust decision belongs as close to
+    //    the request as possible.
+    await assertSafeWebhookUrl(endpoint.url);
+
     const response = await fetch(endpoint.url, {
       method: "POST",
       headers: {
@@ -208,6 +230,40 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       await retryLater(deliveryId);
     }
   } catch (err) {
+    // A policy rejection is **permanent**: the URL will be refused identically on
+    // every future attempt, because nothing about it changes between now and the
+    // next retry. So it is recorded as `failed` on the first attempt and no
+    // retry is scheduled — five attempts against `169.254.169.254` is five
+    // requests a hostile operator asked for, and the retry ladder exists for
+    // transient network faults, not for a decision the policy has already made.
+    //
+    // Distinct from the `catch` below it, which covers a network failure and
+    // *does* retry. The two are separated by the error type, not by the message.
+    if (err instanceof OutboundUrlRejected) {
+      recordSpan(SPAN.webhookDelivery, {
+        [ATTR.endpointId]: endpoint.id,
+        [ATTR.attempt]: attempts,
+        [ATTR.statusCode]: 0,
+        [ATTR.outcome]: "url-rejected",
+      });
+      moduleLog.warn(
+        { endpointId: endpoint.id, deliveryId, reason: err.message },
+        "webhook delivery refused by outbound URL policy; not retried"
+      );
+      await db
+        .update(webhookDeliveries)
+        .set({
+          attempts,
+          lastAttemptAt: now,
+          // The message names the rule, and names no tenant data: the rejected URL
+          // is operator-supplied and the policy messages are fixed strings.
+          responseBody: `Refused by outbound URL policy: ${err.message}`.slice(0, 2000),
+          status: "failed",
+        })
+        .where(eq(webhookDeliveries.id, deliveryId));
+      return;
+    }
+
     recordSpan(SPAN.webhookDelivery, {
       [ATTR.endpointId]: endpoint.id,
       [ATTR.attempt]: attempts,

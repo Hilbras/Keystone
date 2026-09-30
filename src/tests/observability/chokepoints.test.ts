@@ -13,6 +13,17 @@ process.env.REDIS_URL ||= "redis://localhost:6379";
 process.env.KEYSTONE_INTERNAL_API_KEY ||= "chokepoint-span-test";
 process.env.KEYSTONE_ENCRYPTION_KEY ||= "0123456789abcdef0123456789abcdef";
 
+// The webhook span case below delivers to a collector this file starts on
+// `127.0.0.1`, because asserting "a span exists for a webhook delivery" needs a
+// real HTTP exchange. The outbound URL policy refuses loopback destinations
+// precisely because a tenant-supplied webhook must not be able to reach one —
+// which is correct, and is why this suite has to opt out explicitly rather than
+// discover the refusal as an unexplained throw from `createEndpoint`.
+//
+// Set before any import of the server, because `config` reads the environment
+// once at module load.
+process.env.ALLOW_PRIVATE_WEBHOOK_TARGETS = "true";
+
 if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
   const { generateKeyPair, exportPKCS8, exportSPKI } = await import("jose");
   const pair = await generateKeyPair("RS256", { extractable: true });

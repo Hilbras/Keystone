@@ -72,9 +72,11 @@ Suites that assert a property but do not correspond to a defect we can evidence.
   Not a regression test for any finding; the 12 routes it covers are all correctly guarded. Registered separately because it asserts a property — no route hands organization A's data to a caller from organization B — for which there is no finding, and which no static check in this repository can decide, since the code performing the authorization is the code a static check would have to read. It is the instrument for the 43 routes `review-api-surface.mjs` reports as `authorized elsewhere`: the tool says it cannot see those guards, so something has to try them.
 - `src/tests/security/oauth2/discoveryAdvertisesServedRoutes.test.ts` — Every endpoint the OIDC discovery document advertises is a route the server serves. Each advertised path is *requested* and asserted only to be not a router miss, so a handler may answer 400 or 401 -- the route existing and refusing is the point. A guard refuses any absolute-URL field the test does not check, so the checked list cannot be quietly narrowed.
   Not a regression test for a numbered finding: all five endpoints are served, so there is no defect behind it. Registered separately because it asserts a property -- no document in this repository advertises a path the server does not serve -- which no static check can decide, because deciding it means asking the running server. SEC-062 was exactly this defect found by hand in a string rather than a document, which is why it is now a test rather than a review someone has to remember to do.
+- `src/tests/security/webhooks/webhookDeliveryRefusesPrivateUrl.test.ts` — That `deliverNow` actually applies the outbound URL policy before it fetches, that a policy rejection is terminal rather than retried, and that the admin API answers 400 rather than 500 for the same rejection.
+  Not a separate finding: the defect and its fix are SEC-075, and this suite is the structural half of that regression. `outboundUrlPolicy.test.ts` covers the policy rules and would keep passing if the worker stopped calling it — a check that no longer measures the thing it is named for, which is the defect class this project has found repeatedly. These assertions close that gap by requiring the call to precede the request (an index comparison, so a check placed after the fetch fails), and by breaking the compiled worker in a scratch copy to confirm the assertions notice.
 
 ## Coverage
 
-- 72 findings recorded in `docs/security/registry.json`.
-- 72 of 72 verified to have a regression test present right now.
-- 6 critical, 34 high, 22 medium, 10 low.
+- 73 findings recorded in `docs/security/registry.json`.
+- 73 of 73 verified to have a regression test present right now.
+- 6 critical, 35 high, 22 medium, 10 low.

@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone-vue",
-  "version": "3.5.13",
+  "version": "3.6.0",
   "description": "Vue composables for the Hilbras Keystone identity platform",
   "type": "module",
   "main": "dist/index.js",
@@ -20,6 +20,6 @@
     "vue": "^3.4.0"
   },
   "keystonePeer": {
-    "server": ">=3.5.0 <3.6.0"
+    "server": ">=3.6.0 <3.7.0"
   }
 }
