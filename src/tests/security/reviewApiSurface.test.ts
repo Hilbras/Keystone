@@ -1,7 +1,7 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { readdirSync, existsSync, rmSync, openSync, writeSync, closeSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, rmSync, openSync, writeSync, closeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -109,10 +109,66 @@ const NO_ROUTE_FILES = new Map([
   ["src/routes/admin/index.ts", "composition root; registers the seven admin plugins"],
 ]);
 
-/** Every `.ts` under src/routes, excluding the helpers barrels. */
+/**
+ * Route files the review deliberately does not analyse, each with its reason.
+ *
+ * **A separate list from `NO_ROUTE_FILES`, because they answer different questions.**
+ * A file in `NO_ROUTE_FILES` is a route file the tool places and which declares no routes —
+ * a barrel, a helpers module. A file here is one the tool never looks at, so nothing about
+ * it is checked and that has to be a decision rather than a gap.
+ *
+ * `src/setup-server.ts` is the only one. It is a standalone Fastify instance behind
+ * `npm run start:setup` / `KEYSTONE_SETUP_MODE=true`, serving `/setup/*` and a liveness
+ * probe before the application is configured. The tool's model is one application with many
+ * mount prefixes; putting a second application's routes in the same report would make every
+ * count in it wrong. It is also a bare `.get("/health")`, which would collide with the main
+ * app's own `/health` — the clearest possible signal that it does not belong in that report.
+ */
+const EXCLUDED_FROM_REVIEW = new Map([
+  ["src/setup-server.ts", "a separate entry point and a separate Fastify application; see the note above"],
+]);
+
+/**
+ * Every file under `src/` that is **route-shaped**, decided by a deliberately cruder rule
+ * than the tool's own.
+ *
+ * ## Why not the tool's `findRoutes`
+ *
+ * The tool decides "this file declares routes" with `findRoutes`, and if this used the same
+ * function it would be checking the tool against itself: a bug in `findRoutes` would make a
+ * file look route-less to both, and the assertion below would pass over exactly the file it
+ * exists to catch. That is not a hypothetical here — SEC-064 *was* a `findRoutes`-adjacent
+ * bug that reported zero routes for seven files while looking entirely healthy.
+ *
+ * So this scans for the shape rather than parsing it: any `.get(`/`.post(`/`.put`/
+ * `.patch(`/`.delete(` call whose first argument is a string or template literal.
+ *
+ * The bias is deliberately toward over-inclusion. It matched 32 files across `src/`: the 31
+ * the tool analyses, plus `src/setup-server.ts`, and **nothing else** — so a false positive
+ * here would show up as a file that has to be justified, which is the direction to err in.
+ * A pattern that missed a form the tool accepts would fail the other way and silently, which
+ * is the failure this whole release is about.
+ */
+function routeShapedFiles(): string[] {
+  const out: string[] = [];
+  (function walk(dir: string) {
+    if (dir === "src/tests") return;
+    for (const entry of readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const rel = path.posix.join(dir, entry.name);
+      if (entry.isDirectory()) walk(rel);
+      else if (entry.name.endsWith(".ts")) {
+        const source = readFileSync(path.join(root, rel), "utf-8");
+        if (/\.\s*(get|post|put|patch|delete)\s*\(\s*["'`]/.test(source)) out.push(rel);
+      }
+    }
+  })("src");
+  return out.sort();
+}
+
+/** Every `.ts` under `src/routes`, which is where route files are expected to live. */
 function routeFiles() {
-  const out = [];
-  (function walk(dir) {
+  const out: string[] = [];
+  (function walk(dir: string) {
     for (const entry of readdirSync(path.join(root, dir), { withFileTypes: true })) {
       const rel = path.posix.join(dir, entry.name);
       if (entry.isDirectory()) walk(rel);
@@ -183,7 +239,17 @@ describe("the API surface review's coverage (SEC-064)", () => {
             "// Planted by src/tests/security/reviewApiSurface.test.ts, and removed by it.",
             "// Nothing imports or registers this module, so the tool cannot place it —",
             "// which is the condition strict mode must refuse.",
-            "export const unplaced = true;",
+            "//",
+            "// It declares a route. The previous version of this fixture exported a bare",
+            "// constant, which worked only because the walker used to include every .ts file",
+            "// under src/routes — so barrels and helper modules needed a mount prefix too, and",
+            "// NO_ROUTE_FILES existed to excuse them. The walker now keeps only files that",
+            "// declare a route, because a route-less file has *been* checked: it was read and",
+            "// found empty. Demanding a mount for it was the wrong rule, and a fixture that",
+            "// depended on the wrong rule was not testing the check.",
+            "export async function planted(app: { get: (p: string, h: () => void) => void }) {",
+            '  app.get("/zz-planted-for-test", async () => ({ ok: true }));',
+            "}",
             "",
           ].join("\n"),
           "utf-8"
@@ -207,10 +273,53 @@ describe("the API surface review's coverage (SEC-064)", () => {
     }
   });
 
-  it("finds routes in every file that declares one", () => {
+  it("finds routes in every file that is route-shaped", () => {
     // The mislabelled-walker bug reported zero for the admin tree while looking
     // entirely healthy, because a file that cannot be read and a file with no routes
     // are the same observation.
+    //
+    // Decided by `routeShapedFiles`, not by the tool's own parser — see its note. The
+    // commit that this replaced walked `src/routes` and compared against the report; that
+    // verified a *narrower* set than the tool used, so `src/index.ts` and
+    // `src/plugins/metrics.ts` could both have been dropped again without this failing.
+    const withRoutes = new Set(report.routes.map((r) => r.file));
+    const missing = routeShapedFiles().filter(
+      (f) => !withRoutes.has(f) && !EXCLUDED_FROM_REVIEW.has(f)
+    );
+    assert.deepEqual(
+      missing,
+      [],
+      "these files declare a route and the report has none. Either the walker cannot read " +
+        "them — the SEC-064 bug returning — or they are outside the directory it walks, " +
+        "which is how two real routes went uncounted until 3.5.10. If the file really does " +
+        "not belong in the review, add it to EXCLUDED_FROM_REVIEW with a reason."
+    );
+  });
+
+  it("excludes exactly the files it says it excludes, and no others", () => {
+    // An exclusion list that can grow silently is a hole with a comment on it. This
+    // asserts both directions: every exclusion is a real file that really is route-shaped
+    // (so the list is not padding), and no route-shaped file is excluded without appearing
+    // in it (which the previous test already covers, and is restated here because the two
+    // halves of the claim belong together).
+    for (const file of EXCLUDED_FROM_REVIEW.keys()) {
+      assert.ok(
+        routeShapedFiles().includes(file),
+        `${file} is excluded from the review but declares no route, so the exclusion is ` +
+          `stale rather than deliberate. Remove it, or fix the reason, which then has to ` +
+          `explain itself.`
+      );
+      assert.ok(
+        existsSync(path.join(root, file)),
+        `${file} is excluded from the review and does not exist.`
+      );
+    }
+  });
+
+  it("places every route file the tool claims to place", () => {
+    // The narrower check the file-shaped scan cannot make: a file can be route-shaped and
+    // in the report, and still be analysed at the wrong URL if its mount prefix is wrong.
+    // That is the SEC-062 shape — a route reported at a path the server does not serve.
     const withRoutes = new Set(report.routes.map((r) => r.file));
     const missing = routeFiles().filter(
       (f) => !withRoutes.has(f) && !NO_ROUTE_FILES.has(f)
@@ -377,6 +486,41 @@ describe("the API surface review's coverage (SEC-064)", () => {
         "and that test must exist, or the pointer is a claim about a file that is not there"
       );
     });
+  });
+
+  it("analyses the routes declared in src/index.ts, not only those under src/routes", () => {
+    // The tool's `routeFiles` came from walking `src/routes`, so the two routes declared
+    // in the file that *builds* the app — `/.well-known/openid-configuration` and
+    // `/.well-known/jwks.json` — were analysed by nothing. The report said "178 routes" as
+    // though that were the surface; it was 180.
+    //
+    // This is the SEC-064 failure one level out. There, seven route files were unplaced and
+    // the tool reported a clean surface over a surface it never looked at. Here, one file
+    // sits outside the walk, and the count is simply lower than reality — which is the
+    // easier version of the same mistake to miss, because a smaller number looks like
+    // tidiness rather than omission.
+    const report = runSync(["--json"]);
+
+    const wellKnown = report.routes.filter((r) => r.url.startsWith("/.well-known/"));
+    assert.deepEqual(
+      wellKnown.map((r) => `${r.method} ${r.url}`).sort(),
+      ["GET /.well-known/jwks.json", "GET /.well-known/openid-configuration"],
+      "the discovery routes declared directly in src/index.ts must be in the report. If " +
+        "they are missing, the walker is no longer reaching that file and every count here " +
+        "is an undercount that reads as a total."
+    );
+
+    // And they must carry a recorded reason for being public. `--strict` enforces this, so
+    // a route that became visible without anyone saying why fails the gate rather than
+    // quietly joining the "public by design" count.
+    const strict = runSync(["--json", "--strict"]);
+    assert.deepEqual(
+      strict.strictFailures,
+      [],
+      `--strict must pass now that src/index.ts is analysed. Its routes are public by ` +
+        `design and have reasons recorded; an unplaced file or a public route without one ` +
+        `appears here.`
+    );
   });
 
   it("sees a limiter that a route shares through a named options object", () => {

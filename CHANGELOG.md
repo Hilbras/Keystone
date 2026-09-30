@@ -5,6 +5,244 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.10] - 2026-09-30
+
+*The number was right about the wrong thing: 178 routes, when the server serves 181.*
+
+### SEC-070, medium — three routes the review tool had never seen
+
+`review-api-surface.mjs` built its file list by walking `src/routes`. Three routes this
+server serves are declared outside that directory, so **none of them was ever analysed**:
+
+| route | declared in |
+|---|---|
+| `GET /.well-known/openid-configuration` | `src/index.ts` |
+| `GET /.well-known/jwks.json` | `src/index.ts` |
+| `GET /metrics` | `src/plugins/metrics.ts` |
+
+No authentication-guard check, no rate-limit check, no reason recorded for being public,
+and no contribution to the total. The report said **178 routes** as though that were the
+surface. It was 181.
+
+The tool's own prefix walk *starts* at `src/index.ts` — every mount prefix in it is derived
+from a `register` call in that file — so two of the three were read constantly and never
+counted. `src/plugins/metrics.ts` was in the mount table too, reached through
+`app.register(metricsPlugin)`, and appeared in no report.
+
+**This is SEC-064's failure one level out.** There, seven route files were unplaced and the
+tool reported a clean surface over a surface it had never looked at. Here the walker was
+pointed at a *directory*, and the effect is a number simply lower than reality — the easier
+version of the same mistake to miss, because an undercount reads as tidiness rather than
+omission.
+
+Severity is medium, not high: all three are genuinely public by design and nothing was
+exposed. The cost was that the tool's stated coverage of the authentication surface was
+overstated by three routes, and its total was wrong in the direction that looks clean.
+
+#### The measure of the gap
+
+`--strict` failed the instant the walker was widened, demanding a recorded reason for each
+route. That is the check that had never been applied to them. Three reasons were written —
+and the `/metrics` one is the longest, because it is the only decision here that carries an
+obligation on the operator.
+
+**`/metrics` is unauthenticated by design, and that was stated nowhere.** It is exempt from
+the global rate limiter for a good reason already on record (a scrape behind a limiter gets
+429s at 3am, and the metrics are gone exactly when something is wrong). It exposes route
+templates, request rates and error rates — no tenant data. `k8s/base/service.yaml` is a
+`ClusterIP`, so it is cluster-internal by default.
+
+The part that was missing: **an operator who fronts Keystone with an Ingress inherits
+`/metrics` and publishes the route table to the internet.** That obligation is now in
+`docs/security/monitoring.md` with the annotation and a `curl` to verify it after deploying.
+
+#### A hand-kept list is what failed here three times over
+
+The walker now covers `src/`, skips `src/tests`, and keeps only files that actually declare
+a route — so a new route file anywhere under `src/` is found without anyone adding it to a
+list. `EXCLUDED_FROM_REVIEW` names the one deliberate exclusion, `src/setup-server.ts`, with
+its reason: it is a standalone Fastify instance behind `npm run start:setup`, and its
+`/health` would otherwise collide with the main app's own. Recorded rather than skipped in
+the walker, because a silent exclusion is the same failure one level down.
+
+#### Narrowing the walker exposed that a check was wrong
+
+`--strict`'s "unplaced route file" check now applies only to files that declare routes,
+because a route-less file *has* been checked — read, and found empty. Demanding a mount
+prefix for a helpers module is what `NO_ROUTE_FILES` used to exist to excuse. **The rule was
+wrong, and the test fixture that depended on it was not testing the check**: it planted a
+file exporting a bare constant. It now plants a real route that nothing registers, which is
+the condition the check exists to catch.
+
+#### The test now decides "route-shaped" independently of the tool
+
+The coverage test compares the report against its own file scan — and that scan uses a
+deliberately cruder rule than the tool's parser: any `.get(`/`.post(`/`.put(`/`.patch`/
+`.delete(` call whose first argument is a string. Using the tool's own `findRoutes` would
+have meant checking the tool against itself, and a bug in it would make a file look route-less
+to both.
+
+It matched 32 files across `src/`: the 31 the tool analyses, plus the recorded exclusion, and
+**nothing else**. The bias is toward over-inclusion on purpose — a false positive shows up as
+a file that has to be justified, while a pattern that missed a form the tool accepts would
+fail the other way and silently. Verified by excluding `src/plugins/metrics.ts` again: the
+test fails and names it.
+
+#### `--explain` was showing less than it had
+
+Filtering the explanation to the analysed files dropped the barrels, and with them the one
+hop a reader cannot infer — `src/routes/admin.ts` is a single `export { default }` line, so
+the step through it is invisible in the file itself. **The derivation data still held the
+hop; no output showed it.** A gate asserting the word `re-exports default from` appeared
+somewhere passed while the diagnostic a person reads no longer contained it. `--explain` now
+iterates the mount table.
+
+Its summary said `41/31 route files placed` for a while — a count above the total, which is
+the same impossible ratio that was the tell for the SEC-064 walker bug. It now states two
+populations: `41 file(s) with a resolved prefix, of which 31 declare routes.`
+
+### A general invariant, added because the hand check will not happen twice
+
+`GET /.well-known/openid-configuration` is **a list of URLs this server asserts exist.** Every
+conforming OIDC client fetches it and then calls what it names, and nothing in the build
+cross-checked the two lists.
+
+This is the SEC-062 shape generalised. That one was found by asking the same question of a
+hand-built string: the `redirect_uri` named `/sso/oidc/:connectionId/callback` while the route
+was served at `/sso/sso/oidc/:connectionId/callback`, and enterprise login could not
+complete. This one is mechanically checkable, so it is a test rather than a review someone has
+to remember to do.
+
+Each advertised path is **requested**, and the assertion is only that the request is not a
+router miss — a handler may answer 400 or 401, because a route existing and refusing is the
+entire point. Asserting against a hand-kept list of paths would test the list rather than the
+server, and would pass against a document advertising a route that had since been renamed.
+
+**All five endpoints are served today** (`userinfo_endpoint` is GET, per RFC 7662), so this is
+a verified absence of a defect rather than a fix. Recorded so nobody has to rediscover it, and
+so a rename cannot reintroduce it silently. A guard refuses any absolute-URL field the test
+does not check; `issuer` is excluded **by name, with its reason**.
+
+### SEC-071, low — a test that failed intermittently, naming a defect that did not exist
+
+`operationalMetrics.test.ts` has a `before` hook that boots a whole Keystone application
+against a Redis URL on a port nothing listens on, to observe the emergency fallback. It gave
+its child process **300 seconds**. Everything around it had only the harness's global **60**.
+
+**Measured idle cost of that hook: 37.8 seconds.** So it was running 38 seconds of work
+under a 60-second budget — 1.6x, which is not a margin. The full suite runs this file with
+PostgreSQL, Redis and a dozen other suites already loaded, and under that load it tipped:
+
+```
+the emergency fallback, with Redis unreachable (60009.01619ms)
+  'test timed out after 60000ms'
+```
+
+followed by two siblings cancelled with *"test did not finish before its parent"*.
+
+Read plainly, that names a defect that does not exist. **The emergency fallback is fine;
+the clock ran out.** This is the mirror image of the failure this project keeps finding — a
+control reporting success for the thing it exists to catch — and the same mistake underneath:
+the harness is measuring elapsed time where the test is measuring behaviour. An intermittent
+failure here trains people to re-run the suite, which is the outcome a gate exists to
+prevent.
+
+The hook now declares `{ timeout: 180_000 }`, and Node's runner lets a per-hook timeout
+override the global one, so the budget the work is given is stated where the work is. 180s
+is 5x the measured cost and stays inside the 300s the child process already has.
+
+**Verified by running the file with `--test-timeout=20000`** — a global limit far below the
+hook's own cost. It ran 37.2 seconds and passed, which is only possible if the per-hook
+declaration wins. Before the change, any global limit under 38 seconds killed it and
+reported the fallback as broken.
+
+The 11 tests in that file pass at 60s too, and that is the point: the defect was not
+reproducible on an idle machine, which is exactly why it survived as long as it did.
+
+### Also
+
+- The router-miss discriminator is now `src/tests/helpers/routerMiss.ts`, shared by both suites
+  that need it. Two copies of a subtle invariant is one more thing to keep in step. It is
+  deliberately loose rather than an exact match: an exact match fails *open*, and a changed
+  body would stop being recognised as a miss, quietly turning dead routes into served ones.
+## [3.5.10] - 2026-09-30
+
+*The number was right about the wrong thing: 178 routes, when the server serves 180.*
+
+### SEC-070, medium — two routes the review tool had never seen
+
+`review-api-surface.mjs` built its file list by walking `src/routes`. The two routes
+`src/index.ts` declares itself were therefore analysed by nothing:
+
+```
+GET /.well-known/openid-configuration
+GET /.well-known/jwks.json
+```
+
+No authentication-guard check, no rate-limit check, no reason recorded for being
+public, and no contribution to the total.
+
+The tool's prefix walk *starts* at `src/index.ts` — every mount prefix in it is
+derived from a `register` call in that file — so the file was read constantly and
+never counted. The report said **178 routes** as though that were the surface. It
+was 180.
+
+**This is SEC-064's failure one level out.** There, seven route files were unplaced
+and the tool reported a clean surface over a surface it had never looked at. Here one
+file sits outside the walk, and the effect is a number simply lower than reality —
+the easier version of the same mistake to miss, because an undercount looks like
+tidiness rather than omission.
+
+Severity is medium, not high: both routes are genuinely public by design. RFC 8414
+requires discovery to be publicly reachable, and a JWKS document is the public half
+of the signing pair. Nothing was exposed. The cost was that the tool's coverage of
+the authentication surface was overstated and its total was wrong in the direction
+that looks clean.
+
+#### The measure of the gap
+
+`--strict` failed the instant `src/index.ts` joined the analysis, demanding a recorded
+reason for each of the two routes. That is the behaviour that was never applied to
+them before. Both reasons are now written out — and the fact that adding a file the
+tool could already read made the gate fail is the honest size of what was missing.
+
+### A general invariant, added because the hand check will not happen twice
+
+`GET /.well-known/openid-configuration` is **a list of URLs this server asserts
+exist.** Every conforming OIDC client fetches it and then calls what it names, and
+nothing in the build cross-checked the two lists.
+
+This is the SEC-062 shape generalised. That one was found by asking the same question
+of a hand-built string: the `redirect_uri` named `/sso/oidc/:connectionId/callback`
+while the route was served at `/sso/sso/oidc/:connectionId/callback`, and enterprise
+login could not complete. This one is mechanically checkable, so it is a test rather
+than a review someone has to remember to do.
+
+Each advertised path is **requested**, and the assertion is only that the request is
+not a router miss — a handler may answer 400 or 401, because a route existing and
+refusing is the entire point. Asserting against a hand-kept list of paths would test
+the list rather than the server, and would pass against a document advertising a route
+that had since been renamed.
+
+**All five endpoints are served today** (`userinfo_endpoint` is GET, per RFC 7662), so
+this is a verified absence of a defect rather than a fix. It is recorded so nobody has
+to rediscover it, and so a rename cannot reintroduce it silently.
+
+A guard in the same test refuses any absolute-URL field the list does not check, so
+the checked set cannot be quietly narrowed. `issuer` is excluded **by name, with its
+reason** — it is an identifier, not something a client calls, and it is covered by a
+stronger claim elsewhere: that every endpoint in the document is derived from it. The
+first version excluded it by omission, which meant a new field would have gone
+unreviewed; the guard caught exactly that.
+
+### Also
+
+- The router-miss discriminator — the thing that tells a handler's 404 from Fastify's —
+  is now `src/tests/helpers/routerMiss.ts`, shared by both suites that need it. Two
+  copies of a subtle invariant is one more thing to keep in step, which is the failure
+  this release is largely about. It is deliberately loose (`"Not Found"` in the body)
+  rather than an exact match: an exact match would fail *open*, and a changed body
+  would stop being recognised as a miss, quietly turning dead routes into served ones.
 ## [3.5.9] - 2026-09-30
 
 *The runtime moves to Node 26, and a rule about file writes turns out to have been about a folder.*

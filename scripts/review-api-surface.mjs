@@ -189,6 +189,22 @@ function mountPrefixByFile() {
   };
 
   visit("src/index.ts", "", []);
+
+  // **The root is a route file too, and it was invisible until 3.5.10.** The walk above
+  // *starts* here — every prefix in this map is derived from a `register` call in this
+  // file — but `routeFiles` was built by walking `src/routes` and nothing ever added this
+  // one to it. So the two routes `src/index.ts` declares itself,
+  // `/.well-known/openid-configuration` and `/.well-known/jwks.json`, were analysed by
+  // nothing: no authentication guard check, no rate-limit check, no reason recorded for
+  // being public, and no contribution to the route total.
+  //
+  // The report said "178 routes" as though that were the surface. It was 180.
+  //
+  // This is the same failure as the seven unplaced files in SEC-064 and the same as the
+  // doubled prefix in SEC-062, one level out: a file the tool cannot see is a file it does
+  // not check, and a count that omits a file reads as a count of everything.
+  map.set("src/index.ts", "");
+  via.set("src/index.ts", ["the root: routes declared directly in src/index.ts are served at their own path"]);
   return { map, via };
 }
 const { map: MOUNT, via: MOUNTED_VIA } = mountPrefixByFile();
@@ -300,6 +316,18 @@ const PUBLIC_BY_DESIGN = new Map([
   ["/federation/providers", "returns the NAMES of configured providers, so a login page can render its buttons; no client ids, no credentials"],
   ["/sso/oidc/:connectionId", "IdP-initiated OIDC start; unauthenticated by necessity, and rate limited"],
   ["/sso/sso/oidc/:connectionId", "the legacy doubled path for the same OIDC start; kept so a configured IdP keeps working (SEC-062)"],
+  // **Added in 3.5.10, when `src/index.ts` became visible to this tool for the first
+  // time.** These two are declared in the file that builds the app, not in a route file,
+  // so nothing here had ever seen them: no guard check, no rate-limit check, no reason
+  // recorded. `--strict` failed the moment the file was added to the analysis, which is
+  // the correct behaviour and also the measure of the gap.
+  // Also invisible until 3.5.10, for the same reason: `src/plugins/metrics.ts` is not
+  // under `src/routes`. The reason is longer than the others because this one is a
+  // **decision with an operator obligation attached**, and the obligation was not written
+  // down anywhere.
+  ["/metrics", "a Prometheus scrape, unauthenticated by design and deliberately exempt from the global rate limiter -- a scrape behind a limiter gets 429s at 3am and the metrics are gone exactly when something is wrong. It exposes route templates, request rates and error rates, not tenant data, and k8s/base/service.yaml is a ClusterIP so it is cluster-internal by default. **An operator who fronts Keystone with an Ingress must exclude /metrics**, or they are publishing the route table and traffic shape to the internet. That obligation is now in docs/security/monitoring.md."],
+  ["/.well-known/openid-configuration", "OIDC discovery, which RFC 8414 \u00a73 requires to be publicly reachable; it names endpoints and supported methods, and holds no tenant data"],
+  ["/.well-known/jwks.json", "the public half of the signing key pair, which every client must be able to fetch to verify a token; the private key is never served and cannot be derived from this"],
   ["/sdk/keystone-dropin.js", "a static file a browser and a CDN fetch; limiting it breaks caching and protects nothing"],
   ["/sdk/keystone-dropin.js.sri", "the integrity hash of that static file, same reasoning"],
   ["/sdk/branding/:clientId", "logo and colour scheme for the login page, Cache-Control public for 5 minutes; an application that does not exist answers 404"],
@@ -421,8 +449,39 @@ function containsIdentifier(text, name) {
   return false;
 }
 
+/**
+ * Files that declare routes and are deliberately not part of this review.
+ *
+ * **Recorded rather than skipped in the walker**, because a silent exclusion is the same
+ * failure one level down: the reason `src/index.ts` and `src/plugins/metrics.ts` went
+ * uncounted for this long is that nothing said they were being left out — they were simply
+ * outside the directory the walker was pointed at.
+ */
+const EXCLUDED_FROM_REVIEW = new Map([
+  [
+    "src/setup-server.ts",
+    "a separate entry point, not part of the application this review describes. It is a " +
+      "standalone Fastify instance behind `npm run start:setup` / KEYSTONE_SETUP_MODE=true, " +
+      "serving /setup/* and a liveness probe before the application is configured. Its " +
+      "routes are real, and /health in particular is reachable on a running deployment, but " +
+      "the tool's model is one application with many mount prefixes and putting a second " +
+      "app's routes in the same report would make every count in it wrong.",
+  ],
+]);
+
 const routeFiles = [];
 (function walk(dir) {
+  // **`src/`, not `src/routes/`.** The directory the walker was pointed at is the reason
+  // two real routes were never analysed: `src/index.ts` declares
+  // `/.well-known/openid-configuration` and `/.well-known/jwks.json`, and
+  // `src/plugins/metrics.ts` declares `/metrics`. None of the three is under
+  // `src/routes`, so none of them was ever read, and the report's total was an undercount
+  // that read as a total.
+  //
+  // Walking all of `src/` and keeping only the files that actually declare a route means a
+  // new route file anywhere under `src/` is found without anyone adding it to a list — and
+  // a hand-kept list is precisely what failed here twice.
+  if (dir === "src/tests") return;
   for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
     // **The label comes from the current directory, not the top-level one.** The
     // first version wrote `path.join("src/routes", entry.name)`, so recursing into
@@ -438,9 +497,18 @@ const routeFiles = [];
     // **40 of 31** — more resolved files than exist.
     const rel = path.posix.join(dir, entry.name);
     if (entry.isDirectory()) walk(rel);
-    else if (entry.name.endsWith(".ts") && entry.name !== "helpers.ts") routeFiles.push(rel);
+    else if (entry.name.endsWith(".ts")) {
+      if (EXCLUDED_FROM_REVIEW.has(rel)) return;
+      // A file that declares no route is not a route file, and saying so here means
+      // `--strict` does not report barrels and helper modules as unplaced. A file the
+      // parser *cannot* read also fails this test, and is therefore dropped — which is why
+      // the coverage test in `reviewApiSurface.test.ts` recomputes the file list itself and
+      // fails on anything the tool dropped without a recorded reason. The tool narrows;
+      // the test verifies the narrowing hid nothing.
+      if (findRoutes(read(rel)).length > 0) routeFiles.push(rel);
+    }
   }
-})("src/routes");
+})("src");
 
 // Placed after the walker, because it reports on `routeFiles` — the first version
 // of this block sat beside the prefix walk, above the walker's declaration, and
@@ -459,14 +527,41 @@ const routeFiles = [];
  * not written.
  */
 if (process.argv.includes("--explain")) {
-  const files = routeFiles.filter((f) => MOUNT.has(f));
+  // **`MOUNT`, not `routeFiles`.** Filtering to the analysed files dropped the barrels and
+  // helper modules from the explanation, and with them the one step a reader cannot infer:
+  // `src/routes/admin.ts` is a single `export { default }` line, so the hop through it to
+  // `admin/index.ts` is invisible in the file itself. `MOUNTED_VIA` still held it — the
+  // `reviewApiSurface` test asserting on `re-exports default from` kept passing against the
+  // admin files' own chains — but no output showed it, because the file carrying that line
+  // is not one the tool analyses.
+  //
+  // So the explanation lost a hop that the data still had, and a test asserting the *word*
+  // passed while the diagnostic a person reads no longer contained it. A gate that checks a
+  // string has appeared somewhere is not the same as the thing being visible.
+  const files = [...MOUNT.keys()].filter((f) => f.endsWith(".ts"));
   for (const file of files.sort()) {
     const chain = MOUNTED_VIA.get(file) ?? [];
     console.log(`  ${(MOUNT.get(file) || "").padEnd(14)} ${file}`);
     for (const step of chain) console.log(`                 ${step}`);
   }
   const missing = routeFiles.filter((f) => !MOUNT.has(f));
-  console.log(`\n  ${files.length}/${routeFiles.length} route files placed.`);
+  // Reported against `routeFiles`, not `MOUNT`: an unplaced *route* file is the thing that
+  // costs coverage. A helper module with no prefix is placed or it is not, and either way
+  // it declares no routes.
+  // **The two numbers are different populations and the label used to claim otherwise.**
+  // `files` is every file with a resolved prefix — including barrels and helper modules,
+  // which declare no routes and so are not in `routeFiles`. Printing `files.length` over
+  // `routeFiles.length` read "41/31 route files placed", which is a count above the total
+  // and therefore cannot mean what it says. It is the same shape as the "40 of 31" that
+  // turned out to be the tell for the SEC-064 walker bug: a ratio that cannot be true is
+  // evidence that the label, not the arithmetic, is wrong.
+  console.log(
+    `\n  ${files.length} file(s) with a resolved prefix, of which ` +
+      `${routeFiles.filter((f) => MOUNT.has(f)).length} declare routes.`
+  );
+  // Unplaced route files are reported by the `missing` loop below and fail `--strict`;
+  // nothing is reported here, because `files` is derived from MOUNT and so cannot contain
+  // an unplaced file. A branch that cannot execute is a branch nobody has to keep right.
   for (const file of missing) {
     console.log(`  UNPLACED  ${file} — reached from no register() call in the graph`);
   }

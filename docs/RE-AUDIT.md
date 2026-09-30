@@ -70,9 +70,11 @@ Suites that assert a property but do not correspond to a defect we can evidence.
   The regression test for SEC-047. Registered separately from the finding because the backend-selection assertions are properties of the plugin rather than evidence of the defect, which the spraying and 3.1.0 suites also cover.
 - `src/tests/security/authorization/tenantIsolation.test.ts` — Cross-tenant isolation for the organization-scoped administration surface. Two organizations with two owners, plus a user belonging to neither, and every organization-scoped collection route is read by the wrong tenant — once as the owner of a *different* organization, once as a non-member. All answer 403 or 404. A fourth test asserts the owner can still read their own organization.
   Not a regression test for any finding; the 12 routes it covers are all correctly guarded. Registered separately because it asserts a property — no route hands organization A's data to a caller from organization B — for which there is no finding, and which no static check in this repository can decide, since the code performing the authorization is the code a static check would have to read. It is the instrument for the 43 routes `review-api-surface.mjs` reports as `authorized elsewhere`: the tool says it cannot see those guards, so something has to try them.
+- `src/tests/security/oauth2/discoveryAdvertisesServedRoutes.test.ts` — Every endpoint the OIDC discovery document advertises is a route the server serves. Each advertised path is *requested* and asserted only to be not a router miss, so a handler may answer 400 or 401 -- the route existing and refusing is the point. A guard refuses any absolute-URL field the test does not check, so the checked list cannot be quietly narrowed.
+  Not a regression test for a numbered finding: all five endpoints are served, so there is no defect behind it. Registered separately because it asserts a property -- no document in this repository advertises a path the server does not serve -- which no static check can decide, because deciding it means asking the running server. SEC-062 was exactly this defect found by hand in a string rather than a document, which is why it is now a test rather than a review someone has to remember to do.
 
 ## Coverage
 
-- 67 findings recorded in `docs/security/registry.json`.
-- 67 of 67 verified to have a regression test present right now.
-- 6 critical, 34 high, 20 medium, 7 low.
+- 69 findings recorded in `docs/security/registry.json`.
+- 69 of 69 verified to have a regression test present right now.
+- 6 critical, 34 high, 21 medium, 8 low.

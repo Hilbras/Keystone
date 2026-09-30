@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { Organization, User } from "../../../db/schema.js";
+import { isRouterMiss } from "../../helpers/routerMiss.js";
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbras";
@@ -65,17 +66,6 @@ const connectionIds: string[] = [];
 
 const CLEAN_START = "/sso/oidc";
 const LEGACY_START = "/sso/sso/oidc";
-
-/**
- * A 404 from the handler and a 404 from Fastify's router are different failures, and the
- * difference is the whole subject. `OIDC connection not found` is the handler; the router's
- * default is `Route GET:… not found`. Treating them as one number is what let a dead
- * endpoint look like a guarded one.
- */
-function isRouterMiss(res: { statusCode: number; body: string }): boolean {
-  if (res.statusCode !== 404) return false;
-  return /"error"\s*:\s*"Not Found"/.test(res.body) || /not found/i.test(res.body);
-}
 
 async function seed(): Promise<{ organization: Organization; owner: User; connectionId: string }> {
   const suffix = crypto.randomUUID().slice(0, 8);
