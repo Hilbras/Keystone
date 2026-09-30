@@ -5,6 +5,91 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-09-30
+
+*Webhook delivery selected the row, sent the request, and wrote the result back. Nothing in between said "this worker owns it."*
+
+### SEC-078, medium — no atomic claim, so two workers sent the same event twice
+
+```ts
+const [delivery] = await db.select().from(webhookDeliveries).where(eq(id, deliveryId)).limit(1);
+if (!delivery) return;
+const [endpoint] = await db.select().from(webhookEndpoints)...;
+// ... fetch, with nothing in between that says this worker owns it
+```
+
+`status` had only `pending | success | failed` — **no `processing`**, so there was
+no state a worker could move a delivery into to take ownership. Nothing in the
+read or the write was conditional on the delivery still being claimable.
+
+Two workers holding the same `deliveryId` both sent the payload, and **nothing
+reported it**: each worker's own final write succeeded, last one winning. The
+delivery record then showed a single `success` with a single attempt count — the
+evidence overwritten by the thing that hid it.
+
+The trigger is ordinary. `retryLater` re-enqueues after 30 seconds, so a delivery
+that is *slow* rather than failed — a consumer taking 40 seconds — is re-enqueued
+while the first attempt is still in flight.
+
+The claim is one conditional `UPDATE`:
+
+```sql
+UPDATE webhook_deliveries SET status = 'processing', locked_at = now, locked_by = ?
+WHERE id = ? AND (status = 'pending' OR (status = 'processing' AND locked_at < ?))
+```
+
+Exactly one caller gets a row back. The database decides, which is what makes it
+hold across processes and machines — and no lock is held across the HTTP request,
+which would be worse: the request can take ten seconds.
+
+### The claim is only half of it
+
+Without a lease, a worker that dies mid-delivery strands the row in `processing`
+forever — not pending, so nothing retries it; not failed, so nothing reports it. A
+delivery lost silently, which is the outcome the claim exists to prevent. So
+`locked_at` / `locked_by` (migration `0018`, two nullable columns, no backfill) and
+`reclaimStaleDeliveries()`, run at worker startup — the case that matters is a
+**restart** — and every 60s.
+
+The lease is 10 minutes against a 10-second request timeout. A short lease would
+risk double-sending the slow-but-healthy delivery, **reintroducing the original
+defect through the recovery path**; a test asserts a fresh claim is not stolen.
+
+Every terminal write drops the claim. Not tidiness: a `success` row whose lock was
+left set would be returned to `pending` by the sweep and **re-sent**.
+
+### A second webhook path, missed by 3.6.0
+
+`AUDIT_WEBHOOK_URL` — the audit export — is enqueued as `type: "webhook"` and
+handled at `src/index.ts` with a bare `fetch(url)`, **no outbound policy at all**.
+SEC-075 covered `deliverNow` only and I did not check the sibling path. It is a far
+lower trust boundary (operator environment configuration, not an API caller) but it
+is a standing automated request on every event, so a misconfigured value ships audit
+records anywhere unnoticed. Now goes through the same `assertSafeWebhookUrl`.
+
+### The sweep cannot take the process down
+
+`startWebhookWorker`'s sweep catches and logs its errors. An unhandled rejection
+terminates a Node process, and a throw nobody awaits in a background timer is
+exactly how a service becomes inexplicably gone — the SEC-053 defect in a new
+place.
+
+### Regression
+
+8 cases, driving **real concurrent `deliverNow` calls against a real HTTP
+collector** and counting what arrived, because a claim only asserted structurally
+is a claim nobody has seen work.
+
+| restored | result |
+|---|---|
+| the claim replaced by read-then-write | **3 pass, 3 fail, 2 timeouts** |
+| this release | 8 pass |
+
+Worth recording honestly: **the two-worker case passed against the defect.** A
+two-way race can win by luck of scheduling. The ten-way case failed, which is why
+it exists — the comment in the test says so, and the measurement confirmed it
+rather than the assumption.
+
 ## [3.6.1] - 2026-09-30
 
 *Two ordering mistakes, and neither is the bypass the plan assumed either was.*

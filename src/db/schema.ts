@@ -763,8 +763,23 @@ export const webhookDeliveries = pgTable(
       .references(() => webhookEndpoints.id, { onDelete: "cascade" }),
     eventType: text("event_type").notNull(),
     payload: jsonb("payload").default({}).notNull(),
-    status: text("status").default("pending").notNull(), // pending | success | failed
+    status: text("status").default("pending").notNull(), // pending | processing | success | failed
     attempts: integer("attempts").default(0).notNull(),
+    /**
+     * When the current worker claimed this delivery, and which one.
+     *
+     * SEC-078. The claim is the atomic `UPDATE … WHERE status = 'pending'`; these
+     * two columns are what make it *recoverable*. Without them a worker that died
+     * mid-request leaves the row in `processing` forever — not pending, so
+     * nothing retries it; not failed, so nothing reports it. The delivery is
+     * simply lost, and lost silently, which is the outcome the claim was meant
+     * to prevent.
+     *
+     * `lockedAt` is the age; `lockedBy` is for the log line an operator reads
+     * when a delivery keeps being retried by nobody.
+     */
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockedBy: text("locked_by"),
     responseStatus: integer("response_status"),
     responseBody: text("response_body"),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),

@@ -127,6 +127,13 @@
       "when": 1790459775285,
       "tag": "0017_flashy_nekra",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790803223002,
+      "tag": "0018_cute_rage",
+      "breakpoints": true
     }
   ]
 }

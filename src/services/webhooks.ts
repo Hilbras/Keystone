@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { webhookDeliveries, webhookEndpoints, type WebhookEndpoint } from "../db/schema.js";
 import { signWebhookPayload } from "../lib/webhookSignature.js";
@@ -14,6 +14,56 @@ const moduleLog = serviceLogger("webhooks");
 
 const MAX_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 30_000;
+
+/**
+ * How long a `processing` claim is honoured before another worker may take it.
+ *
+ * Ten minutes against a delivery that times out at ten seconds: a live worker is
+ * never reclaimed, and a crashed one is recovered without an operator noticing.
+ * A value close to the request timeout would be tighter but would risk reclaiming
+ * a slow-but-healthy delivery and double-sending it — the exact failure the claim
+ * exists to prevent, reintroduced by making the lease too short.
+ */
+const STALE_CLAIM_MS = 10 * 60 * 1000;
+
+/**
+ * How often to sweep for abandoned claims.
+ *
+ * Shorter than {@link STALE_CLAIM_MS} so a claim is recovered within one lease
+ * period of ageing out rather than up to two: the worst case is
+ * `STALE_CLAIM_MS + RECLAIM_INTERVAL_MS`, which is the number an operator would
+ * have to reason about when asking "how long until a crashed worker's delivery
+ * is retried".
+ */
+const RECLAIM_INTERVAL_MS = 60_000;
+
+/**
+ * A stable id for this process, recorded on every claim.
+ *
+ * Not for mutual exclusion — the database does that — but for the log line an
+ * operator reads when a delivery is being retried by nobody. `process.pid` alone
+ * is ambiguous across hosts, which is the case that matters.
+ */
+const WORKER_ID = `${process.env.HOSTNAME ?? "local"}#${process.pid}`;
+const workerId = () => WORKER_ID;
+
+/** Record the terminal state of a delivery and drop the claim. */
+async function releaseClaim(
+  deliveryId: string,
+  status: "pending" | "success" | "failed",
+  body?: string
+): Promise<void> {
+  await db
+    .update(webhookDeliveries)
+    .set({
+      status,
+      lastAttemptAt: new Date(),
+      lockedAt: null,
+      lockedBy: null,
+      ...(body === undefined ? {} : { responseBody: body.slice(0, 2000) }),
+    })
+    .where(eq(webhookDeliveries.id, deliveryId));
+}
 
 export type { WebhookEndpoint };
 
@@ -168,12 +218,103 @@ export async function dispatchEvent(event: KeystoneEvent): Promise<void> {
   }
 }
 
-export async function deliverNow(deliveryId: string): Promise<void> {
-  const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, deliveryId)).limit(1);
-  if (!delivery) return;
+/**
+ * Take exclusive ownership of a delivery, or report that someone else has it.
+ *
+ * **SEC-078.** `deliverNow` used to `SELECT` the row, act on it, and write the
+ * result back — with nothing in between that said "this worker owns it". Two
+ * workers holding the same `deliveryId` therefore both sent the payload, and the
+ * consumer received the same event twice. A webhook consumer that credits an
+ * account once per delivery gets charged twice, and nothing in the system
+ * reported it: each worker's own write succeeded, last one winning.
+ *
+ * The claim is one conditional `UPDATE`, so the decision is made by the database
+ * rather than by a read followed by a hope:
+ *
+ * ```sql
+ * UPDATE webhook_deliveries SET status = 'processing', ...
+ * WHERE id = ? AND status = 'pending'
+ * ```
+ *
+ * Exactly one caller gets `rowCount = 1`; every other gets 0 and returns. That
+ * holds across processes and across machines, which a `SELECT` cannot, and it
+ * needs no lock held across the HTTP request — which would be worse, since the
+ * request can take ten seconds and a lock held that long blocks the database.
+ *
+ * `lockedAt` exists so a worker that dies mid-delivery does not strand the row
+ * in `processing` forever. See {@link reclaimStaleDeliveries}.
+ */
+async function claimDelivery(
+  deliveryId: string
+): Promise<{ delivery: typeof webhookDeliveries.$inferSelect; endpoint: typeof webhookEndpoints.$inferSelect } | null> {
+  const now = new Date();
+  // A claim older than this is assumed abandoned. Ten minutes is above the
+  // delivery timeout (10s) by a wide margin, so a live worker is never reclaimed;
+  // a crashed one is recovered without an operator noticing.
+  const staleBefore = new Date(now.getTime() - STALE_CLAIM_MS);
 
-  const [endpoint] = await db.select().from(webhookEndpoints).where(eq(webhookEndpoints.id, delivery.endpointId)).limit(1);
-  if (!endpoint || !endpoint.isActive) return;
+  const [claimed] = await db
+    .update(webhookDeliveries)
+    .set({ status: "processing", lockedAt: now, lockedBy: workerId() })
+    .where(
+      and(
+        eq(webhookDeliveries.id, deliveryId),
+        or(
+          eq(webhookDeliveries.status, "pending"),
+          // A `processing` row whose lock has expired: a previous attempt died.
+          and(
+            eq(webhookDeliveries.status, "processing"),
+            lt(webhookDeliveries.lockedAt, staleBefore)
+          )
+        )
+      )
+    )
+    .returning();
+
+  if (!claimed) return null;
+
+  const [endpoint] = await db
+    .select()
+    .from(webhookEndpoints)
+    .where(eq(webhookEndpoints.id, claimed.endpointId))
+    .limit(1);
+  if (!endpoint) return null;
+  return { delivery: claimed, endpoint };
+}
+
+/**
+ * Return deliveries stuck in `processing` to `pending`.
+ *
+ * The recovery half of the claim. Without it, one crashed worker permanently
+ * removes a delivery from the queue: it is neither pending nor failed, so nothing
+ * retries it and nothing reports it. Called on worker start and periodically.
+ *
+ * Exported because the test drives it directly rather than waiting ten minutes for
+ * a lock to age out.
+ */
+export async function reclaimStaleDeliveries(): Promise<number> {
+  const staleBefore = new Date(Date.now() - STALE_CLAIM_MS);
+  const reclaimed = await db
+    .update(webhookDeliveries)
+    .set({ status: "pending", lockedAt: null, lockedBy: null })
+    .where(
+      and(eq(webhookDeliveries.status, "processing"), lt(webhookDeliveries.lockedAt, staleBefore))
+    )
+    .returning({ id: webhookDeliveries.id });
+  return reclaimed.length;
+}
+
+export async function deliverNow(deliveryId: string): Promise<void> {
+  // **The claim, before any work.** Everything below this line happens only for
+  // the one caller that won it; every other caller returns having sent nothing.
+  const claim = await claimDelivery(deliveryId);
+  if (!claim) return;
+  const { delivery, endpoint } = claim;
+
+  if (!endpoint.isActive) {
+    await releaseClaim(deliveryId, "failed", "endpoint is inactive");
+    return;
+  }
 
   const attempts = delivery.attempts + 1;
   const now = new Date();
@@ -223,6 +364,12 @@ export async function deliverNow(deliveryId: string): Promise<void> {
         responseStatus: response.status,
         responseBody,
         status: response.ok ? "success" : "failed",
+        // The claim is dropped on every terminal write. Leaving it set would make
+        // the row look live to `claimDelivery` for another ten minutes, and
+        // `reclaimStaleDeliveries` would eventually return a `success` row to
+        // `pending` — re-sending a delivery that already succeeded.
+        lockedAt: null,
+        lockedBy: null,
       })
       .where(eq(webhookDeliveries.id, deliveryId));
 
@@ -259,6 +406,12 @@ export async function deliverNow(deliveryId: string): Promise<void> {
           // is operator-supplied and the policy messages are fixed strings.
           responseBody: `Refused by outbound URL policy: ${err.message}`.slice(0, 2000),
           status: "failed",
+          // Drop the claim here too. SEC-075's branch was written before the claim
+          // existed, and a row left in `processing` is a row nobody retries — the
+          // refusal is terminal, so `pending` is the wrong state for it and
+          // `processing` is the wrong one for the same reason.
+          lockedAt: null,
+          lockedBy: null,
         })
         .where(eq(webhookDeliveries.id, deliveryId));
       return;
@@ -276,7 +429,12 @@ export async function deliverNow(deliveryId: string): Promise<void> {
         attempts,
         lastAttemptAt: now,
         responseBody: err instanceof Error ? err.message.slice(0, 2000) : "Delivery error",
+        // `pending` here is what makes the retry possible, so the claim has to go:
+        // a `pending` row with a live lock would be claimable only after it went
+        // stale, adding ten minutes to every transient network failure.
         status: attempts >= MAX_ATTEMPTS ? "failed" : "pending",
+        lockedAt: null,
+        lockedBy: null,
       })
       .where(eq(webhookDeliveries.id, deliveryId));
 
@@ -312,4 +470,40 @@ export function startWebhookWorker(): void {
     const { deliveryId } = job.payload as { deliveryId: string };
     await deliverNow(deliveryId);
   });
+
+  /**
+   * Recover deliveries stranded by a worker that died mid-request.
+   *
+   * Runs at startup rather than only on a timer, because the case that matters is
+   * a **restart**: a process killed while holding claims leaves those rows in
+   * `processing`, and without this they are never retried and never reported —
+   * not pending, so nothing picks them up; not failed, so nothing surfaces them.
+   * The delivery is simply gone.
+   *
+   * Deliberately not awaited. Startup must not block on a table scan, and a
+   * failure here is logged rather than fatal — a recovery pass that cannot run is
+   * a reason to complain, not a reason to refuse to boot. `.unref()` so the timer
+   * never holds the process open during shutdown.
+   *
+   * Errors are caught and logged rather than left to become an unhandled
+   * rejection. That is the SEC-053 defect in a different place: an unhandled
+   * rejection terminates a Node process, and a background recovery timer is
+   * exactly the kind of code where a throw nobody awaits goes unnoticed until the
+   * service is inexplicably gone.
+   */
+  const sweep = () => {
+    reclaimStaleDeliveries()
+      .then((count) => {
+        if (count > 0) {
+          moduleLog.warn({ count }, "reclaimed webhook deliveries abandoned by a dead worker");
+        }
+      })
+      .catch((err: unknown) => {
+        moduleLog.error({ err }, "webhook stale-claim sweep failed");
+      });
+  };
+
+  sweep();
+  const timer = setInterval(sweep, RECLAIM_INTERVAL_MS);
+  timer.unref();
 }

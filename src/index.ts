@@ -187,6 +187,22 @@ export async function buildApp() {
       body?: unknown;
       headers?: Record<string, string>;
     };
+    // The same outbound policy the admin-supplied webhook path uses (SEC-075).
+    //
+    // This is the `AUDIT_WEBHOOK_URL` audit export, so the URL comes from
+    // operator environment configuration rather than an API caller — which makes
+    // it a *much* lower-trust-boundary than `deliverNow`. It is checked anyway,
+    // for two reasons: an audit export is a standing, automated, every-event
+    // outbound request, so a misconfigured value sends audit records to
+    // wherever it names without anyone noticing; and leaving one outbound path
+    // unchecked is exactly how the SEC-075 gap survived in the first place.
+    //
+    // Throws rather than swallowing, so a refused destination is a visible failed
+    // job in the queue rather than a silently dropped audit record.
+    // `./services/...` — `index.ts` sits at `src/`, not `src/routes/`, so the
+    // `../../` form does not resolve from here.
+    const { assertSafeWebhookUrl } = await import("./services/outboundPolicy.js");
+    await assertSafeWebhookUrl(url);
     await fetch(url, {
       method: method || "POST",
       headers: { "Content-Type": "application/json", ...headers },

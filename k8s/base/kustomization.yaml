@@ -27,7 +27,7 @@ images:
   # decorative. scripts/verify-k8s-manifests.mjs checks the rendered result against
   # package.json, so this is bumped with each release.
   - name: ghcr.io/hilbras-dev/hilbras-keystone
-    newTag: 3.6.1
+    newTag: 3.7.0
 
 commonLabels:
   app.kubernetes.io/name: keystone
