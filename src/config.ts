@@ -112,6 +112,21 @@ export const config = {
     getEnv("COOKIE_SECURE", getEnv("NODE_ENV", "development") === "production" ? "true" : "false") === "true",
   COOKIE_SAME_SITE: getEnv("COOKIE_SAME_SITE", getEnv("NODE_ENV", "development") === "production" ? "strict" : "lax") as "strict" | "lax" | "none",
   ALLOW_PRIVATE_SSO_ENDPOINTS: getEnv("ALLOW_PRIVATE_SSO_ENDPOINTS", "false") === "true",
+  /**
+   * Permit a webhook to target a loopback or private address.
+   *
+   * Separate from `ALLOW_PRIVATE_SSO_ENDPOINTS` because that flag also disables
+   * DNS resolution and address pinning, which a developer's `http://localhost:3000`
+   * does not need switched off. A webhook pointing at `169.254.169.254` does.
+   *
+   * Defaults to the SSO flag so an existing development setup that already
+   * opted out keeps working and there is one decision to make, not two. It is a
+   * development and test affordance: in production both default to `false`.
+   */
+  ALLOW_PRIVATE_WEBHOOK_TARGETS: getEnv(
+    "ALLOW_PRIVATE_WEBHOOK_TARGETS",
+    getEnv("ALLOW_PRIVATE_SSO_ENDPOINTS", "false")
+  ) === "true",
 
   AUTH_API_PUBLIC_URL: getEnv("AUTH_API_PUBLIC_URL"),
   ACCESS_TOKEN_TTL_SECONDS: Number(getEnv("JWT_ACCESS_TOKEN_TTL", "900")),
