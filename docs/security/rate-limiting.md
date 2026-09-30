@@ -161,7 +161,8 @@ tool.
 |---|---|
 | `GET /federation/:provider/callback` | a provider token, completing a login |
 | `GET /auth/callback/:provider` | as above, the other federation route |
-| `GET /sso/sso/oidc/:connectionId/callback` | an enterprise SSO authorization code |
+| `GET /sso/oidc/:connectionId/callback` | an enterprise SSO authorization code |
+| `GET /sso/sso/oidc/:connectionId/callback` | the legacy alias of that route — **same budget, not a second one** |
 | `GET /auth/magic-link/verify` | **a token in the query string** |
 | `GET /sso/saml/:connectionId` | a connection id, starting IdP-initiated SSO |
 | `POST /sso/saml/acs` | **a signed assertion**, verified for you |

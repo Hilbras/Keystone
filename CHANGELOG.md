@@ -5,6 +5,171 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.8] - 2026-09-30
+
+*Two findings, one shape: a control that reported something other than what it measured.*
+
+### SEC-062, high — enterprise OIDC login could not complete
+
+`oidcEnterpriseRoutes` is mounted at `/sso` in `src/index.ts`, and its routes also
+declared `/sso/…`. So the server answered at:
+
+```
+/sso/sso/oidc/:connectionId/callback
+```
+
+while the `redirect_uri` it handed the identity provider — and the identical one the
+token exchange re-sends, as RFC 6749 §4.1.3 requires — was built from a hardcoded
+`${publicUrl()}/sso/oidc/${connectionId}/callback`.
+
+Keystone asked the IdP to call back a path it did not serve. A standards-compliant IdP
+redirects to exactly the `redirect_uri` it was given, so the browser landed on a
+route-not-found. Whichever URL an operator had registered in their IdP — the doubled
+path, because `docs/API.md` documented it, or the clean path, because that is what
+`redirect_uri` carried — one leg or the other failed.
+
+**SEC-062 was recorded as `low`, as "a doubled path". That was wrong.** It was an
+availability defect in a shipped feature. The reason nobody noticed is that every
+existing test drives a *piece* — userinfo endpoint resolution, nonce forwarding,
+membership scoping — and none drives the flow. The parts all work; the composition did
+not.
+
+#### Fixed, with the old path kept working
+
+Routes are now declared relative to their mount, so the served path is the one
+`redirect_uri` already named. The doubled paths stay as aliases, because they are what
+`docs/API.md` documented and what an operator configured in an IdP this repository
+cannot see.
+
+**The two registrations share one `callbackOptions`, and that is the part that matters.**
+An alias with its own `keyPrefix` is a *second* allowance for the same endpoint — an
+attacker could alternate between the two paths to double the authorization-code guesses.
+Every assertion that checks each path is limited still passes with two prefixes. Only an
+assertion that they are limited **together** catches it, which is why the test spends the
+whole budget on the canonical path and then requires the legacy path to already be
+closed.
+
+Verified by giving the alias a second `keyPrefix`: the two other tests still pass, and
+the budget test fails naming the 400 it got instead of a 429.
+
+#### The tool stopped seeing the limiter, and nothing said so
+
+Sharing the options object made the `rateLimit(` call invisible to
+`review-api-surface.mjs`. The reported rate-limited count fell from **28 to 27** and no
+gate failed — a rate limit that is present, reported as absent.
+
+`findRoutes` captured an options object only when the argument after the path began with
+`{`; a bare name yielded an empty string. A named options object is now resolved before
+the guards are read, and the count is pinned by a test: **29**.
+
+### SEC-068, low — 43 routes reported as unauthorized when the tool could not see the guard
+
+`review-api-surface.mjs` reported **43 routes** as "authenticated, no authorization
+guard", on every run. That reads as 43 unresolved problems. It is not 43 problems, and
+the wording was making a statement about the tool look like a statement about the routes.
+
+The repository authorizes in three places and the tool can see one:
+
+| where | example | visible |
+|---|---|---|
+| a named preHandler | `requireOrganizationRole(["owner","admin"], …)` | yes |
+| the handler body | `if (!assertSetupToken(request, reply)) return;` | yes (3.5.6) |
+| **the application service** | `sdk.organization.getOrganization(userId, orgId)` → `requireOrganizationPermission(…)`, auditing the denial | **no** |
+
+A static check cannot resolve the third case — the code performing the authorization is
+the code under test.
+
+#### Settled by trying it
+
+`tenantIsolation.test.ts` builds two organizations with two owners plus a user belonging
+to neither, and reads every organization-scoped collection route as the wrong tenant:
+once as the owner of a *different* organization, once as a non-member. **12 routes**,
+derived from the tool's own `--json` output so a new one cannot be added without
+appearing. Every route answers 403 or 404. A fourth test asserts the owner **can** still
+read their own organization, or the suite would pass just as well if every route 404'd
+for everyone.
+
+Verified by removing the permission check from `getOrganization`: 2 of 4 fail, naming
+the route, the 200, and who asked. **All 12 are correctly guarded.** The 43 figure was
+never a count of defects.
+
+The category is now worded `no NAMED authorization guard found`, and the report separates
+`with a NAMED guard: 104` from `authorized elsewhere: 43`. The wording itself is pinned by
+a test, because no other check reads wording and a revert would have passed every gate.
+
+### Also in this release
+
+- `GET /v1/admin/billing/plans` carries only `app.authenticate` while its sibling
+  `/organizations/:id/billing` requires an org role. Left as is, deliberately: the catalog
+  is a hardcoded literal in `src/services/billing.ts`, with no tenant data, and adding a
+  role check would break a pricing page for no security gain. Recorded so nobody later
+  "fixes" it.
+- `docs/API.md` names the canonical OIDC callback and marks the doubled paths as aliases.
+## [3.5.8] - 2026-09-30
+
+*Forty-three routes the tool said were unauthorized, and the tool was the thing at fault.*
+
+### SEC-068, low — a count that claimed more than it knew
+
+`review-api-surface.mjs` reported **43 routes** as "authenticated, no authorization
+guard", on every run. That reads as 43 unresolved problems. It is not 43 problems, and
+the wording was making a statement about the tool look like a statement about the
+routes.
+
+The repository authorizes in three places and the tool can see one:
+
+| where | example | visible to the tool |
+|---|---|---|
+| a named preHandler | `requireOrganizationRole(["owner","admin"], …)` | yes |
+| the handler body | `if (!assertSetupToken(request, reply)) return;` | now yes (3.5.6) |
+| **the application service** | `sdk.organization.getOrganization(userId, orgId)` → `requireOrganizationPermission(…)`, auditing the denial | **no** |
+
+For a route in the third place, "no authorization guard" means *this tool cannot see
+the guard*. A static check cannot resolve it — the code performing the authorization is
+the code under test, and re-reading it is what a static check already did.
+
+### Settled by trying it
+
+The instrument that answers "can a user from another tenant read this?" is one that
+tries it. `tenantIsolation.test.ts` builds two organizations with two owners plus a
+user belonging to neither, and reads every organization-scoped collection route as the
+wrong tenant:
+
+- **12 routes**, derived from `review-api-surface.mjs --json` rather than tabulated, so
+  a new organization-scoped collection route cannot be added without appearing here
+- every route answers **403 or 404** to the other tenant's owner, and to the non-member
+- a fourth test asserts the owner **can** still read their own organization, because
+  otherwise the suite passes just as well if every route 404s for everyone — which is a
+  server that is not serving, not one that is protecting
+
+Verified by removing the permission check from `getOrganization`: 2 of 4 fail, naming
+the route, the `200`, and who asked. Restored: 4 of 4.
+
+**All 12 are correctly guarded.** The 43 figure was never a count of defects.
+
+### The report now says what it knows
+
+The category is worded as `no NAMED authorization guard found`, and the summary reports
+the two populations separately:
+
+```
+with a NAMED guard:     104
+authorized elsewhere:    43 (handler body or application service — unverifiable by
+                          reading, tested by tenantIsolation.test.ts)
+```
+
+The count did not change. What it claims to mean did.
+
+### One route that really had no guard, and why that is fine
+
+`GET /v1/admin/billing/plans` carries only `app.authenticate` while its sibling
+`GET /organizations/:id/billing` requires `requireOrganizationRole(["owner","admin"],
+{resource: "billing", action: "read"})`. The catalog is a **hardcoded literal array** in
+`src/services/billing.ts` — no database, no tenant data — so it is a public price list
+that happens to live under `/v1/admin`.
+
+Left as it is, deliberately. Adding a role check would break a pricing page for no
+security gain, and the record is here so nobody later "fixes" it by adding one.
 ## [3.5.7] - 2026-09-30
 
 *Two alerts in the code 3.5.6 added, both found by the scanner in the same release.*

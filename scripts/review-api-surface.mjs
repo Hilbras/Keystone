@@ -273,11 +273,15 @@ const PUBLIC_BY_DESIGN = new Map([
   //
   //   "/sso/saml/login"                      -> no such route; the real one is below
   //   "/sso/saml/metadata/:connectionId"     -> the real path is /sso/saml/:connectionId/metadata
-  //   "/sso/oidc/callback"                   -> the real path is /sso/sso/oidc/:connectionId/callback
-  //                                             (a plugin at /sso whose routes also begin /sso — SEC-062)
+  //   "/sso/oidc/callback"                   -> no such route; the real one is below
+  //                                             (a plugin at /sso whose routes also began /sso, so the
+//                                              served path doubled — SEC-062, fixed in 3.5.8)
   ["/sso/saml/:connectionId", "IdP-initiated SSO start; the user has no session yet, which is the point of it"],
   ["/sso/saml/acs", "SAML assertion consumer, authenticated by the signed assertion"],
   ["/sso/saml/:connectionId/metadata", "IdP metadata fetch; a document, and it leaks nothing that is not already in the SAML metadata"],
+  ["/sso/oidc/:connectionId/callback", "OIDC callback, authenticated by the state cookie and the code the IdP returns"],
+  // The legacy doubled path, still served. Same reason as the canonical entry above:
+  // the reason is a property of the endpoint, not of the path it is reachable at.
   ["/sso/sso/oidc/:connectionId/callback", "OIDC callback, authenticated by the state cookie and the code the IdP returns"],
   ["/federation/:provider/callback", "federation callback; the provider token and the state cookie are the authentication"],
   ["/auth/callback/:provider", "as above, the other federation callback"],
@@ -294,7 +298,8 @@ const PUBLIC_BY_DESIGN = new Map([
   ["/auth/logout", "revocation by possession: the caller proves themselves by presenting the token being revoked, and revoking a token they do not hold is a no-op"],
   ["/federation/:provider/start", "federation initiation; the user has no session yet, which is the point of it"],
   ["/federation/providers", "returns the NAMES of configured providers, so a login page can render its buttons; no client ids, no credentials"],
-  ["/sso/sso/oidc/:connectionId", "IdP-initiated OIDC start; unauthenticated by necessity, and rate limited"],
+  ["/sso/oidc/:connectionId", "IdP-initiated OIDC start; unauthenticated by necessity, and rate limited"],
+  ["/sso/sso/oidc/:connectionId", "the legacy doubled path for the same OIDC start; kept so a configured IdP keeps working (SEC-062)"],
   ["/sdk/keystone-dropin.js", "a static file a browser and a CDN fetch; limiting it breaks caching and protects nothing"],
   ["/sdk/keystone-dropin.js.sri", "the integrity hash of that static file, same reasoning"],
   ["/sdk/branding/:clientId", "logo and colour scheme for the login page, Cache-Control public for 5 minutes; an application that does not exist answers 404"],
@@ -346,6 +351,46 @@ function localGuardAliases(source) {
   const out = [];
   for (const m of source.matchAll(/const\s+(\w+)\s*=\s*([A-Za-z_][\w.]*)\s*\(/g)) {
     if (known.test(m[2])) out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * Local `const`s whose value is an object literal, keyed by name.
+ *
+ * A route may share its options by name: `app.get(path, callbackOptions, handler)`.
+ * The options *argument* is then the identifier, not the literal, so testing the route's
+ * own text for `rateLimit(` finds nothing and the route is reported as unlimited.
+ *
+ * This is not hypothetical. Refactoring `oidcEnterprise.ts` to share one options object
+ * between the canonical and the legacy callback path — the right thing to do, since two
+ * `keyPrefix` values on one endpoint is two rate-limit allowances — silently dropped the
+ * reported count from 28 to 27. Nothing failed. The tool simply stopped seeing a limiter
+ * that was still there, which is the failure mode this file exists to prevent, one level
+ * down: a report that is quietly wrong is worse than one that is loudly incomplete.
+ *
+ * So a named options object is resolved before the route's guards are read. One level of
+ * indirection, deliberately: a chain would need a fixpoint, and no route in this
+ * repository uses one. A name that does not resolve is left as-is, which means the route
+ * is reported as it was — the same outcome as before this existed.
+ */
+function localOptionObjects(source) {
+  const out = new Map();
+  // `=` then a brace, so a call like `const x = buildOptions()` is not captured.
+  for (const m of source.matchAll(/const\s+(\w+)\s*=\s*\{/g)) {
+    const start = m.index + m[0].length - 1;
+    let depth = 0;
+    for (let i = start; i < source.length; i++) {
+      const ch = source[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          out.set(m[1], source.slice(start, i + 1));
+          break;
+        }
+      }
+    }
   }
   return out;
 }
@@ -508,6 +553,16 @@ function findRoutes(source) {
         }
       }
       opts = source.slice(start, i);
+    } else if (/[A-Za-z_$]/.test(source[i] ?? "")) {
+      // A route may share its options by name — `app.get(path, callbackOptions, handler)`.
+      // Recorded as the name so `localOptionObjects` can resolve it; without this the
+      // options are an empty string and a real `rateLimit(` in them is invisible.
+      //
+      // `Fastify` and `app` are the shapes that name a Fastify instance rather than
+      // options; they resolve to nothing, so they are simply left unresolved below.
+      const start = i;
+      while (i < source.length && /[\w$]/.test(source[i])) i++;
+      opts = source.slice(start, i);
     }
     // **The whole declaration, not just the options.** Some guards are called in the
     // handler body rather than in a preHandler — `if (!assertSetupToken(request, reply))
@@ -530,19 +585,24 @@ for (const file of routeFiles) {
   const prefix = MOUNT.get(file) ?? null;
   const fileAudits = AUDIT.some((r) => r.test(source));
   const aliases = localGuardAliases(source);
+  const optionObjects = localOptionObjects(source);
   for (const { method, url, opts, block } of findRoutes(source)) {
+    // `app.get(path, callbackOptions, handler)` names its options rather than inlining
+    // them. Resolve the name so a shared limiter is still counted — see
+    // `localOptionObjects` for what happened when it was not.
+    const resolvedOpts = optionObjects.get(opts.trim()) ?? opts;
     const full = ((prefix === null ? url : `${prefix}${url}`).replace(/\/+$/, "")) || "/";
     // A guard counts anywhere in the route's own declaration — options or handler.
     // `rateLimit` is deliberately *not* widened this way: it must be a preHandler
     // entry, and a `rateLimit(` call inside a handler body would be something else.
-    const guarded = (list) => list.some((r) => r.test(opts) || r.test(block));
+    const guarded = (list) => list.some((r) => r.test(resolvedOpts) || r.test(block));
     routes.push({
       file,
       method: method.toUpperCase(),
       url: full,
       auth: guarded(AUTH) || aliases.some((name) => containsIdentifier(block, name)) || SCIM.test(full) || HOOK_AUTH.has(file),
       authorization: guarded(AUTHORIZATION) || aliases.some((name) => containsIdentifier(block, name)),
-      rateLimit: RATE_LIMIT.some((r) => r.test(opts)),
+      rateLimit: RATE_LIMIT.some((r) => r.test(resolvedOpts)),
       audit: fileAudits,
     });
   }
@@ -553,7 +613,28 @@ for (const r of routes) {
   const publicReason = PUBLIC_BY_DESIGN.get(r.url);
   const problems = [];
   if (!r.auth && !publicReason) problems.push("no authentication guard");
-  if (r.auth && !r.authorization) problems.push("authenticated, no authorization guard");
+  // **Named guard not found**, which is a statement about this tool and not about the
+  // route. The wording used to be "authenticated, no authorization guard", read on
+  // every run as 43 unresolved problems. It is not 43 problems: this repository
+  // authorizes in three places, and the tool sees one.
+  //
+  //   1. a named preHandler                  — visible here
+  //   2. the handler body                     — `assertSetupToken`, a `role === "owner"` branch
+  //   3. the application service             — `sdk.organization.getOrganization(userId, orgId)`
+  //                                             calls `requireOrganizationPermission(…)` and audits
+  //                                             the denial
+  //
+  // For a route in (2) or (3) this message means *this tool cannot see the guard*. A
+  // static check cannot resolve it — the code performing the authorization is the code
+  // under test, and re-reading it is what a static check already did.
+  //
+  // The instrument that answers "can a user from another tenant read this?" is one that
+  // tries it, and there is one:
+  // `src/tests/security/authorization/tenantIsolation.test.ts` drives every
+  // organization-scoped collection route as the wrong tenant's owner and as a
+  // non-member. Removing the permission check from `getOrganization` fails it, naming
+  // the route and the status.
+  if (r.auth && !r.authorization) problems.push("no NAMED authorization guard found (see the note below)");
   if (!r.rateLimit && r.method !== "GET" && !publicReason) problems.push("state-changing, no rate limit");
   if (problems.length) concerns.push({ ...r, publicReason: publicReason ?? null, problems });
 }
@@ -615,19 +696,28 @@ function stripComments(text) {
 /**
  * The mechanically decidable problems, which are the ones `--strict` fails on.
  *
- * Deliberately narrower than `concerns`. Two of the three reported categories are
- * not decidable by reading the source:
+ * Deliberately narrower than `concerns`. Two of the reported categories are not
+ * decidable by reading the source:
  *
- * - "authenticated, no authorization guard" (27 routes) is a real question and a
- *   product judgement. Some routes are legitimately readable by any member of the
- *   organization; which ones is a decision a person has to make and write down,
- *   and a gate that encodes 27 guesses is worse than no gate.
- * - "state-changing, no rate limit" (30 routes) depends on what the endpoint is
+ * - "no NAMED authorization guard found" (43 routes) is not 43 defects. This
+ *   repository authorizes in a named preHandler, in the handler body, and in the
+ *   application service; the tool sees the first. For a route in the other two, it is
+ *   reporting what it cannot see. Settled empirically instead, by
+ *   `src/tests/security/authorization/tenantIsolation.test.ts`, which reads every
+ *   organization-scoped collection route as the wrong tenant. Beyond that it is a
+ *   product judgement per route, and a gate encoding 43 guesses is worse than no
+ *   gate.
+ * - "state-changing, no rate limit" (76 routes) depends on what the endpoint is
  *   worth attacking, which is not a property of its source.
  *
  * So those two stay reported. The three below are decidable, and all three are
  * currently satisfied — which makes them tripwires rather than fixes, the same
  * shape as the `throw` rule in §3.2.
+ *
+ * The counts above are stated so a reader can see them move, not as thresholds. They
+ * are deliberately not interpolated: a number that updates itself cannot be compared
+ * against a number remembered from an earlier run, and a drift nobody notices is the
+ * failure this file has already produced once (SEC-064).
  */
   const strictFailures = [];
 
@@ -790,7 +880,12 @@ if (asJson) {
 
   console.log(`Routes enumerated: ${routes.length} across ${new Set(routes.map((r) => r.file)).size} files`);
   console.log(`  authenticated:         ${routes.filter((r) => r.auth).length}`);
-  console.log(`  with authorization:    ${routes.filter((r) => r.authorization).length}`);
+  console.log(`  with a NAMED guard:     ${routes.filter((r) => r.authorization).length}`);
+  console.log(
+    `  authorized elsewhere:   ${routes.filter((r) => r.auth && !r.authorization).length}` +
+      ` (handler body or application service — unverifiable by reading, tested by` +
+      ` tenantIsolation.test.ts)`
+  );
   console.log(`  with rate limiting:    ${routes.filter((r) => r.rateLimit).length}`);
   console.log(`  in a file that audits: ${routes.filter((r) => r.audit).length}`);
   console.log(`  public by design:      ${routes.filter((r) => PUBLIC_BY_DESIGN.has(r.url)).length}`);

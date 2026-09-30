@@ -68,9 +68,11 @@ Suites that assert a property but do not correspond to a defect we can evidence.
   Coverage for the permission cache added in 3.2.0. No defect was evidenced behind it: the cache is new, and the two failure modes it is shaped around — a stale in-process fallback, and a poisoned entry resolving to an empty set — are asserted as properties rather than as regressions against a numbered finding. The one real defect found alongside it, the SCIM group reconcile skipping its organization membership check, was introduced and fixed inside the unreleased 3.1.0 cycle and is covered in src/tests/security/scim/isolation.test.ts, a suite that is already registered — it is not a numbered finding because it never reached a release.
 - `src/tests/security/rate-limiting/backend-choice.test.ts` — The rate limiter selects its backend by attempting the Redis command rather than by inspecting the client: an unconnected but connectable client is used, and a disconnected one rejects so the local fallback is reachable. A budget spent through one 'instance' is seen by the next, which is the property a distributed limiter exists for.
   The regression test for SEC-047. Registered separately from the finding because the backend-selection assertions are properties of the plugin rather than evidence of the defect, which the spraying and 3.1.0 suites also cover.
+- `src/tests/security/authorization/tenantIsolation.test.ts` — Cross-tenant isolation for the organization-scoped administration surface. Two organizations with two owners, plus a user belonging to neither, and every organization-scoped collection route is read by the wrong tenant — once as the owner of a *different* organization, once as a non-member. All answer 403 or 404. A fourth test asserts the owner can still read their own organization.
+  Not a regression test for any finding; the 12 routes it covers are all correctly guarded. Registered separately because it asserts a property — no route hands organization A's data to a caller from organization B — for which there is no finding, and which no static check in this repository can decide, since the code performing the authorization is the code a static check would have to read. It is the instrument for the 43 routes `review-api-surface.mjs` reports as `authorized elsewhere`: the tool says it cannot see those guards, so something has to try them.
 
 ## Coverage
 
-- 65 findings recorded in `docs/security/registry.json`.
-- 65 of 65 verified to have a regression test present right now.
-- 6 critical, 33 high, 20 medium, 6 low.
+- 66 findings recorded in `docs/security/registry.json`.
+- 66 of 66 verified to have a regression test present right now.
+- 6 critical, 34 high, 20 medium, 6 low.

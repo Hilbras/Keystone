@@ -243,12 +243,21 @@ Hilbras Keystone acts as an authorization server for first-party and third-party
 | GET | `/sso/saml/:connectionId?orgId=:organizationId` | public | Start SAML login for a connection (organization-scoped) |
 | POST | `/sso/saml/acs` | public | SAML Assertion Consumer Service; signed RelayState binds the organization |
 | GET | `/sso/saml/:connectionId/metadata?orgId=:organizationId` | public | Organization-scoped SAML metadata XML |
-| GET | `/sso/sso/oidc/:connectionId?orgId=:organizationId` | public | Start organization-scoped enterprise OIDC login; connection requires JWKS URI |
-| GET | `/sso/sso/oidc/:connectionId/callback?orgId=:organizationId` | public | Enterprise OIDC callback; state binds the organization |
+| GET | `/sso/oidc/:connectionId?orgId=:organizationId` | public | Start organization-scoped enterprise OIDC login; connection requires JWKS URI |
+| GET | `/sso/oidc/:connectionId/callback?orgId=:organizationId` | public | Enterprise OIDC callback; state binds the organization |
+| GET | `/sso/sso/oidc/:connectionId?orgId=:organizationId` | public | **Legacy alias** of the start route; identical behaviour |
+| GET | `/sso/sso/oidc/:connectionId/callback?orgId=:organizationId` | public | **Legacy alias** of the callback; identical behaviour |
 
-> ⚠️ Note the doubled `/sso/sso/oidc` segment — the OIDC enterprise routes declare
-> `/sso/oidc/...` paths *and* are mounted under the `/sso` prefix. This is slated
-> for normalization in a future minor release.
+**Configure the callback as `/sso/oidc/:connectionId/callback`.** That is the path
+Keystone puts in the `redirect_uri` it sends to your IdP, and the one it now serves.
+
+> The doubled `/sso/sso/oidc` segment existed until 3.5.8. The OIDC enterprise routes
+> declared `/sso/oidc/...` *and* were mounted under `/sso`, so the server answered at
+> `/sso/sso/oidc/...` — while the `redirect_uri` handed to the IdP named `/sso/oidc/...`.
+> A compliant IdP redirects to exactly the `redirect_uri` it was given, so the callback
+> leg landed on a path that did not exist and enterprise OIDC login could not complete.
+> The doubled paths are kept as aliases so an existing IdP configuration keeps working,
+> and both are charged to **one** rate-limit budget rather than two.
 
 ## SCIM 2.0 provisioning — `/scim/v2`
 

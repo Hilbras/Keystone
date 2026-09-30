@@ -93,8 +93,19 @@ let app: FastifyInstance;
  * the message the assertion prints would have said the wrong thing entirely.
  *   authRoutes, magicLinkRoutes, webauthnRoutes  ->  mounted at /auth
  *   samlRoutes, oidcEnterpriseRoutes              ->  mounted at /sso
- *   oidcEnterpriseRoutes' own routes also begin /sso, so the served path is
- *   /sso/sso/oidc/… — see SEC-061.
+ *
+ * The enterprise OIDC callback is registered at *two* paths: the canonical
+ * `/sso/oidc/…` and the legacy doubled `/sso/sso/oidc/…` that 3.5.8 and earlier
+ * served. Only the canonical one is listed here, deliberately:
+ *
+ * - listing both would break `bounds each route separately` below, which asserts one
+ *   limiter prefix per entry. That assertion is right. The alias shares a single
+ *   prefix on purpose, because two prefixes on one endpoint is two allowances;
+ * - the shared-budget property is asserted directly, and rather better, in
+ *   `oidc/enterpriseCallbackIsServed.test.ts`, which spends the whole budget on the
+ *   canonical path and requires the legacy path to already be closed. "Each path is
+ *   limited" and "both paths are limited *together*" are different claims, and only
+ *   the second is the one worth having.
  *
  * `unauthenticated: false` means the route requires a session, so an attacker
  * already needs a credential — a different threat, bounded by the session rather
@@ -103,7 +114,7 @@ let app: FastifyInstance;
 const ROUTES = [
   { method: "GET" as const, url: "/federation/google/callback", limiter: "federation-callback", consumes: "a provider token" },
   { method: "GET" as const, url: "/auth/callback/google", limiter: "oauth-callback", consumes: "a provider token" },
-  { method: "GET" as const, url: "/sso/sso/oidc/00000000-0000-0000-0000-000000000000/callback", limiter: "oidc-enterprise-callback", consumes: "an authorization code" },
+  { method: "GET" as const, url: "/sso/oidc/00000000-0000-0000-0000-000000000000/callback", limiter: "oidc-enterprise-callback", consumes: "an authorization code" },
   { method: "GET" as const, url: "/auth/magic-link/verify?token=0000000000000000000000000000000000000000", limiter: "magic-link-verify", consumes: "a token in the query string" },
   { method: "GET" as const, url: "/sso/saml/00000000-0000-0000-0000-000000000000?orgId=x", limiter: "saml-start", consumes: "a connection id" },
   { method: "POST" as const, url: "/sso/saml/acs", limiter: "saml-acs", consumes: "a signed assertion", payload: { SAMLResponse: "PHNhbWxwOlJlc3BvbnNlLz4=" } },
