@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keystone
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # /metrics is unauthenticated **by decision** (docs/security/monitoring.md), so
+    # an Ingress in front of it publishes the whole route table and the traffic
+    # shape to the internet. `path: /` below matches /metrics, so the exclusion
+    # here is what keeps this overlay safe to apply.
+    #
+    # **This annotation is dropped unless the cluster sets
+    # `allow-snippet-annotations: "true"` on the ingress-nginx ConfigMap**, and
+    # false is the default since the CVE-2021-25742 fix. Silently dropped, not
+    # rejected: the Ingress applies cleanly and /metrics stays public. Do NOT set
+    # that flag to make this work — it re-opens CVE-2021-25742, which is how a user
+    # with permission to create an Ingress reads every Secret in the cluster.
+    #
+    # If your cluster has snippets disabled, exclude /metrics at the controller or
+    # network level instead. The options that need no snippet are in
+    # docs/security/monitoring.md. Whichever you choose, verify it:
+    #
+    #   curl -sS -o /dev/null -w '%{http_code}\n' https://<host>/metrics   # want 404
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location /metrics { deny all; return 404; }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - keystone.example.com
+      secretName: keystone-tls
+  rules:
+    - host: keystone.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: keystone
+                port:
+                  number: 80

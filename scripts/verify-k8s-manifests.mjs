@@ -48,6 +48,16 @@ const problems = [];
 const notes = [];
 const fail = (message) => problems.push(message);
 
+/**
+ * Ingress verdicts, keyed by file so one bad manifest is one line.
+ *
+ * A base resource is rendered once per overlay that builds on it, so a failure
+ * raised inline appears four times for a single mistake. Deduplicated here and
+ * merged into `problems` after the render loop, so the output names the file once
+ * and the exit code still reflects every affected overlay.
+ */
+const ingressFailures = new Set();
+
 /* ------------------------------------------------------------------ *
  * Rendering.
  * ------------------------------------------------------------------ */
@@ -166,7 +176,7 @@ const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "
 const version = packageJson.version;
 const expectedImage = "ghcr.io/hilbras-dev/hilbras-keystone";
 
-const targets = ["base", "overlays/production", "overlays/dev"];
+const targets = ["base", "overlays/production", "overlays/dev", "overlays/ingress"];
 
 for (const target of targets) {
   const dir = path.join(K8S, target);
@@ -239,10 +249,74 @@ for (const target of targets) {
     if (/<[A-Z_]{3,}>/.test(text)) {
       fail(`${where}: contains an unfilled <PLACEHOLDER>`);
     }
+
+    /* ---------------------------------------------------------------- *
+     * An Ingress must not publish the unauthenticated /metrics endpoint.
+     *
+     * §3.5.12, SEC-073. This block did not exist, and the check that did exist
+     * printed "Kubernetes manifests OK" while the repository shipped an Ingress
+     * whose `path: /` matched /metrics — the endpoint docs/security/monitoring.md
+     * records as deliberately unauthenticated. The doc claimed the shipped
+     * Service being a ClusterIP kept it internal; a ClusterIP keeps it internal
+     * *from the Service*, and the Ingress was in front of the Service.
+     *
+     * So the gate now reads Ingress rules. The shape of the rule is narrow on
+     * purpose: a path that is exactly /metrics, or a prefix that contains it
+     * (`/`, or an `Exact`/`Prefix` path whose string starts with /metrics), is
+     * a publication. Anything the gate cannot read is a failure, not a skip —
+     * a check that quietly ignores half a file is worse than no check, which is
+     * the same argument the kustomize renderer above makes.
+     */
+    if (doc.kind === "Ingress") {
+      const annotations = doc.metadata?.annotations ?? {};
+      const excludes = Object.entries(annotations).some(
+        ([key, value]) =>
+          /snippet/i.test(key) && /\/(metrics|health|ready)\b/.test(String(value))
+      );
+      const published = [];
+      for (const rule of doc.spec?.rules ?? []) {
+        for (const p of rule?.http?.paths ?? []) {
+          const path = String(p?.path ?? "/");
+          const type = String(p?.pathType ?? "Prefix");
+          // Prefix "/" matches everything including /metrics. A path that
+          // literally starts with /metrics matches it. An Exact /metrics path
+          // matches it. Anything else does not.
+          const covers =
+            type === "Prefix" ? path === "/" || path.startsWith("/metrics") : path === "/metrics";
+          if (covers) published.push(`${path} (${type})`);
+        }
+      }
+      if (published.length > 0 && !excludes) {
+        // Once per *file*, not once per rendered copy: a base resource is reached
+        // through every overlay that builds on it, so the first version of this
+        // check printed the same failure four times for one bad manifest. The
+        // count is real — four rendered copies really are affected — but a
+        // repeated identical line reads as a stuck gate and gets skimmed. The
+        // verdict is printed once, from a set, after the loop.
+        ingressFailures.add(
+          `${where}: the Ingress serves ${published.join(", ")}, which matches ` +
+            `GET /metrics — an endpoint that is unauthenticated by decision and ` +
+            `exposes the whole route table. Either drop the Ingress from the base ` +
+            `(the Service is a ClusterIP, so it is internal without one) or add an ` +
+            `exclusion annotation, as k8s/overlays/ingress/ingress.yaml does.`
+        );
+      }
+      if (published.length > 0 && excludes) {
+        notes.push(
+          `${where}: /metrics is served but excluded by annotation — verify after deploying ` +
+            `(curl -o /dev/null -w '%{http_code}' https://<host>/metrics, want 404), and note ` +
+            `that snippet annotations are dropped unless the cluster sets ` +
+            `allow-snippet-annotations: "true" on the ingress-nginx ConfigMap`
+        );
+      }
+    }
   }
 
   notes.push(`${target}: ${resources.length} resources`);
 }
+
+/* --- Ingress verdicts, merged once the render loop has seen every copy --- */
+for (const message of ingressFailures) problems.push(message);
 
 /* --- every environment variable the server insists on must be reachable --- */
 const configSource = await readFile(path.join(root, "src/config.ts"), "utf8");

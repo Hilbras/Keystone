@@ -1,12 +1,11 @@
-apiVersion: kustomize.config.k8s.io/v1beta1
+apiVersion: kustomize.config.k8s.io/v1
 kind: Kustomization
 
 namespace: keystone-dev
+namePrefix: dev-
 
 resources:
   - ../../base
-
-namePrefix: dev-
 
 configMapGenerator:
   - name: keystone-config
@@ -21,17 +20,14 @@ replicas:
   - name: keystone
     count: 1
 
-patches:
-  - target:
-      kind: Ingress
-      name: keystone
-    patch: |-
-      - op: replace
-        path: /spec/rules/0/host
-        value: keystone-dev.example.com
-      - op: replace
-        path: /spec/tls/0/hosts/0
-        value: keystone-dev.example.com
-      - op: replace
-        path: /spec/tls/0/secretName
-        value: keystone-dev-tls
+# **The Ingress patch that used to be here is gone, and its absence is the point.**
+# This overlay used to patch the host and TLS secret of a base `ingress.yaml`. The
+# base no longer ships one: it is ClusterIP-only, and an Ingress at `path: /`
+# matches the unauthenticated /metrics endpoint like any other route, so putting
+# one back in the base would publish it to whatever host the Ingress names. See
+# docs/security/monitoring.md. That also leaves `patches:` with nothing to hold,
+# so the key is gone entirely rather than left as an empty list.
+#
+# A dev overlay that needs a public hostname adds `../ingress`, which carries the
+# host, the TLS secret and the /metrics exclusion together. Point it at this
+# overlay's namespace and prefix to do that.

@@ -22,19 +22,15 @@ replicas:
     count: 3
 
 patches:
-  - target:
-      kind: Ingress
-      name: keystone
-    patch: |-
-      - op: replace
-        path: /spec/rules/0/host
-        value: keystone.example.com
-      - op: replace
-        path: /spec/tls/0/hosts/0
-        value: keystone.example.com
-      - op: replace
-        path: /spec/tls/0/secretName
-        value: keystone-prod-tls
+  # **The Ingress patch that used to be here is gone**, and its absence is the
+  # point. It rewrote the host and TLS secret of a base `ingress.yaml`, which is
+  # no longer in the base: the base is ClusterIP-only, and adding an Ingress back
+  # to it would publish the unauthenticated /metrics endpoint to whatever host
+  # the Ingress names (see docs/security/monitoring.md).
+  #
+  # For a public deployment use `kubectl apply -k overlays/ingress`, which builds
+  # on this overlay and carries the host, the TLS secret and the /metrics
+  # exclusion together. The HPA patch below is all that remains.
   - target:
       kind: HorizontalPodAutoscaler
       name: keystone
