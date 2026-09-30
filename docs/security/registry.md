@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**66 findings.**
+**67 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 34 |
 | medium | 20 |
-| low | 6 |
+| low | 7 |
 
 ## Scope
 
@@ -942,5 +942,22 @@ scripts/review-api-surface.mjs — the category is now worded as what the tool k
 The rewording itself is pinned, because wording is the entire fix and no other check in the file reads it — reverting it would have passed every gate. `reviewApiSurface.test.ts` asserts the report never says "no authorization guard", that the category keeps the form naming its own limit, that the two populations are reported separately, and that the pointer names a test that exists. Verified by reverting the wording: 1 of 11 fails. Restored: 11 of 11.
 
 **Test.** `src/tests/security/authorization/tenantIsolation.test.ts`
+
+**Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-069 — The setup completion marker was written by name, and the rule that catches that was scoped to the wrong directory
+
+*Fixed in v3.5.9. Component: `setup`.*
+
+**Issue.** `src/routes/setup.ts` wrote the setup completion marker with `fs.writeFile(SETUP_MARKER_PATH, …)`, where the path is resolved from `__dirname`. `writeFile` takes a name and follows a symlink planted at it — in the steady state, with no race and no timing required.
+The contents are a timestamp and are not sensitive. What is withdrawn is the primitive: "write to any path this process can write, following whatever is there".
+**It survived SEC-065 because the rule that catches exactly this was scoped to the wrong place.** `keystone-config-writes-by-descriptor` covered `src/services/setup/**` — the directory that happened to hold the code being fixed. This call sat one file over, in `src/routes/`, and so outside a rule that was really about the defect. A rule scoped to the folder that held the last fix stops being about the defect and starts being about the folder.
+
+**Fix.** `src/services/setup/setupMarker.ts` (new) — `writeSetupMarker(filePath, content)`, which opens once with `O_NOFOLLOW` and writes through that one descriptor, the primitive `configWriter` already uses.
+**The write was extracted from the route rather than fixed in place, and that is the load-bearing part.** It was three inline lines behind a route that needs a database, a Redis and a bootstrapped owner, so no test could reach it. A defect whose fix can only be taken on trust is not so much fixed as asserted.
+`.semgrep.yml` — the rule's scope now includes `src/routes/**`. A scope naming the places known to be wrong is a scope that grows by remembering, so the widened scope is recorded as a starting point to widen from rather than a boundary that is correct. The widened scope was checked for other `writeFile`/`copyFile`/`appendFile` on a computed path and holds none.
+`writeSetupMarker` closes its handle in a `finally`. The first version did not, every test still passed, and the only evidence was a `DeprecationWarning: Closing a FileHandle object on garbage collection` printed to stderr between two green tests — a fix that works and is still wrong. A test now reads the open descriptor count from `/proc/self/fd` across 25 writes and across 25 refusals.
+
+**Test.** `src/tests/security/setup/setupMarkerSymlink.test.ts`
 
 **Documentation.** [docs/security/registry.md](registry.md)

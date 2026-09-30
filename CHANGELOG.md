@@ -5,6 +5,88 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.9] - 2026-09-30
+
+*The runtime moves to Node 26, and a rule about file writes turns out to have been about a folder.*
+
+### Node 22 → 26
+
+`.nvmrc` holds the version, all nine `setup-node` steps across six workflows read it, and
+`scripts/verify-node-version.mjs` fails if the Dockerfile, `engines.node` and `.nvmrc`
+disagree. So the runtime version has one home and this is a change to that one file plus
+the Dockerfile the gate then holds together.
+
+| | before | after |
+|---|---|---|
+| `.nvmrc` | 22 | **26** |
+| `Dockerfile` | `node:22-slim` ×2 | `node:26-slim` ×2 |
+| `engines.node` | `>=22` | **`>=26`** |
+| `@types/node` | `^20.14.0` | `^26.6.3` |
+
+**`engines.node` is narrowed to `>=26`, and that is a deliberate claim rather than a
+side effect.** The only versions this project has run the suite against are 24 — which
+3.5.8 passed 717/717 on — and 26, which this release passes 717/717 on. Node 22 was
+tried: no failures, but four tests cancelled and about thirty never reached, which is not
+a pass and not a basis for claiming support. Claiming `>=22` while compiling against
+`@types/node@26` is the exact mismatch that made Dependabot #39 worth closing by hand —
+`typecheck` would accept code that fails on the runtime we claim to support.
+
+`engine-strict` is not set, so this is a warning at install time rather than a refusal.
+The server ships in a container pinned to Node 26, so the claim and the artifact agree.
+
+Verified by breaking each pin in turn — Dockerfile back to 22, `engines.node` to `>=27`,
+and a hardcoded `node-version: 22` back into `ci.yml` — all three caught with the right
+message.
+
+#### Three type errors, and one of them was not a cast
+
+`@types/node` 26 adds `"decapsulateBits"` and `"encapsulateBits"` to `webcrypto.KeyUsage`
+for ML-KEM. The DOM `KeyUsage` — which `lib.dom.d.ts` supplies, pulled in transitively
+rather than requested by `tsconfig` — does not have them, so TypeScript reports Node's
+own `CryptoKeyPair` as unassignable to the ambient `CryptoKeyPair` that `@peculiar/x509`
+declares. The unions differ *only* by those two members, and the test keys use
+`["sign", "verify"]`, present in both, so the cast cannot change what is passed. Both
+casts were reverted to confirm they are load-bearing rather than convenient.
+
+The third error was a genuine tightening: `assert.equal`'s message is now `string`, so a
+`string | undefined` body needed `?? "no /health response"` rather than `?? ""` — a
+missing body is exactly the case where the message has to say something.
+
+### SEC-069, low — the setup marker, and a rule scoped to the wrong directory
+
+`src/routes/setup.ts` wrote the setup completion marker with
+`fs.writeFile(SETUP_MARKER_PATH, …)`. `writeFile` takes a name and follows a symlink
+planted at it, in the steady state, with no race involved.
+
+It survived SEC-065 because `keystone-config-writes-by-descriptor` was scoped to
+`src/services/setup/**` — **the directory that happened to hold the code being fixed.**
+This call sat one file over, in `src/routes/`. A rule scoped to the folder that held the
+last fix stops being about the defect and starts being about the folder, so the scope now
+includes `src/routes/**`, recorded as a starting point to widen from rather than a
+boundary that is correct.
+
+**The write was extracted into `setupMarker.ts` rather than fixed in place, and that is
+the part that matters.** It was three inline lines behind a route needing a database, a
+Redis and a bootstrapped owner, so no test could reach it.
+
+#### The first version of the fix worked and was still wrong
+
+`writeSetupMarker` opened a descriptor and never closed it. All four tests passed. The
+only evidence was one line on stderr between two green tests:
+
+```
+DeprecationWarning: Closing a FileHandle object on garbage collection is deprecated.
+```
+
+The marker was written correctly and the process kept a file open for every setup it
+completed. That is the shape of a fix that passes — so the handle now closes in a
+`finally`, and a test reads the open descriptor count from `/proc/self/fd` across 25
+writes and across 25 refusals. Reverting the close makes it report
+*25 marker writes grew the open descriptor count by 25*.
+
+Also fixed while in the file: the test cleanup deleted memberships by a hardcoded nil user
+id — a row that cannot exist, so a line that looked like cleanup and removed nothing while
+leaning on an unverified cascade. Memberships are now deleted by organization.
 ## [3.5.8] - 2026-09-30
 
 *Two findings, one shape: a control that reported something other than what it measured.*

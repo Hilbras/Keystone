@@ -219,7 +219,10 @@ describe("liveness and readiness, with PostgreSQL unreachable", () => {
     // PostgreSQL, a transient database blip fails the probe three times and
     // Kubernetes kills a healthy process — turning a degraded database into a
     // cluster with no Keystone at all.
-    assert.equal(report.health?.statusCode, 200, report.health?.body);
+    // `report.health?.body` is `string | undefined` and the assertion message is typed
+    // `string`. `?? "no /health response"` rather than `?? ""`, because a missing body is
+    // exactly the case where the message has to say something.
+    assert.equal(report.health?.statusCode, 200, report.health?.body ?? "no /health response");
     assert.deepEqual(JSON.parse(report.health!.body), { status: "ok" });
   });
 

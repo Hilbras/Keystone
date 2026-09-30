@@ -908,6 +908,18 @@
       "test": "src/tests/security/authorization/tenantIsolation.test.ts",
       "documentation": "docs/security/registry.md",
       "covers": []
+    },
+    {
+      "id": "SEC-069",
+      "title": "The setup completion marker was written by name, and the rule that catches that was scoped to the wrong directory",
+      "severity": "low",
+      "component": "setup",
+      "release": "3.5.9",
+      "issue": "`src/routes/setup.ts` wrote the setup completion marker with `fs.writeFile(SETUP_MARKER_PATH, \u2026)`, where the path is resolved from `__dirname`. `writeFile` takes a name and follows a symlink planted at it \u2014 in the steady state, with no race and no timing required.\nThe contents are a timestamp and are not sensitive. What is withdrawn is the primitive: \"write to any path this process can write, following whatever is there\".\n**It survived SEC-065 because the rule that catches exactly this was scoped to the wrong place.** `keystone-config-writes-by-descriptor` covered `src/services/setup/**` \u2014 the directory that happened to hold the code being fixed. This call sat one file over, in `src/routes/`, and so outside a rule that was really about the defect. A rule scoped to the folder that held the last fix stops being about the defect and starts being about the folder.",
+      "fix": "`src/services/setup/setupMarker.ts` (new) \u2014 `writeSetupMarker(filePath, content)`, which opens once with `O_NOFOLLOW` and writes through that one descriptor, the primitive `configWriter` already uses.\n**The write was extracted from the route rather than fixed in place, and that is the load-bearing part.** It was three inline lines behind a route that needs a database, a Redis and a bootstrapped owner, so no test could reach it. A defect whose fix can only be taken on trust is not so much fixed as asserted.\n`.semgrep.yml` \u2014 the rule's scope now includes `src/routes/**`. A scope naming the places known to be wrong is a scope that grows by remembering, so the widened scope is recorded as a starting point to widen from rather than a boundary that is correct. The widened scope was checked for other `writeFile`/`copyFile`/`appendFile` on a computed path and holds none.\n`writeSetupMarker` closes its handle in a `finally`. The first version did not, every test still passed, and the only evidence was a `DeprecationWarning: Closing a FileHandle object on garbage collection` printed to stderr between two green tests \u2014 a fix that works and is still wrong. A test now reads the open descriptor count from `/proc/self/fd` across 25 writes and across 25 refusals.",
+      "test": "src/tests/security/setup/setupMarkerSymlink.test.ts",
+      "documentation": "docs/security/registry.md",
+      "covers": []
     }
   ],
   "withdrawn": [
