@@ -4,12 +4,12 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**65 findings.**
+**66 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
-| high | 33 |
+| high | 34 |
 | medium | 20 |
 | low | 6 |
 
@@ -578,6 +578,25 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 **Documentation.** [docs/security/monitoring.md](monitoring.md)
 
+### SEC-062 — The enterprise OIDC redirect_uri named a path the server does not serve, so the flow could not complete
+
+*Fixed in v3.5.1. Component: `sso`.*
+
+**Issue.** `oidcEnterpriseRoutes` is mounted at `/sso` in src/index.ts and its routes also declared `/sso/…`, so the served paths were `/sso/sso/oidc/:connectionId` and `/sso/sso/oidc/:connectionId/callback`. The `redirect_uri` the start route handed to the identity provider — and the identical one the token exchange re-sent, as RFC 6749 §4.1.3 requires — was built from a hardcoded `${publicUrl()}/sso/oidc/${connectionId}/callback`.
+So Keystone asked the IdP to call back a path it did not serve. A standards-compliant IdP redirects to exactly the `redirect_uri` it was given, so the browser landed on a Fastify route-not-found and enterprise OIDC SSO could not complete. Whatever an operator had registered in their IdP — the doubled path because `docs/API.md` documented it, or the clean path because that is what `redirect_uri` carried — one leg or the other failed.
+**This was recorded as low and 'a doubled path', and that was wrong.** It was an availability defect in a shipped feature, and the reason nobody noticed is that every existing test drives a *piece* — userinfo endpoint resolution, nonce forwarding, membership scoping — and none drives the flow. The parts all work; the composition does not.
+
+**Fix.** src/routes/oidcEnterprise.ts — the routes are now declared relative to their mount (`/oidc/…`, served at `/sso/oidc/…`), which is the path the `redirect_uri` already named, and the legacy doubled paths are kept as aliases so a configured IdP does not break.
+**The two registrations share one `callbackOptions`, and that is the part that matters.** A backwards-compatible alias with its own `keyPrefix` is a *second* allowance for the same endpoint: an attacker could alternate between the two paths to double the authorization-code guesses. Every assertion that checks each path is limited still passes with two prefixes — only an assertion that they are limited *together* catches it, which is why the test spends the whole budget on one path and requires the other to already be closed.
+scripts/review-api-surface.mjs — the tool was then made to see the shared limiter. `findRoutes` captured an options object only when the argument after the path began with `{`, so a bare name yielded an empty string and the reported rate-limited count fell from 28 to 27 with nothing failing. A named options object is now resolved before the guards are read; four reasons were added to PUBLIC_BY_DESIGN, one per reachable path.
+
+**Two CodeQL `js/missing-rate-limiting` alerts came back from this change and were dismissed as false positives.** The rule looks for a `rateLimit(` call in a route's own arguments; the two registrations share one `callbackOptions`, so it is not textually in either. Both routes are limited.
+Restructuring to inline the limiter twice was rejected on purpose: two copies of a security-critical literal are how they drift into two `keyPrefix` values, which is a second allowance for one endpoint -- the exact defect the refactor exists to prevent, and the one a test now pins. Satisfying the scanner would trade a real silent regression for a cosmetic result. The blind spot, and the same one that had silently dropped this repository's own tool from 28 to 27 rate-limited routes with no gate failing, are written up in docs/security/codeql-triage.md.
+
+**Test.** `src/tests/security/oidc/enterpriseCallbackIsServed.test.ts`
+
+**Documentation.** [docs/API.md](../API.md)
+
 ## Medium
 
 ### SEC-013 — A used credential was not distinguishable from an unknown one
@@ -882,18 +901,6 @@ THE CLIENT-AUTHENTICATION HALF IS RECORDED, NOT FIXED. Adding required client cr
 
 **Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
 
-### SEC-062 — The enterprise SSO endpoints are served at a doubled /sso/sso/ path
-
-*Fixed in v3.5.1. Component: `sso`.*
-
-**Issue.** `oidcEnterpriseRoutes` is mounted at `/sso` in src/index.ts and its routes also declare `/sso/…`, so the public path is `/sso/sso/oidc/:connectionId`. `docs/API.md` documents it, which is how a mistake acquires the appearance of a decision: the documentation is not wrong, it is a faithful record of a wart. Found while writing the rate-limit test, where the served path had to be discovered rather than read off the route file. The same file's other routes — `/sso/saml/...` — are correct, because samlRoutes declares paths that do not repeat the prefix.
-
-**Fix.** src/routes/oidcEnterprise.ts — NOT FIXED, deliberately. The clean path `/sso/oidc/...` would be the right thing to serve, but this is a public endpoint on a released product: a customer who integrated enterprise SSO has `/sso/sso/oidc/...` in an IdP configuration this repository cannot see, and removing it is a breaking change requiring a deprecation window and a migration note. Adding the clean path as an alias is safe but needs care — both registrations must share one rate-limit prefix, or the alias silently doubles the budget and an attacker spends whichever they have not. Recorded so it is a decision with a name rather than a wart nobody mentions.
-
-**Test.** `src/tests/security/rateLimit/unauthenticatedSurface.test.ts`
-
-**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
-
 ### SEC-063 — The TOTP secret helper carries a second legacy unauthenticated read path
 
 *Fixed in v3.5.1. Component: `secrets`.*
@@ -919,3 +926,21 @@ THE CLIENT-AUTHENTICATION HALF IS RECORDED, NOT FIXED. Adding required client cr
 **Test.** `src/tests/security/setup/configWriterSymlink.test.ts`
 
 **Documentation.** [docs/security/codeql-triage.md](codeql-triage.md)
+
+### SEC-068 — Forty-three routes were reported as unauthorized when the tool could not see the guard
+
+*Fixed in v3.5.8. Component: `tooling`.*
+
+**Issue.** `review-api-surface.mjs` reported 43 routes as "authenticated, no authorization guard", on every run, which reads as 43 unresolved problems. It is not 43 problems, and the wording was making a statement about the TOOL look like a statement about the routes.
+The repository authorizes in three places and the tool can see one: a named preHandler (app.requirePermission, requireOrganizationRole, requirePlatformRole, requireOwner); the handler body (assertSetupToken, a `role === "owner"` branch); and the APPLICATION SERVICE — `sdk.organization.getOrganization(userId, orgId)` calls `requireOrganizationPermission(userId, orgId, ["owner","admin","member"], "organization", "read")` and audits the denial. For a route in the second or third place, "no authorization guard" means this tool cannot see the guard.
+A static check cannot resolve it, because the code performing the authorization is the code under test and re-reading it is what a static check already did. So the question was settled empirically instead.
+
+**Fix.** src/tests/security/authorization/tenantIsolation.test.ts (new) — the instrument that can answer it. Two organizations, two owners, plus a user belonging to neither, and every organization-scoped collection route is read by the wrong tenant: once as the owner of a *different* organization, once as a non-member. 12 routes, derived from `review-api-surface.mjs --json` rather than tabulated, so a new organization-scoped collection route cannot be added without appearing here. Every route answers 403 or 404 to both.
+A fourth test asserts the owner of an organization can still read it, because otherwise the suite passes just as well if every route 404s for everyone — which is a server that is not serving, not one that is protecting.
+Verified by removing the permission check from `getOrganization`: 2 of 4 fail, naming the route, the 200, and who asked.
+scripts/review-api-surface.mjs — the category is now worded as what the tool knows ("no NAMED authorization guard found") and the summary reports `authorized elsewhere: N` separately from `with a NAMED guard: N`, with a pointer to the test that covers them. The count did not change; what it claims to mean did.
+The rewording itself is pinned, because wording is the entire fix and no other check in the file reads it — reverting it would have passed every gate. `reviewApiSurface.test.ts` asserts the report never says "no authorization guard", that the category keeps the form naming its own limit, that the two populations are reported separately, and that the pointer names a test that exists. Verified by reverting the wording: 1 of 11 fails. Restored: 11 of 11.
+
+**Test.** `src/tests/security/authorization/tenantIsolation.test.ts`
+
+**Documentation.** [docs/security/registry.md](registry.md)

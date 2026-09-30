@@ -38,7 +38,11 @@ function clearStateCookie(reply: FastifyReply): void {
 }
 
 export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
-  app.get("/sso/oidc/:connectionId", async (request: FastifyRequest, reply: FastifyReply) => {
+  /**
+   * Both routes below are registered twice, at a canonical path and at the legacy
+   * doubled one. Read the comment above `startHandler` before changing either.
+   */
+  const startHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
     const orgId = (request.query as { orgId?: string }).orgId;
     if (!orgId) return reply.status(400).send({ error: "orgId is required" });
@@ -51,7 +55,9 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
     const state = crypto.randomBytes(24).toString("base64url");
     setStateCookie(reply, `${state}:${connectionId}:${orgId}`);
 
-    const redirectUri = `${publicUrl()}/sso/oidc/${connectionId}/callback?orgId=${encodeURIComponent(orgId)}`;
+    const redirectUri = `${publicUrl()}/sso/oidc/${connectionId}/callback?orgId=${encodeURIComponent(
+      orgId
+    )}`;
     const url = new URL(connection.authorizationEndpoint);
     url.searchParams.set("client_id", connection.clientId);
     url.searchParams.set("response_type", "code");
@@ -60,9 +66,27 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
     url.searchParams.set("state", state);
 
     return reply.redirect(url.toString());
-  });
+  };
 
-  app.get("/sso/oidc/:connectionId/callback", {
+  app.get("/oidc/:connectionId", startHandler);
+  // The doubled path a pre-3.5.9 deployment served. Kept because it is what
+  // docs/API.md documented and what an operator configured in their IdP, and
+  // removing it would break every existing enterprise connection at the moment
+  // the redirect_uri starts resolving. See `callbackOptions` for why both
+  // registrations must share one limiter.
+  app.get("/sso/oidc/:connectionId", startHandler);
+
+  /**
+   * One limiter, two paths — deliberately.
+   *
+   * The alias exists so a configured IdP keeps working. If the legacy path had its
+   * own `keyPrefix` it would be a *second* allowance for the same endpoint, and
+   * an attacker could simply alternate between the two paths to double the number
+   * of authorization-code guesses available. Every assertion that would catch this
+   * is in `enterpriseCallbackIsServed.test.ts`, which spends the whole budget on
+   * the canonical path and then requires the legacy path to already be closed.
+   */
+  const callbackOptions = {
     preHandler: [
       rateLimit({
         keyPrefix: "oidc-enterprise-callback",
@@ -78,7 +102,9 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
         emergencyLocalLimit: true,
       }),
     ],
-  }, async (request: FastifyRequest, reply: FastifyReply) => {
+  };
+
+  const callbackHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     const { connectionId } = request.params as { connectionId: string };
     const query = request.query as { code?: string; state?: string; orgId?: string; error?: string; error_description?: string };
 
@@ -227,5 +253,8 @@ export default async function oidcEnterpriseRoutes(app: FastifyInstance) {
       const { statusCode, body } = buildOAuthErrorResponse(err);
       return reply.status(statusCode).send(body);
     }
-  });
+  };
+
+  app.get("/oidc/:connectionId/callback", callbackOptions, callbackHandler);
+  app.get("/sso/oidc/:connectionId/callback", callbackOptions, callbackHandler);
 }

@@ -327,4 +327,84 @@ describe("the API surface review's coverage (SEC-064)", () => {
       assert.ok(!/UNPLACED/.test(out), "nothing may be unplaced");
     });
   });
+
+  it("does not report a route as unauthorized when it has not looked for the guard", () => {
+    // SEC-068. The category used to read "authenticated, no authorization guard", which
+    // on every run showed 43 unresolved problems. It was 43 routes whose guard this
+    // tool cannot see, because this repository authorizes in a named preHandler, in
+    // the handler body, and in the application service — and the tool reads one.
+    //
+    // The wording is the whole fix, and wording is exactly what no other check here
+    // reads, so it had no test: reverting it would have passed every gate in the file.
+    // This is that test. It pins the two separate populations, because collapsing them
+    // back into one number is what produced the misreading.
+    const text = (): Promise<string> =>
+      new Promise((resolve, reject) => {
+        execFile(
+          process.execPath,
+          [SCRIPT],
+          { cwd: root, maxBuffer: 32 * 1024 * 1024 },
+          (error, stdout) => (error ? reject(error) : resolve(stdout))
+        );
+      });
+
+    return text().then((out) => {
+      assert.ok(
+        !/no authorization guard/.test(out),
+        "the report must not claim a route is unauthorized. It has not looked for the " +
+          "guard, and saying otherwise is a statement about this tool presented as a " +
+          "statement about the route. Output:\n" +
+          out.slice(0, 600)
+      );
+      assert.ok(
+        /no NAMED authorization guard found/.test(out),
+        "and the category must be present in the form that names its own limit"
+      );
+      assert.ok(
+        /with a NAMED guard:\s+\d+/.test(out) && /authorized elsewhere:\s+\d+/.test(out),
+        "the summary must report the two populations separately, or a reader cannot " +
+          "tell which routes were checked against a guard and which were not:\n" +
+          out.slice(0, 600)
+      );
+      // The pointer is what makes the category honest: it names the test that covers
+      // the population this tool cannot check. A dangling pointer is worse than none.
+      assert.ok(
+        /authorized elsewhere:.*tenantIsolation\.test\.ts/s.test(out),
+        "the count the tool cannot verify must name the test that does verify it"
+      );
+      assert.ok(
+        existsSync(path.join(root, "src/tests/security/authorization/tenantIsolation.test.ts")),
+        "and that test must exist, or the pointer is a claim about a file that is not there"
+      );
+    });
+  });
+
+  it("sees a limiter that a route shares through a named options object", () => {
+    // `oidcEnterprise.ts` registers its callback at two paths with one `callbackOptions`,
+    // because two `keyPrefix` values on one endpoint is two rate-limit allowances. That is
+    // the correct shape, and it made the limiter invisible: `findRoutes` only captured an
+    // options object when the argument after the path began with `{`, so a bare name
+    // yielded an empty string and the reported count fell from 28 to 27 with nothing
+    // failing.
+    //
+    // A tool that stops reporting is the failure this file exists to prevent, so the count
+    // is pinned rather than the mechanism. Asserting "the mechanism works" would pass just
+    // as well against a tool that stopped counting the routes entirely.
+    const report = runSync(["--json"]);
+    const callbacks = report.routes.filter((r) => r.url.endsWith("/oidc/:connectionId/callback"));
+    assert.equal(
+      callbacks.length,
+      2,
+      `expected the callback at both the canonical and the legacy path, found ` +
+        `${callbacks.length}: ${callbacks.map((r) => r.url).join(", ")}`
+    );
+    for (const route of callbacks) {
+      assert.ok(
+        (route as unknown as { rateLimit: boolean }).rateLimit,
+        `${route.url} shares its options object with the other callback path, so the ` +
+          `limiter is not in its own declaration text. The tool must resolve the name — ` +
+          `otherwise a rate limit that is present is reported as absent.`
+      );
+    }
+  });
 });
