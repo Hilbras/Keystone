@@ -5,6 +5,99 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.13] - 2026-09-30
+
+*Sixteen gate steps report a verdict. Nothing had established that any of them could report the wrong one.*
+
+### SEC-074, low — the gates were never measured
+
+The `gates` job runs 16 mechanical checks. Each prints a verdict and exits with a
+code, and each has caught a real defect at some point. **Nothing in the repository
+had ever asked whether any of those verdicts could be wrong.**
+
+This is the project's own defect class — ~45 instances now, every one a control
+reporting success for something other than what it measures — turned on the
+apparatus that exists to hunt for it. SEC-073, last release, was a gate that
+could not see an entire Kubernetes resource kind, and it was found by reading the
+file rather than by any signal the tooling produced. That is the expected way to
+find these, and it is also the only way, which makes "we read it" the whole of
+the assurance.
+
+The gates are not broken. Probing twelve of them against the defects each is
+*named* for shows all twelve fail correctly. That is a real result. The defect is
+that it was unknowable without writing the probe — and the probe is one file that
+runs in 35 seconds.
+
+Low, and deliberately not overstated: no gate is passing on something it should
+catch today, and no vulnerability follows from the gap. What follows is that a
+gate could stop working — rewritten to read the wrong key, lose a branch, match a
+path that no longer exists — and the build would stay green.
+
+### The probe
+
+`scripts/probe-gates.mjs`, wired into `ci.yml` as a 17th gate step. For each of
+twelve named gates, a mutation that gate is documented to catch is applied to a
+**scratch copy** of the tree, and the gate must exit non-zero. No database, no
+Redis, no network, and nothing written to the working directory.
+
+The twelve mutations are defects this project has actually hit: the Dockerfile
+drifting from `.nvmrc`, a readinessProbe at `/health`, a container with no memory
+limit, the SEC-073 base Ingress, a missing changelog entry, the 3.5.11
+duplicate-heading defect, `engines.node` disagreeing with `.nvmrc`, a registry
+entry naming a test that does not exist, a withdrawn id with no reason,
+documentation naming an npm script that does not exist, an SDK package drifting
+from the server, an action pinned to a tag.
+
+In `ci.yml` rather than a document, because a probe nobody runs rots — and a
+rotting probe is the same failure at a third level, keeping its 12/12 green about
+gates that had moved on.
+
+### The probe caught its author within the hour
+
+The first version reported the readiness check as **NOT CAUGHT** — a false
+accusation against a gate that was working perfectly. The cause was mine: it
+mutated the string `/ready` in `deployment.yaml`, and the first occurrence is
+eight lines above the `path:` field, inside a comment reading "`/ready`, not
+`/health`". It rewrote a sentence, left the manifest byte-identical, and the gate
+correctly reported success.
+
+So the probe now snapshots every file it might touch and **refuses to report a
+result for a mutation that changed nothing** — reporting "the probe is lying,
+not the gate" instead. A control that cannot distinguish its own failure from the
+thing it audits is not a control.
+
+```text
+before the guard:   NOT CAUGHT  verify-k8s-manifests.mjs  readinessProbe → /health
+after:              caught     verify-k8s-manifests.mjs  readinessProbe → /health
+```
+
+### Verified by breaking the thing it audits
+
+Deleting the `readinessProbe !== "/ready"` branch from
+`verify-k8s-manifests.mjs` — the check that script exists for — drops the probe
+to 11/12 and names the right gate. Restored: 12/12.
+
+| | result |
+|---|---|
+| as written | **12/12 caught** |
+| readiness check deleted from the k8s gate | **11/12, names `verify-k8s-manifests.mjs`** |
+| restored | 12/12 |
+
+### What it does not cover
+
+Four of the sixteen steps, printed by the gate itself on every run rather than
+left as a silent omission: the two that read `dist/`
+(`generate-auth-dashboard.mjs`, `verify-doc-samples.mjs`), lint, and
+`review-api-surface.mjs --strict` — the last two already covered by
+`--deny-warnings` failing CI and by `reviewApiSurface.test.ts` respectively.
+
+"Twelve of sixteen" is the honest claim. The gate says so on every run.
+
+### Also
+
+- `oxlint --deny-warnings` caught a dead `const before` in the probe, left by an
+  earlier edit. The lint gate doing its job on the thing that audits the gates.
+
 ## [3.5.12] - 2026-09-30
 
 *The Ingress was in the base. A document said the shipped manifests kept /metrics internal, and a gate that could not see an Ingress agreed.*
