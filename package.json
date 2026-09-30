@@ -3,7 +3,7 @@
   "engines": {
     "node": ">=22"
   },
-  "version": "3.5.6",
+  "version": "3.5.7",
   "license": "MIT",
   "description": "Hilbras Keystone — standalone identity platform: authentication, MFA, authorization, enterprise SSO, SCIM, and token issuance.",
   "repository": {
