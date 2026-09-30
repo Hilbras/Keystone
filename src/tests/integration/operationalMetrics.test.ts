@@ -296,21 +296,42 @@ describe("the emergency fallback, with Redis unreachable", () => {
     metricsAfter?: string;
   };
 
-  before(async () => {
-    const out = path.join(scratch, `fallback-${RUN_ID}.json`);
-    await run(process.execPath, [OPERATIONAL_PROBE, out], {
-      env: {
-        ...process.env,
-        // Database healthy, Redis on a port nothing listens on.
-        PROBE_DATABASE_URL: process.env.DATABASE_URL!,
-        PROBE_REDIS_URL: "redis://127.0.0.1:59994",
-        KEYSTONE_LOG_LEVEL: "error",
-      },
-      timeout: 300_000,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    report = JSON.parse(await readFile(out, "utf8"));
-  });
+  before(
+    async () => {
+      const out = path.join(scratch, `fallback-${RUN_ID}.json`);
+      // A 300s budget for the child process, and — before 3.5.10 — only the harness's 60s
+      // for everything around it. **Measured idle cost of this hook: 37.8 seconds.** 1.6x
+      // headroom is not a margin, and the full suite runs this file with PostgreSQL, Redis
+      // and a dozen other suites already loaded, which is the condition under which it
+      // tipped over and reported:
+      //
+      //     the emergency fallback, with Redis unreachable (60009.01619ms)
+      //     'test timed out after 60000ms'
+      //
+      // followed by two siblings cancelled as "did not finish before its parent". Read
+      // plainly that says the emergency fallback is broken, when the fallback is fine and
+      // the clock ran out — a failure naming a defect that does not exist. That is the
+      // mirror image of a control reporting success for the thing it exists to catch, and
+      // the same mistake underneath: the harness is measuring elapsed time where the test
+      // is measuring behaviour.
+      //
+      // 180s is 5x the measured cost and stays inside the 300s the child process is already
+      // given, so the hook cannot outlive the work it waits for.
+      await run(process.execPath, [OPERATIONAL_PROBE, out], {
+        env: {
+          ...process.env,
+          // Database healthy, Redis on a port nothing listens on.
+          PROBE_DATABASE_URL: process.env.DATABASE_URL!,
+          PROBE_REDIS_URL: "redis://127.0.0.1:59994",
+          KEYSTONE_LOG_LEVEL: "error",
+        },
+        timeout: 300_000,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      report = JSON.parse(await readFile(out, "utf8"));
+    },
+    { timeout: 180_000 }
+  );
 
   it("boots, so what follows is the fallback and not a crash", () => {
     assert.equal(report.bootError, undefined, `boot failed: ${report.bootError}`);

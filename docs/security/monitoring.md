@@ -407,3 +407,49 @@ remembers to update it — so the test compares against `package.json` instead.
 The 11 include the hang cases, which fail by timing out at 30 seconds each. That
 is the correct shape for this defect: the assertion is "did it return on its own",
 and a command that never returns cannot be tested any other way.
+
+## `/metrics` is unauthenticated, and that is deliberate — with one obligation on you
+
+`GET /metrics` carries no authentication and is exempt from the global rate limiter. Both
+are decisions, and both are recorded:
+
+- **Exempt from rate limiting** because a scrape endpoint behind a limiter fails the way a
+  dashboard failing at 3am fails: the scraper receives 429s, stops, and the metrics are
+  gone exactly when something is wrong and they are the thing that would have said so.
+  Prometheus has no way to back off politely.
+- **Unauthenticated** because a scrape credential is a long-lived secret in every
+  Prometheus configuration in the world, and a metric endpoint that needs one is a metric
+  endpoint that gets deleted from the scrape config during an incident.
+
+What it exposes: route templates (`/v1/admin/organizations/:id`, not the id), request
+counts and duration histograms by method/route/status, error rates, failed-login counts,
+and process metrics. **It exposes no tenant data** — no email addresses, no organization
+names, no token material.
+
+`k8s/base/service.yaml` is a `ClusterIP`, so in the shipped manifests `/metrics` is
+reachable from inside the cluster and not from outside it.
+
+### If you put an Ingress in front of Keystone, exclude `/metrics`
+
+This is the part that is easy to get wrong by accident. The shipped Service is internal, so
+a deployment that never adds an Ingress is fine. A deployment that adds one inherits every
+path on the app's port, `/metrics` included, and will publish the route table and traffic
+shape to the internet unless the Ingress says otherwise.
+
+```yaml
+# the exclusion, not a whole resource
+nginx.ingress.kubernetes.io/server-snippet: |
+  location /metrics { deny all; return 404; }
+```
+
+Verify it after deploying, rather than trusting the annotation:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://your-host/metrics   # want 404, not 200
+```
+
+**Recorded 3.5.10.** The requirement was previously implied by `ClusterIP` and stated
+nowhere, which is the same shape as the tooling gap fixed in that release:
+`review-api-surface.mjs` had never seen this route, so no tool had ever asked why it was
+public. It is in `PUBLIC_BY_DESIGN` — including this obligation — because a decision that
+carries an obligation should say so where the obligation is easy to find.

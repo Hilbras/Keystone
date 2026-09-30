@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**67 findings.**
+**69 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 34 |
-| medium | 20 |
-| low | 7 |
+| medium | 21 |
+| low | 8 |
 
 ## Scope
 
@@ -863,6 +863,33 @@ THE CLIENT-AUTHENTICATION HALF IS RECORDED, NOT FIXED. Adding required client cr
 
 **Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
 
+### SEC-070 — Three routes the API review tool had never seen, because the walker was pointed at a directory
+
+*Fixed in v3.5.10. Component: `tooling`.*
+
+**Issue.** `review-api-surface.mjs` built its file list by walking `src/routes`. Three routes this server serves are declared outside that directory, so none of them was ever analysed:
+
+| route | declared in | since |
+|---|---|---|
+| `GET /.well-known/openid-configuration` | `src/index.ts` | always |
+| `GET /.well-known/jwks.json` | `src/index.ts` | always |
+| `GET /metrics` | `src/plugins/metrics.ts` | always |
+
+No authentication-guard check, no rate-limit check, no reason recorded for being public, and no contribution to the route total. The report said "178 routes" as though that were the surface. It was 181.
+**The tool's own prefix walk starts at `src/index.ts`** — every mount prefix in it is derived from a `register` call in that file — so two of the three were read constantly and never counted. `src/plugins/metrics.ts` was in `MOUNT` too, reached through `app.register(metricsPlugin)`, and appeared in no report.
+**This is SEC-064's failure one level out.** There, seven route files were unplaced and the tool reported a clean surface over a surface it had never looked at. Here the walker was pointed at a directory, and the effect is a number simply lower than reality — the easier version of the same mistake to miss, because an undercount reads as tidiness rather than omission.
+Severity is medium rather than high: all three routes are genuinely public by design, and nothing was exposed. The cost was that the tool's stated coverage of the authentication surface was overstated by three routes, and its total was wrong in the direction that looks clean.
+
+**Fix.** `scripts/review-api-surface.mjs` — the walker now covers `src/` rather than `src/routes/`, skips `src/tests`, and keeps only files that actually declare a route. A new route file anywhere under `src/` is therefore found without anyone adding it to a list, and **a hand-kept list is precisely what failed here three times over.** The count is 181 across 31 files.
+`EXCLUDED_FROM_REVIEW` names the one deliberate exclusion, `src/setup-server.ts`, with its reason: a standalone Fastify instance behind `npm run start:setup`, whose `/health` would otherwise collide with the main app's own. It is recorded rather than skipped in the walker, because a silent exclusion is the same failure one level down.
+**`--strict` failing on the newly-visible routes is the useful part**, and it is the measure of the gap: it demanded a recorded reason for each, which is the check that had never been applied to them. Three reasons were written, and the `/metrics` one is the longest because it is a decision carrying an operator obligation.
+Narrowing the walker has a consequence worth stating: `--strict`'s "unplaced route file" check now applies only to files that declare routes, because a route-less file *has* been checked — read, and found empty. Demanding a mount prefix for a helpers module is what `NO_ROUTE_FILES` used to exist to excuse, so the rule was wrong and the fixture that depended on it was not testing the check. The planted fixture now plants a real route.
+`--explain` now iterates `MOUNT` rather than the analysed files, because filtering to the latter dropped the barrels — and with them the one step a reader cannot infer, since `src/routes/admin.ts` is a single `export { default }` line. The derivation data still held the hop; no output showed it. A gate asserting the word appeared somewhere passed while the diagnostic a person reads no longer contained it.
+
+**Test.** `src/tests/security/reviewApiSurface.test.ts`
+
+**Documentation.** [docs/security/registry.md](registry.md)
+
 ## Low
 
 ### SEC-041 — A test fixture path was correct at only one directory depth
@@ -959,5 +986,25 @@ The contents are a timestamp and are not sensitive. What is withdrawn is the pri
 `writeSetupMarker` closes its handle in a `finally`. The first version did not, every test still passed, and the only evidence was a `DeprecationWarning: Closing a FileHandle object on garbage collection` printed to stderr between two green tests — a fix that works and is still wrong. A test now reads the open descriptor count from `/proc/self/fd` across 25 writes and across 25 refusals.
 
 **Test.** `src/tests/security/setup/setupMarkerSymlink.test.ts`
+
+**Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-071 — A test that boots an application against a dead port had 1.6x its measured cost as headroom, and failed intermittently
+
+*Fixed in v3.5.10. Component: `tooling`.*
+
+**Issue.** `operationalMetrics.test.ts` has a `before` hook that spawns a whole Keystone application against a Redis URL on a port nothing listens on, to observe the emergency fallback. The hook gave its child process 300 seconds. Everything around it had only the harness's global 60.
+**Measured idle cost of that hook: 37.8 seconds.** So the budget it actually ran under was 60s for 38s of work — 1.6x, which is not a margin. The full suite runs this file with PostgreSQL, Redis and a dozen other suites already loaded, and under that load it tipped over:
+    the emergency fallback, with Redis unreachable (60009.01619ms)
+    'test timed out after 60000ms'
+followed by two siblings cancelled with 'test did not finish before its parent'.
+**Read plainly, that names a defect that does not exist.** The emergency fallback is fine; the clock ran out. This is the mirror image of the failure this project keeps finding — a control reporting success for the thing it exists to catch — and the same mistake underneath: the harness is measuring elapsed time where the test is measuring behaviour. An intermittent failure here trains people to re-run the suite, which is the outcome a gate exists to prevent.
+
+**Fix.** `src/tests/integration/operationalMetrics.test.ts` — the hook now declares `{ timeout: 180_000 }`. Node's test runner lets a per-hook timeout override the global `--test-timeout`, so the budget the work is given is stated where the work is.
+180s is 5x the measured 37.8s and stays inside the 300s the child process is already given, so the hook cannot outlive the work it waits for.
+**Verified by running the file with `--test-timeout=20000`** — a global limit far below the hook's own cost. The hook ran 37.2 seconds and passed, which is only possible if the per-hook declaration wins. Before the change, any global limit under 38 seconds killed it and reported the fallback as broken.
+The 11 tests in this file pass at 60s as well; the fix is about headroom, not about a failure reproducible on an idle machine — which is precisely why it survived as long as it did.
+
+**Test.** `src/tests/integration/operationalMetrics.test.ts`
 
 **Documentation.** [docs/security/registry.md](registry.md)
