@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**69 findings.**
+**70 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 6 |
 | high | 34 |
 | medium | 21 |
-| low | 8 |
+| low | 9 |
 
 ## Scope
 
@@ -1006,5 +1006,22 @@ followed by two siblings cancelled with 'test did not finish before its parent'.
 The 11 tests in this file pass at 60s as well; the fix is about headroom, not about a failure reproducible on an idle machine — which is precisely why it survived as long as it did.
 
 **Test.** `src/tests/integration/operationalMetrics.test.ts`
+
+**Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-072 — Two releases shipped with two changelog sections each, and the gate that checks the changelog could not see it
+
+*Fixed in v3.5.11. Component: `tooling`.*
+
+**Issue.** `CHANGELOG.md` shipped **two `## [3.5.8]` sections and two `## [3.5.10]` sections** in 3.5.9 and 3.5.10. Both duplicates were mine and both came from the same mistake: writing a release entry, then writing a second, expanded entry for the same version and inserting it above the first instead of replacing it. 143 lines of superseded prose, and a reader of the published changelog cannot tell which of the two sections is the release notes.
+**`verify-changelog.mjs` passed both times**, reporting "38 headings, newest first" — true of the file it was reading, and useless as a statement about whether the changelog is well formed.
+It could not have caught them. The ordering rule is `compare(previous, current) < 0`, and `compare(a, a) === 0`, which is not `< 0`. So `[3.5.8]`, `[3.5.10]`, `[3.5.8]` is *in order* by the only rule the file had. A duplicate sitting directly above an older version is invisible to an ordering check, by construction.
+This is the failure this project keeps finding — a control reporting success for the thing it exists to catch — in the shape it is least expected in. A release-notes file is the one artefact nobody reads as code and everybody reads as documentation, so "two entries for 3.5.8" survives review and is nonsense to a reader.
+
+**Fix.** scripts/verify-changelog.mjs — now asserts each version appears **exactly once**, reporting both line numbers. The check is about count, not content: two sections for one version are wrong whether the second is a superset, a subset, or a contradiction, and judging which to keep would be a heuristic where a fact will do.
+**Verified by reintroducing a duplicate exactly as it shipped** — a second `[3.5.10]` directly above `[3.5.9]`, which is in order and therefore invisible to the old rule. The gate fails, exits 1, and names lines 8 and 168. Restored: exit 0.
+CHANGELOG.md — the superseded section is deleted for each version. Verified before deleting rather than after: every identifier, probe and finding reference in the older draft was located in the file and confirmed present in the newer one, because a line-level diff on re-wrapped prose reports 54 "missing" lines that are only re-wrapped sentences. A first pass at that comparison was itself misleading and would have been the wrong basis for deleting 143 lines of release notes.
+
+**Test.** `scripts/verify-changelog.mjs`
 
 **Documentation.** [docs/security/registry.md](registry.md)

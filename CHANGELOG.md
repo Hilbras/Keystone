@@ -5,6 +5,55 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.11] - 2026-09-30
+
+*Two releases shipped with two changelog sections each, and the gate that checks the changelog could not see it.*
+
+### SEC-072, low — a duplicate the ordering rule cannot see
+
+`CHANGELOG.md` shipped **two `## [3.5.8]` sections and two `## [3.5.10]` sections**, in 3.5.9
+and 3.5.10. 143 lines of superseded prose, and a reader of the published changelog cannot
+tell which of the two sections is the release notes.
+
+Both duplicates were mine and both came from the same mistake: writing a release entry, then
+writing a second, *expanded* entry for the same version and inserting it above the first
+instead of replacing it.
+
+**`verify-changelog.mjs` passed both times**, reporting `38 headings, newest first` — true of
+the file it was reading, and useless as a statement about whether the changelog is well formed.
+
+It could not have caught them. The ordering rule is `compare(previous, current) < 0`, and
+`compare(a, a) === 0`, which is not `< 0`. So:
+
+```
+## [3.5.8]   ## [3.5.10]   ## [3.5.8]
+```
+
+is **in order** by the only rule the file had. A duplicate sitting directly above an older
+version is invisible to an ordering check, by construction.
+
+This is the failure this project keeps finding — a control reporting success for the thing it
+exists to catch — in the shape it is least expected in. A release-notes file is the one
+artefact nobody reads as code and everybody reads as documentation, so "two entries for 3.5.8"
+survives review and is nonsense to a reader.
+
+### Fixed, and checked before deleting rather than after
+
+The gate now asserts each version appears **exactly once**, reporting both line numbers. The
+check is about *count*, not content: two sections for one version are wrong whether the second
+is a superset, a subset, or a contradiction, and judging which to keep would be a heuristic
+where a fact will do.
+
+**Verified by reintroducing a duplicate exactly as it shipped** — a second `[3.5.10]` directly
+above `[3.5.9]`, which is in order and therefore invisible to the old rule. The gate fails,
+exits 1, and names lines 8 and 168. Restored: exit 0.
+
+The superseded sections were deleted only after confirming, line by line in the file, that
+every identifier and finding reference in the older draft was present in the newer one. A
+line-level diff on re-wrapped prose reports 54 "missing" lines that are only re-wrapped
+sentences — **and a first pass at that comparison was itself misleading**, and would have been
+the wrong basis for deleting 143 lines of release notes. A second, sharper check (locating each
+string and asking which section it falls in) showed every one of them present in both drafts.
 ## [3.5.10] - 2026-09-30
 
 *The number was right about the wrong thing: 178 routes, when the server serves 181.*
@@ -165,84 +214,6 @@ reproducible on an idle machine, which is exactly why it survived as long as it 
   that need it. Two copies of a subtle invariant is one more thing to keep in step. It is
   deliberately loose rather than an exact match: an exact match fails *open*, and a changed
   body would stop being recognised as a miss, quietly turning dead routes into served ones.
-## [3.5.10] - 2026-09-30
-
-*The number was right about the wrong thing: 178 routes, when the server serves 180.*
-
-### SEC-070, medium — two routes the review tool had never seen
-
-`review-api-surface.mjs` built its file list by walking `src/routes`. The two routes
-`src/index.ts` declares itself were therefore analysed by nothing:
-
-```
-GET /.well-known/openid-configuration
-GET /.well-known/jwks.json
-```
-
-No authentication-guard check, no rate-limit check, no reason recorded for being
-public, and no contribution to the total.
-
-The tool's prefix walk *starts* at `src/index.ts` — every mount prefix in it is
-derived from a `register` call in that file — so the file was read constantly and
-never counted. The report said **178 routes** as though that were the surface. It
-was 180.
-
-**This is SEC-064's failure one level out.** There, seven route files were unplaced
-and the tool reported a clean surface over a surface it had never looked at. Here one
-file sits outside the walk, and the effect is a number simply lower than reality —
-the easier version of the same mistake to miss, because an undercount looks like
-tidiness rather than omission.
-
-Severity is medium, not high: both routes are genuinely public by design. RFC 8414
-requires discovery to be publicly reachable, and a JWKS document is the public half
-of the signing pair. Nothing was exposed. The cost was that the tool's coverage of
-the authentication surface was overstated and its total was wrong in the direction
-that looks clean.
-
-#### The measure of the gap
-
-`--strict` failed the instant `src/index.ts` joined the analysis, demanding a recorded
-reason for each of the two routes. That is the behaviour that was never applied to
-them before. Both reasons are now written out — and the fact that adding a file the
-tool could already read made the gate fail is the honest size of what was missing.
-
-### A general invariant, added because the hand check will not happen twice
-
-`GET /.well-known/openid-configuration` is **a list of URLs this server asserts
-exist.** Every conforming OIDC client fetches it and then calls what it names, and
-nothing in the build cross-checked the two lists.
-
-This is the SEC-062 shape generalised. That one was found by asking the same question
-of a hand-built string: the `redirect_uri` named `/sso/oidc/:connectionId/callback`
-while the route was served at `/sso/sso/oidc/:connectionId/callback`, and enterprise
-login could not complete. This one is mechanically checkable, so it is a test rather
-than a review someone has to remember to do.
-
-Each advertised path is **requested**, and the assertion is only that the request is
-not a router miss — a handler may answer 400 or 401, because a route existing and
-refusing is the entire point. Asserting against a hand-kept list of paths would test
-the list rather than the server, and would pass against a document advertising a route
-that had since been renamed.
-
-**All five endpoints are served today** (`userinfo_endpoint` is GET, per RFC 7662), so
-this is a verified absence of a defect rather than a fix. It is recorded so nobody has
-to rediscover it, and so a rename cannot reintroduce it silently.
-
-A guard in the same test refuses any absolute-URL field the list does not check, so
-the checked set cannot be quietly narrowed. `issuer` is excluded **by name, with its
-reason** — it is an identifier, not something a client calls, and it is covered by a
-stronger claim elsewhere: that every endpoint in the document is derived from it. The
-first version excluded it by omission, which meant a new field would have gone
-unreviewed; the guard caught exactly that.
-
-### Also
-
-- The router-miss discriminator — the thing that tells a handler's 404 from Fastify's —
-  is now `src/tests/helpers/routerMiss.ts`, shared by both suites that need it. Two
-  copies of a subtle invariant is one more thing to keep in step, which is the failure
-  this release is largely about. It is deliberately loose (`"Not Found"` in the body)
-  rather than an exact match: an exact match would fail *open*, and a changed body
-  would stop being recognised as a miss, quietly turning dead routes into served ones.
 ## [3.5.9] - 2026-09-30
 
 *The runtime moves to Node 26, and a rule about file writes turns out to have been about a folder.*
@@ -425,71 +396,6 @@ a test, because no other check reads wording and a revert would have passed ever
   role check would break a pricing page for no security gain. Recorded so nobody later
   "fixes" it.
 - `docs/API.md` names the canonical OIDC callback and marks the doubled paths as aliases.
-## [3.5.8] - 2026-09-30
-
-*Forty-three routes the tool said were unauthorized, and the tool was the thing at fault.*
-
-### SEC-068, low — a count that claimed more than it knew
-
-`review-api-surface.mjs` reported **43 routes** as "authenticated, no authorization
-guard", on every run. That reads as 43 unresolved problems. It is not 43 problems, and
-the wording was making a statement about the tool look like a statement about the
-routes.
-
-The repository authorizes in three places and the tool can see one:
-
-| where | example | visible to the tool |
-|---|---|---|
-| a named preHandler | `requireOrganizationRole(["owner","admin"], …)` | yes |
-| the handler body | `if (!assertSetupToken(request, reply)) return;` | now yes (3.5.6) |
-| **the application service** | `sdk.organization.getOrganization(userId, orgId)` → `requireOrganizationPermission(…)`, auditing the denial | **no** |
-
-For a route in the third place, "no authorization guard" means *this tool cannot see
-the guard*. A static check cannot resolve it — the code performing the authorization is
-the code under test, and re-reading it is what a static check already did.
-
-### Settled by trying it
-
-The instrument that answers "can a user from another tenant read this?" is one that
-tries it. `tenantIsolation.test.ts` builds two organizations with two owners plus a
-user belonging to neither, and reads every organization-scoped collection route as the
-wrong tenant:
-
-- **12 routes**, derived from `review-api-surface.mjs --json` rather than tabulated, so
-  a new organization-scoped collection route cannot be added without appearing here
-- every route answers **403 or 404** to the other tenant's owner, and to the non-member
-- a fourth test asserts the owner **can** still read their own organization, because
-  otherwise the suite passes just as well if every route 404s for everyone — which is a
-  server that is not serving, not one that is protecting
-
-Verified by removing the permission check from `getOrganization`: 2 of 4 fail, naming
-the route, the `200`, and who asked. Restored: 4 of 4.
-
-**All 12 are correctly guarded.** The 43 figure was never a count of defects.
-
-### The report now says what it knows
-
-The category is worded as `no NAMED authorization guard found`, and the summary reports
-the two populations separately:
-
-```
-with a NAMED guard:     104
-authorized elsewhere:    43 (handler body or application service — unverifiable by
-                          reading, tested by tenantIsolation.test.ts)
-```
-
-The count did not change. What it claims to mean did.
-
-### One route that really had no guard, and why that is fine
-
-`GET /v1/admin/billing/plans` carries only `app.authenticate` while its sibling
-`GET /organizations/:id/billing` requires `requireOrganizationRole(["owner","admin"],
-{resource: "billing", action: "read"})`. The catalog is a **hardcoded literal array** in
-`src/services/billing.ts` — no database, no tenant data — so it is a public price list
-that happens to live under `/v1/admin`.
-
-Left as it is, deliberately. Adding a role check would break a pricing page for no
-security gain, and the record is here so nobody later "fixes" it by adding one.
 ## [3.5.7] - 2026-09-30
 
 *Two alerts in the code 3.5.6 added, both found by the scanner in the same release.*

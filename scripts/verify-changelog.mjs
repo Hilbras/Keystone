@@ -82,6 +82,44 @@ for (let i = 1; i < headings.length; i++) {
   }
 }
 
+/**
+ * Each version appears exactly once.
+ *
+ * **Added 3.5.11, after this file passed a changelog that had two of them.**
+ *
+ * The ordering check above cannot see a duplicate. `compare(a, a) === 0`, which is not
+ * `< 0`, so `[3.5.8]` followed by `[3.5.10]` and then `[3.5.8]` again is in order by that
+ * rule — and it was, twice, in releases this project had already published.
+ *
+ * Both duplicates were mine, both from the same mistake: writing a release entry, then
+ * writing a *second, expanded* entry for the same version and inserting it above the first
+ * instead of replacing it. The gate reported "38 headings, newest first" both times, which
+ * is true of the file it was looking at and useless as a statement about whether the
+ * changelog is well formed.
+ *
+ * That is the failure this file exists to prevent, in the shape it is least expected in: a
+ * release-notes file is the one artefact nobody reads as code and everybody reads as
+ * documentation, so "two entries for 3.5.8" is invisible to review and nonsense to a
+ * reader — which of the two is the real one?
+ *
+ * The check is deliberately about *count*, not about content. Two sections for one version
+ * are wrong whether the second is a superset, a subset, or a contradiction, and trying to
+ * judge which to keep would be a heuristic where a fact will do.
+ */
+const seenVersions = new Map();
+for (const h of headings) {
+  const at = seenVersions.get(h.version);
+  if (at === undefined) seenVersions.set(h.version, h.line);
+  else {
+    fail(
+      `CHANGELOG.md has two sections for [${h.version}]: line ${at} and line ${h.line}. ` +
+        `A version gets one entry. If the second is an expanded replacement for the first, ` +
+        `the first is deleted rather than left above it — a reader cannot tell which of the ` +
+        `two is the release notes.`
+    );
+  }
+}
+
 /* --- 3. the newest heading carries a date ----------------------------------- */
 
 const newest = headings.find((h) => h.version === pkg.version);

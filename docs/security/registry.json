@@ -944,6 +944,18 @@
       "test": "src/tests/integration/operationalMetrics.test.ts",
       "documentation": "docs/security/registry.md",
       "covers": []
+    },
+    {
+      "id": "SEC-072",
+      "title": "Two releases shipped with two changelog sections each, and the gate that checks the changelog could not see it",
+      "severity": "low",
+      "component": "tooling",
+      "release": "3.5.11",
+      "issue": "`CHANGELOG.md` shipped **two `## [3.5.8]` sections and two `## [3.5.10]` sections** in 3.5.9 and 3.5.10. Both duplicates were mine and both came from the same mistake: writing a release entry, then writing a second, expanded entry for the same version and inserting it above the first instead of replacing it. 143 lines of superseded prose, and a reader of the published changelog cannot tell which of the two sections is the release notes.\n**`verify-changelog.mjs` passed both times**, reporting \"38 headings, newest first\" \u2014 true of the file it was reading, and useless as a statement about whether the changelog is well formed.\nIt could not have caught them. The ordering rule is `compare(previous, current) < 0`, and `compare(a, a) === 0`, which is not `< 0`. So `[3.5.8]`, `[3.5.10]`, `[3.5.8]` is *in order* by the only rule the file had. A duplicate sitting directly above an older version is invisible to an ordering check, by construction.\nThis is the failure this project keeps finding \u2014 a control reporting success for the thing it exists to catch \u2014 in the shape it is least expected in. A release-notes file is the one artefact nobody reads as code and everybody reads as documentation, so \"two entries for 3.5.8\" survives review and is nonsense to a reader.",
+      "fix": "scripts/verify-changelog.mjs \u2014 now asserts each version appears **exactly once**, reporting both line numbers. The check is about count, not content: two sections for one version are wrong whether the second is a superset, a subset, or a contradiction, and judging which to keep would be a heuristic where a fact will do.\n**Verified by reintroducing a duplicate exactly as it shipped** \u2014 a second `[3.5.10]` directly above `[3.5.9]`, which is in order and therefore invisible to the old rule. The gate fails, exits 1, and names lines 8 and 168. Restored: exit 0.\nCHANGELOG.md \u2014 the superseded section is deleted for each version. Verified before deleting rather than after: every identifier, probe and finding reference in the older draft was located in the file and confirmed present in the newer one, because a line-level diff on re-wrapped prose reports 54 \"missing\" lines that are only re-wrapped sentences. A first pass at that comparison was itself misleading and would have been the wrong basis for deleting 143 lines of release notes.",
+      "test": "scripts/verify-changelog.mjs",
+      "documentation": "docs/security/registry.md",
+      "covers": []
     }
   ],
   "withdrawn": [
