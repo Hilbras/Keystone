@@ -204,6 +204,43 @@ have no way to tell they were decided.
 already holds a credential. Bounded by the session rather than by an IP budget,
 which is the right boundary for it.
 
+### Two more that were unbounded (3.5.6)
+
+Both were found only once `review-api-surface.mjs` began seeing the routes it had
+never been reading — see SEC-064, where a quarter of the route files were invisible to
+the review. Neither is a rate limit in the ordinary "worth brute-forcing" sense.
+
+**`POST /oauth2/revoke`** — no `preHandler`, no plugin hook, and no limit. It takes a
+token from the body and revokes it by hash, with no owner check, so anyone who can name
+a token can invalidate it.
+
+RFC 7009 asks for two things here, and they are not the same shape:
+
+- **§5 — a countermeasure MUST be applied.** "Appropriate countermeasures, which should
+  be in place for the token endpoint as well, MUST be applied to the revocation
+  endpoint." That is a rate limit, it is cheap, and it cannot break a conforming
+  client. **Done.**
+- **§2.1 — client authentication.** "The client also includes its authentication
+  credentials … The authorization server first validates the client credentials and
+  then verifies whether the token was issued to the client making the revocation
+  request." Neither is present, and the second cannot be implemented without the
+  first: there is no client to check the token against. **Recorded, not fixed** —
+  requiring credentials on a live public endpoint breaks any client not already sending
+  them, which is a migration note, not a patch.
+
+Severity is **medium**, and the harm is denial rather than disclosure. The RFC's own
+security analysis says an attacker who guesses a token "could do much worse damage by
+using the token elsewhere than by revoking it … No further damage is done and the
+guessed token is now worthless." What remains true is that a token which *leaks* — a
+log, a referrer, a shared machine — can be invalidated by anyone who reads it.
+
+It is also **not** a token-validity oracle: §2.2 requires 200 for an invalid token and
+the route returns `{success: true}` regardless, so it cannot be used to probe.
+
+**`POST /auth/logout`** — unauthenticated by design, since the caller proves themselves
+by presenting the token being revoked, and revoking a token they do not hold is a
+no-op. That makes it unbounded work for anyone who can reach the port. **Limited.**
+
 ## Related
 
 A failed login is audited as `user_login_failed`, and a refresh token presented

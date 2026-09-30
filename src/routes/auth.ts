@@ -426,7 +426,20 @@ export default async function authRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.post("/logout", async (request, reply) => {
+  app.post("/logout", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "logout",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // Unauthenticated, because the caller proves themselves by presenting the
+        // token being revoked — revoking a token they do not hold is a no-op. That
+        // makes it unbounded work for anyone who can reach the port, so it is
+        // limited like the rest of the unauthenticated surface.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request, reply) => {
     const appClientId = request.state?.app?.clientId;
     const refreshToken =
       getRefreshToken(request, appClientId) || getRefreshToken(request);

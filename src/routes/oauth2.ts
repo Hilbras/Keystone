@@ -450,12 +450,40 @@ export default async function oauth2Routes(app: FastifyInstance) {
     }
   );
 
-  app.post("/revoke", async (request) => {
-    const body = z.object({ token: z.string() }).parse(request.body);
-    await revokeRefreshToken(body.token);
-    await request.audit("oauth2_revoke", {});
-    return { success: true };
-  });
+  app.post(
+    "/revoke",
+    {
+      preHandler: [
+        rateLimit({
+          keyPrefix: "oauth2-revoke",
+          maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+          windowSeconds: config.LOGIN_WINDOW_SECONDS,
+          // RFC 7009 §5: "Malicious clients could attempt to use the new endpoint
+          // to launch denial-of-service attacks on the authorization server.
+          // Appropriate countermeasures, which should be in place for the token
+          // endpoint as well, MUST be applied to the revocation endpoint."
+          //
+          // This endpoint had none, and it is the cheaper of the two halves of the
+          // RFC's requirement to have a countermeasure in place: adding a limit
+          // cannot break a conforming client, while requiring the credentials
+          // §2.1 also asks for would.
+          //
+          // `emergencyLocalLimit` so a Redis outage degrades to a bounded
+          // per-process budget rather than removing the limit.
+          emergencyLocalLimit: true,
+        }),
+      ],
+    },
+    async (request) => {
+      const body = z.object({ token: z.string() }).parse(request.body);
+      await revokeRefreshToken(body.token);
+      await request.audit("oauth2_revoke", {});
+      // 200 whether or not the token existed, per RFC 7009 §2.2: "invalid tokens do
+      // not cause an error response since the client cannot handle such an error in
+      // a reasonable way." So this is not a token-validity oracle.
+      return { success: true };
+    }
+  );
 
   app.post(
     "/consent",
