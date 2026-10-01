@@ -8,6 +8,7 @@ import { decryptSecret, encryptSecret } from "./totp.js";
 import { queue } from "./queue/index.js";
 import type { KeystoneEvent } from "./events/types.js";
 import { serviceLogger } from "../lib/logger.js";
+import { config } from "../config.js";
 import { assertSafeWebhookUrl, validateWebhookUrl, OutboundUrlRejected } from "./outboundPolicy.js";
 
 const moduleLog = serviceLogger("webhooks");
@@ -47,6 +48,85 @@ const RECLAIM_INTERVAL_MS = 60_000;
 const WORKER_ID = `${process.env.HOSTNAME ?? "local"}#${process.pid}`;
 const workerId = () => WORKER_ID;
 
+/**
+ * Turn a consumer's response into something safe to persist.
+ *
+ * **SEC-079.** This used to be `(await response.text()).slice(0, 2000)` — the
+ * first two kilobytes of *whatever the consumer returned*, written to the
+ * delivery row and served back by `GET /platform/webhook-deliveries/:id`.
+ *
+ * The consumer is a third party, and its response is its own data. A webhook
+ * pointed at a service that echoes a request — most do, when they are debugging
+ * — writes that echo into a table, and an operator with the platform-owner role
+ * can read it through the admin API. Two shapes of exposure follow, and the
+ * second is the one that is easy to miss:
+ *
+ * 1. **Cross-tenant.** A delivery is made *to* a tenant's endpoint, but the row
+ *    is read by whoever holds the platform role. Content the consumer returned
+ *    therefore crosses a boundary the endpoint's owner did not choose.
+ * 2. **A durable copy of transient data.** Two kilobytes of a response body is
+ *    often a stack trace, a debug dump, or — from a service that reflects the
+ *    request — the signed payload and the signature header, persisted in a
+ *    database that is backed up, replicated, and readable by anyone with a dump.
+ *
+ * So by default only the **shape** is kept: the status, the content type, and the
+ * byte length. That is what an operator actually needs to answer "is the consumer
+ * rejecting us, and is it rejecting us for a reason we can see" — and the answer
+ * to a 500 is almost never in the body, it is in the consumer's own logs.
+ *
+ * `WEBHOOK_DEBUG_CAPTURE_BODY=true` keeps a redacted prefix, for the operator
+ * debugging a consumer they control. It is opt-in, it says so in the stored value
+ * itself, and it is not a silent capture.
+ */
+function summariseWebhookResponse(
+  status: number,
+  contentType: string | null,
+  body: string
+): string {
+  const bytes = Buffer.byteLength(body, "utf8");
+  const type = contentType ?? "unknown";
+  const summary = `HTTP ${status} · ${type} · ${bytes} bytes`;
+
+  if (!config.WEBHOOK_DEBUG_CAPTURE_BODY) return summary;
+
+  // Even in debug mode the body is truncated, because the column is bounded and a
+  // long response would otherwise be silently cut mid-token with no marker.
+  const CAPTURE_LIMIT = 512;
+  const captured = body.length > CAPTURE_LIMIT ? `${body.slice(0, CAPTURE_LIMIT)}…[truncated]` : body;
+  // Control characters are stripped: a consumer can return them, and they turn a
+  // stored value into a log-injection vector for anyone tailing the row. The rule
+  // is suppressed deliberately and for that reason — stripping control characters
+  // is precisely what this line is for, and the escape form is used so the source
+  // carries no literal control byte.
+  // oxlint-disable-next-line no-control-regex
+  const printable = captured.replace(/[\u0000-\u001f\u007f]+/g, " ");
+  return `${summary} · body(captured): ${printable}`;
+}
+
+/**
+ * Make a diagnostic string safe to store in the delivery row.
+ *
+ * The same two concerns as {@link summariseWebhookResponse}, for the paths that
+ * record a *reason* rather than a body: an undici fetch error can carry text
+ * influenced by the remote peer, and a policy message is ours but reaches us
+ * through a code path an operator may be reading in a terminal. Control characters
+ * are stripped so a stored value cannot forge log lines, and the length is
+ * bounded so a pathological message cannot fill the column.
+ *
+ * Not a redaction: these strings describe *our* request failing, which is exactly
+ * the distinction an operator needs and which they cannot get from the consumer's
+ * own logs. The third-party **body** is the thing that must not be kept, and
+ * {@link summariseWebhookResponse} is where that happens.
+ */
+function sanitiseDiagnostic(value: string): string {
+  const LIMIT = 2000;
+  // Same deliberate suppression as the response summariser: stripping control
+  // characters is the point of this line.
+  // oxlint-disable-next-line no-control-regex
+  const printable = value.replace(/[\u0000-\u001f\u007f]+/g, " ");
+  return printable.length > LIMIT ? `${printable.slice(0, LIMIT)}…[truncated]` : printable;
+}
+
 /** Record the terminal state of a delivery and drop the claim. */
 async function releaseClaim(
   deliveryId: string,
@@ -60,7 +140,7 @@ async function releaseClaim(
       lastAttemptAt: new Date(),
       lockedAt: null,
       lockedBy: null,
-      ...(body === undefined ? {} : { responseBody: body.slice(0, 2000) }),
+      ...(body === undefined ? {} : { responseBody: sanitiseDiagnostic(body) }),
     })
     .where(eq(webhookDeliveries.id, deliveryId));
 }
@@ -355,7 +435,11 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       [ATTR.outcome]: response.ok ? "delivered" : "rejected",
     });
 
-    const responseBody = (await response.text()).slice(0, 2000);
+    const responseBody = summariseWebhookResponse(
+      response.status,
+      response.headers.get("content-type"),
+      await response.text()
+    );
     await db
       .update(webhookDeliveries)
       .set({
@@ -404,7 +488,7 @@ export async function deliverNow(deliveryId: string): Promise<void> {
           lastAttemptAt: now,
           // The message names the rule, and names no tenant data: the rejected URL
           // is operator-supplied and the policy messages are fixed strings.
-          responseBody: `Refused by outbound URL policy: ${err.message}`.slice(0, 2000),
+          responseBody: sanitiseDiagnostic(`Refused by outbound URL policy: ${err.message}`),
           status: "failed",
           // Drop the claim here too. SEC-075's branch was written before the claim
           // existed, and a row left in `processing` is a row nobody retries — the
@@ -428,7 +512,7 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       .set({
         attempts,
         lastAttemptAt: now,
-        responseBody: err instanceof Error ? err.message.slice(0, 2000) : "Delivery error",
+        responseBody: sanitiseDiagnostic(err instanceof Error ? err.message : "Delivery error"),
         // `pending` here is what makes the retry possible, so the claim has to go:
         // a `pending` row with a live lock would be claimable only after it went
         // stale, adding ten minutes to every transient network failure.

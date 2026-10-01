@@ -117,15 +117,30 @@ const NO_ROUTE_FILES = new Map([
  * a barrel, a helpers module. A file here is one the tool never looks at, so nothing about
  * it is checked and that has to be a decision rather than a gap.
  *
- * `src/setup-server.ts` is the only one. It is a standalone Fastify instance behind
- * `npm run start:setup` / `KEYSTONE_SETUP_MODE=true`, serving `/setup/*` and a liveness
- * probe before the application is configured. The tool's model is one application with many
- * mount prefixes; putting a second application's routes in the same report would make every
+ * `src/setup-server.ts` is the only one that was excluded on purpose. It is a standalone Fastify
+ * instance behind `npm run start:setup` / `KEYSTONE_SETUP_MODE=true`, serving `/setup/*` and a
+ * liveness probe before the application is configured. The tool's model is one application with
+ * many mount prefixes; putting a second application's routes in the same report would make every
  * count in it wrong. It is also a bare `.get("/health")`, which would collide with the main
  * app's own `/health` — the clearest possible signal that it does not belong in that report.
+ *
+ * `src/services/webhooks.ts` is the second, and it is a **false positive of the shape rule**
+ * rather than a separate application. The heuristic looks for `.<verb>("…")`, and SEC-079's
+ * `summariseWebhookResponse(response.status, response.headers.get("content-type"), …)` contains
+ * `response.headers.get("content-type")` — a `Headers.get`, not a route. The file declares no
+ * routes at all.
+ *
+ * It is excluded rather than the rule tightened, because the rule's bias is documented and
+ * deliberate: over-inclusion surfaces a file that has to be justified, and under-inclusion fails
+ * silently. Narrowing it to `app.<verb>(` would fix this instance and risk the seven-file
+ * SEC-064 miss returning in a form nothing catches. The cost of the choice is one entry here.
  */
 const EXCLUDED_FROM_REVIEW = new Map([
   ["src/setup-server.ts", "a separate entry point and a separate Fastify application; see the note above"],
+  [
+    "src/services/webhooks.ts",
+    "no routes: the shape rule matches `response.headers.get(\"content-type\")` in the response summariser, which is a Headers.get rather than a route declaration",
+  ],
 ]);
 
 /**

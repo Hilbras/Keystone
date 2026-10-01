@@ -238,6 +238,20 @@ export const config = {
   AUDIT_WEBHOOK_URL: getEnv("AUDIT_WEBHOOK_URL"),
   AUDIT_CONSOLE_EXPORT: getEnv("AUDIT_CONSOLE_EXPORT", "false"),
   WEBHOOK_SIGNING_SECRET: getEnv("WEBHOOK_SIGNING_SECRET") || getEnv("KEYSTONE_WEBHOOK_SIGNING_SECRET"),
+  /**
+   * Persist a truncated copy of a webhook consumer's response body.
+   *
+   * **Off by default, and the default is the fix.** SEC-079: the delivery row
+   * used to store the first 2000 bytes of whatever the consumer returned, and
+   * `GET /platform/webhook-deliveries/:id` serves it back. The consumer is a third
+   * party, so that content belongs to it, not to a table this project backs up
+   * and replicates.
+   *
+   * On, the stored value keeps a 512-byte redacted prefix *and says so in the
+   * value itself* (`body(captured): …`), so a row cannot be mistaken for a
+   * default-mode summary. For debugging a consumer you control, and only then.
+   */
+  WEBHOOK_DEBUG_CAPTURE_BODY: getEnv("WEBHOOK_DEBUG_CAPTURE_BODY", "false") === "true",
 } as const;
 
 export function zitadelBaseUrl(): string {
