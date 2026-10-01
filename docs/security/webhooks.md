@@ -64,6 +64,49 @@ than papered over: a gate for it belongs in the production-configuration work
 (plan §6.1), which is where unsafe production settings are validated as a class
 rather than one flag at a time.
 
+## What is stored about a delivery
+
+The delivery row keeps **the shape of the consumer's response, not its body**:
+
+```
+HTTP 503 · application/problem+json · 4096 bytes
+```
+
+Status, content type, byte length. That is what answers "is the consumer rejecting
+us, and is it rejecting us with something structured" — and the answer to *why* a
+500 happened is in the consumer's own logs, which is where it belongs.
+
+**The body is not stored.** It is the consumer's data, not Keystone's. An endpoint
+that echoes its request — which is what most do while someone is debugging — would
+otherwise cause the signed payload and the signature header to be written into this
+database, and then served back to any platform operator through
+`GET /platform/webhook-deliveries/:id`. It would also be replicated and backed up,
+so a consumer's stack trace would become permanent, queryable state.
+
+`WEBHOOK_DEBUG_CAPTURE_BODY=true` keeps a 512-byte redacted prefix for debugging a
+consumer you control. The stored value **says so in itself**:
+
+```
+HTTP 500 · text/plain · 94 bytes · body(captured): Traceback: panic…
+```
+
+so a captured row can never be mistaken for a default summary. Off by default, and
+the default is the fix.
+
+Rows written by versions before 3.7.1 still contain captured bodies. They are not
+rewritten or purged — for some deployments that content is the only record of why a
+consumer rejected a delivery, so removing it is an operator decision, not a silent
+one.
+
+### Failure reasons are kept, and are not redaction
+
+The `responseBody` column also records *why an attempt failed* — a refused URL
+policy, an unreachable host, a timeout. Those are kept, bounded, with control
+characters stripped. They describe **our** request failing, which is precisely the
+distinction an operator needs and which they cannot get from the consumer. Control
+characters are stripped because a remote party can shape them, and a stored value
+a remote party can shape is a log-injection vector for anyone tailing the row.
+
 ## Signing
 
 Each endpoint gets `whsec_<48 base64url chars>` at creation, returned exactly

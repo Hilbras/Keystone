@@ -5,6 +5,91 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.1] - 2026-09-30
+
+*The delivery row stored 2000 bytes of whatever the consumer returned, and served it back through the admin API.*
+
+### SEC-079, medium — a third party's response body, kept durably
+
+```ts
+const responseBody = (await response.text()).slice(0, 2000);
+```
+
+and `GET /platform/webhook-deliveries/:id` returns that row to any platform owner.
+
+**The consumer is a third party, and this is its data.** A webhook pointed at a
+service that echoes its request — which is what most do while someone is debugging
+— caused the signed payload and the signature header to be written into a table
+this project backs up, replicates, and serves.
+
+Two exposures, and the second is the one that's easy to miss:
+
+1. **Cross-tenant.** The delivery is made *to* an org's endpoint; the row is read by
+   whoever holds the platform role. Content the consumer returned crosses a boundary
+   the endpoint's owner did not choose.
+2. **A durable copy of transient data.** Two kilobytes per attempt, up to
+   `MAX_ATTEMPTS = 5`, in a database that is replicated and backed up. A consumer's
+   stack trace became permanent, queryable state, with nothing in the schema or the
+   retention saying it was there.
+
+### What is stored now
+
+```
+HTTP 503 · application/problem+json · 4096 bytes
+```
+
+Status, content type, byte length. That answers "is the consumer rejecting us"; the
+answer to *why* a 500 happened is in the consumer's own logs, which is where the
+body belongs.
+
+`WEBHOOK_DEBUG_CAPTURE_BODY=true` (new, **off by default**) keeps a 512-byte
+redacted prefix, and the stored value **says so in itself** — `body(captured): …` —
+so a captured row can't be mistaken for a default summary.
+
+**The error paths leaked the same way and are fixed too.** `releaseClaim` and both
+`catch` blocks each wrote `.slice(0, 2000)` of a message, and a fetch error can
+carry text influenced by the remote peer. Those go through `sanitiseDiagnostic` now
+— bounded, control characters stripped. Not redaction: those describe *our* request
+failing, which is the distinction an operator needs and cannot get from the consumer.
+The third-party **body** is the thing that must not be kept.
+
+Control characters are stripped in both helpers on purpose — a stored value a remote
+party can shape is a log-injection vector for anyone tailing the row.
+
+**No migration.** The column exists and is nullable; this changes what is written
+into it. Older rows still hold captured bodies and are not rewritten: for some
+deployments that content is the only record of why a consumer rejected a delivery, so
+purging it is an operator decision rather than a silent one.
+
+### Regression
+
+6 cases that deliver a body containing a recognisable secret and an email address,
+then read the **row** back out of PostgreSQL. A unit test of the summariser would
+pass even if the call site were still using `.slice(0, 2000)`.
+
+| restored | result |
+|---|---|
+| `(await response.text()).slice(0, 2000)` | **1 pass, 5 fail** |
+| this release | 6 pass |
+
+### The API surface review caught the new code
+
+`reviewApiSurface.test.ts` failed on this release, and correctly: the shape rule it
+uses looks for `.<verb>("…")`, and
+`summariseWebhookResponse(status, response.headers.get("content-type"), …)` contains
+`response.headers.get("content-type")` — a `Headers.get`, not a route. The file
+declares no routes.
+
+Fixed by an explicit `EXCLUDED_FROM_REVIEW` entry with that reason, **not** by
+narrowing the rule. The rule's bias toward over-inclusion is documented and
+deliberate: a false positive surfaces a file to be justified, an under-match fails
+silently. The cost is one entry.
+
+Two failures during this work were mine and are fixed: a doc comment quoting the old
+`.slice(0, 2000)` was matched by an assertion meant for code (comments are now
+stripped first), and literal control bytes in a test fixture made the source file
+binary to `grep` — written as escapes now.
+
 ## [3.7.0] - 2026-09-30
 
 *Webhook delivery selected the row, sent the request, and wrote the result back. Nothing in between said "this worker owns it."*
