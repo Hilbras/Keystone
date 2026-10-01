@@ -1052,6 +1052,18 @@
       "test": "src/tests/security/supplyChain/imageVulnerabilityGate.test.ts",
       "documentation": "docs/security/RELEASE-HOLD-3.7.1.md",
       "covers": []
+    },
+    {
+      "id": "SEC-081",
+      "title": "Every webhook retry used one fixed 30-second delay, so a consumer outage became a synchronised wave",
+      "severity": "medium",
+      "component": "webhooks",
+      "release": "3.8.0",
+      "issue": "Webhook delivery retried on a single constant:\n\n```ts\nconst RETRY_DELAY_MS = 30_000;\n\nasync function retryLater(deliveryId: string): Promise<void> {\n  setTimeout(() => { queue.enqueue(/* … */); }, RETRY_DELAY_MS).unref();\n}\n```\n\nEvery retry of every delivery therefore fired at exactly t+30s, t+60s, t+90s. `retryLater` had no knowledge of how many attempts had already been made, so the delay could not depend on them even if someone had wanted it to.\n\n**The shape is worst exactly when it matters.** During a consumer outage every delivery held for that consumer comes back in one synchronised wave, is refused again in one wave, and the cycle repeats five times. The service being hammered is the one already struggling, and it is hit by precisely the deliveries it has been storing. A consumer that is down for a minute receives a spike proportional to its own backlog rather than a trickle.\n\nIt is a **self-inflicted thundering herd**, and it is also a partial availability defect for the consumer: the retries compete with the consumer's real traffic for its connection pool, so recovering from the outage is slower than it should be.\n\nMedium: it needs a consumer outage to trigger, it corrupts nothing, and no delivery is lost — every one is still attempted `MAX_ATTEMPTS` times. The cost is load concentration against a recovering service, and slower recovery for both sides. Plan §3.4 asks for \"exponential backoff, jitter, maximum attempts, maximum delay\", and neither of the first two existed.",
+      "fix": "`src/services/webhooks.ts` — `retryDelayMs(attempts, random)` replaces the constant: `RETRY_BASE_DELAY_MS * 2^(attempts-1)`, capped at `RETRY_MAX_DELAY_MS` (15 minutes), multiplied by a uniform draw from `[0, 1)`.\n\n**The jitter is the part that does the work, and it is why full jitter rather than a ±percentage spread.** Backoff without jitter is only a *slower* thundering herd: the wave is still a wave, just a longer-period one. What has to be avoided is simultaneous arrival, and a narrow spread still produces near-simultaneous arrivals — a ±20% band around 30 seconds is four seconds wide, which is the same wave for practical purposes.\n\nThe cap is not cosmetic. Unbounded, attempt 12 would wait over eight hours, and a delivery refused for a transient blip could outlive the window in which the consumer cares about receiving it. The ceiling is asserted directly: `retryDelayMs(20, () => 1) === 15 * 60_000`.\n\n`retryLater` now takes the attempt count rather than looking it up, because the caller already holds the delivery row and a second read could disagree with the write about to happen. Both call sites — the non-2xx path and the network-failure path — pass it through, and the compile-time signature change is what forced both to be updated rather than one being missed.\n\n`SEC-078`'s claim interaction is unchanged and still holds: a policy rejection is permanent and does not retry at all, so this only governs genuinely transient failures.",
+      "test": "src/tests/security/webhooks/retryBackoff.test.ts",
+      "documentation": "docs/security/webhooks.md",
+      "covers": []
     }
   ],
   "withdrawn": [

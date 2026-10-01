@@ -107,6 +107,37 @@ distinction an operator needs and which they cannot get from the consumer. Contr
 characters are stripped because a remote party can shape them, and a stored value
 a remote party can shape is a log-injection vector for anyone tailing the row.
 
+## Retries
+
+A failed delivery is attempted up to **5 times**. The wait before each attempt is
+**exponential with full jitter**:
+
+```
+delay = min(30s × 2^(attempts−1), 15m) × random(0,1)
+```
+
+| attempt | ceiling before jitter |
+|---|---|
+| 1 | 30s |
+| 2 | 1m |
+| 3 | 2m |
+| 4 | 4m |
+| 5 | 8m (never reached — the attempt budget is 5) |
+
+**Why the jitter matters more than the backoff.** Backoff alone is only a *slower*
+thundering herd: the retries are still a wave, just a longer-period one. During a
+consumer outage, every delivery held for that consumer would otherwise return in
+one synchronised burst at t+30s, be refused in one burst, and repeat. That is load
+concentrated onto the one service already struggling, competing with its real
+traffic for its connection pool — so recovery is slower for both sides.
+
+The 15-minute cap is not cosmetic. Without it, a late attempt would wait hours, and
+a delivery refused for a transient blip could outlive the window in which the
+consumer cares about receiving it.
+
+**A refusal by the outbound URL policy is not retried at all.** It is permanent, so
+it is recorded `failed` on the first attempt — see the section above.
+
 ## Signing
 
 Each endpoint gets `whsec_<48 base64url chars>` at creation, returned exactly
