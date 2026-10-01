@@ -5,6 +5,76 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] - 2026-09-30
+
+*Every retry of every delivery fired at exactly t+30s. During a consumer outage that is a self-inflicted thundering herd.*
+
+### SEC-081, medium — one fixed delay for every retry of every delivery
+
+```ts
+const RETRY_DELAY_MS = 30_000;
+
+async function retryLater(deliveryId: string): Promise<void> {
+  setTimeout(() => { queue.enqueue(/* … */); }, RETRY_DELAY_MS).unref();
+}
+```
+
+`retryLater` had no knowledge of how many attempts had been made, so the delay
+could not depend on them even if someone had wanted it to. Every retry came back at
+t+30s, t+60s, t+90s.
+
+**The shape is worst exactly when it matters.** During a consumer outage every
+delivery held for that consumer returns in one synchronised wave, is refused again
+in one wave, and the cycle repeats five times. The service being hammered is the
+one already struggling, hit by precisely the deliveries it has been storing. A
+consumer down for a minute takes a spike proportional to its own backlog rather
+than a trickle — and those retries then compete with its real traffic for its
+connection pool, so recovery is slower for both sides.
+
+Medium: it needs an outage to trigger, corrupts nothing, and loses no delivery —
+every one is still attempted 5 times. The cost is load concentration against a
+recovering service.
+
+### The jitter matters more than the backoff
+
+```
+delay = min(30s × 2^(attempts−1), 15m) × random(0,1)
+```
+
+Backoff alone is only a *slower* thundering herd — still a wave, just a
+longer-period one. What has to be avoided is **simultaneous arrival**, and a narrow
+±20% spread around 30 seconds is four seconds wide, which is the same wave for
+practical purposes. So full jitter, not a narrow band.
+
+The 15-minute cap is not cosmetic: unbounded, attempt 12 waits over eight hours, and
+a delivery refused for a transient blip could outlive the window in which the
+consumer cares about receiving it.
+
+`retryLater` now takes the attempt count rather than looking it up — the caller
+already holds the row, and a second read could disagree with the write about to
+happen. **The signature change is what forced both call sites to be updated** rather
+than one being missed; the compiler caught the two that were.
+
+### Regression
+
+8 cases that assert the **distribution**, not a value. A fixed delay satisfies any
+single-sample assertion — `retryDelayMs(1) === 30_000` passes against the defect —
+so the only assertions that can catch this one compare several samples to each
+other.
+
+| restored | result |
+|---|---|
+| `return 30000` | **3 pass, 5 fail** |
+| this release | 8 pass |
+
+One failure during this work was the test being wrong rather than the code: the
+structural assertion's regex matched the `retryLater` *definition* as well as its
+call sites, counted three instead of two, and failed against correct code. Anchored
+on `await retryLater(` now.
+
+SEC-078's claim interaction is unchanged: a policy rejection is permanent and does
+not retry at all, so this governs only genuinely transient failures.
+
 ## [3.7.2] - 2026-09-30
 
 *The release gate reported a verdict about the npm package and read as a verdict about the release. The image it never examined is the one most deployments run.*

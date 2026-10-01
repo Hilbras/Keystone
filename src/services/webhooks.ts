@@ -14,7 +14,49 @@ import { assertSafeWebhookUrl, validateWebhookUrl, OutboundUrlRejected } from ".
 const moduleLog = serviceLogger("webhooks");
 
 const MAX_ATTEMPTS = 5;
-const RETRY_DELAY_MS = 30_000;
+
+/**
+ * How long to wait before the next attempt, and with what spread.
+ *
+ * **SEC-081.** This was a single `RETRY_DELAY_MS = 30_000` used by every retry of
+ * every delivery, so N deliveries that failed together all came back at exactly
+ * t+30s, t+60s, t+90s. During a consumer outage that is the worst possible shape:
+ * the service is already struggling, and every delivery held for that consumer
+ * returns in one synchronised wave, is refused again in one wave, and the cycle
+ * repeats five times.
+ *
+ * Two changes, and the second is the one that actually fixes it:
+ *
+ * 1. **Exponential**, so a consumer that is down for a while is retried less often
+ *    rather than at a constant rate.
+ * 2. **Jitter**, so retries are spread rather than synchronised. Backoff without
+ *    jitter is only a slower thundering herd — still a wave, just a longer-period
+ *    one. Full jitter, a uniform draw from `[0, delay]`, is used rather than a
+ *    narrow ±percentage spread because the thing being avoided is *simultaneous*
+ *    arrival, and a narrow spread still produces near-simultaneous arrivals.
+ *
+ * The cap matters: unbounded, attempt 5 would wait 15 minutes and a delivery
+ * refused for a transient blip could outlive the window in which the consumer
+ * cares about receiving it.
+ */
+const RETRY_BASE_DELAY_MS = 30_000;
+const RETRY_MAX_DELAY_MS = 15 * 60_000;
+
+/**
+ * The delay before the next attempt, with full jitter.
+ *
+ * `attempts` is the number of attempts *already made*, so 1 means "one attempt has
+ * failed; this is the wait before the second".
+ *
+ * `random` is a parameter so the tests can drive the distribution rather than
+ * assert a single sample — a fixed delay satisfies any single-sample assertion,
+ * which is the defect itself.
+ */
+export function retryDelayMs(attempts: number, random: () => number = Math.random): number {
+  const exponential = RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempts - 1);
+  const capped = Math.min(exponential, RETRY_MAX_DELAY_MS);
+  return Math.floor(capped * random());
+}
 
 /**
  * How long a `processing` claim is honoured before another worker may take it.
@@ -458,7 +500,7 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       .where(eq(webhookDeliveries.id, deliveryId));
 
     if (!response.ok && attempts < MAX_ATTEMPTS) {
-      await retryLater(deliveryId);
+      await retryLater(deliveryId, attempts);
     }
   } catch (err) {
     // A policy rejection is **permanent**: the URL will be refused identically on
@@ -523,17 +565,26 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       .where(eq(webhookDeliveries.id, deliveryId));
 
     if (attempts < MAX_ATTEMPTS) {
-      await retryLater(deliveryId);
+      await retryLater(deliveryId, attempts);
     }
   }
 }
 
-async function retryLater(deliveryId: string): Promise<void> {
+/**
+ * Schedule the next attempt.
+ *
+ * `attempts` is passed in rather than looked up, because the caller already has
+ * the delivery row and a second read here would be a read that could disagree
+ * with the write that is about to happen.
+ */
+async function retryLater(deliveryId: string, attempts: number): Promise<void> {
+  const delay = retryDelayMs(attempts);
+  moduleLog.debug({ deliveryId, attempts, delay }, "webhook delivery retry scheduled");
   setTimeout(() => {
     queue.enqueue({ type: "webhook-delivery", payload: { deliveryId } }).catch((err: unknown) => {
       moduleLog.error({ err }, "webhooks");
     });
-  }, RETRY_DELAY_MS).unref();
+  }, delay).unref();
 }
 
 /** Manual retry from the dashboard: reset to pending and enqueue. */
