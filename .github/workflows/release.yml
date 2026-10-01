@@ -205,7 +205,7 @@ jobs:
             SHA256SUMS.txt
 
   publish:
-    needs: [verify, npm]
+    needs: [verify, npm, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -305,3 +305,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The image, scanned after it is built and before the release is declared
+      # good.
+      #
+      # This is the gate that was missing. `npm audit` in the `verify` job sees
+      # JavaScript advisories only; the OS packages in the runtime base were
+      # invisible to the release path, so a HIGH advisory there could reach a
+      # published release with every other gate green. The Trivy scan in
+      # `supply-chain.yml` did not close it either — that job builds and scans its
+      # *own* local image, so it was never scanning the artifact that ships, and
+      # nothing in the release depended on it.
+      #
+      # It runs here, on the image just pushed, and `publish` now depends on this
+      # job. Scanned after the push rather than before it: the alternative is a
+      # second full build, and the push itself is not the irreversible part —
+      # `publish` is what creates the release, and that is gated.
+      #
+      # Exits 2 when the scan cannot run, and a gate that cannot distinguish "the
+      # scan found nothing" from "the scan did not run" reports success on an
+      # empty result.
+      - name: Gate — the published image carries no unexcepted CRITICAL/HIGH advisory
+        run: node scripts/verify-image-vulnerabilities.mjs "${{ steps.meta.outputs.tags }}"

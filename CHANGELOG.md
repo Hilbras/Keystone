@@ -5,6 +5,84 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.2] - 2026-09-30
+
+*The release gate reported a verdict about the npm package and read as a verdict about the release. The image it never examined is the one most deployments run.*
+
+### SEC-080, high — the release path had no vulnerability check on the image
+
+`release.yml` ran `npm audit --omit=dev --audit-level=high` — **JavaScript
+advisories only** — and then built and pushed the image with no check on it. The
+`docker` job ended at `cache-to`; `publish` depended on `[verify, npm]`, not on
+`docker` at all.
+
+So the OS packages in the runtime base — glibc, pcre2, openssl, most of what an
+attacker touches — were **invisible to the release path**. A HIGH advisory there
+could reach a published release with every existing gate green.
+
+A Trivy scan did exist, with `exit-code: "1"`. It didn't close the gap:
+
+1. It is not a required check on `main` and not a dependency of the release, so a
+   release proceeds regardless.
+2. **It scanned a different artifact than the one that ships.** It built
+   `hilbras-keystone:scan` in its own job; the release builds separately. Two
+   builds of one Dockerfile can resolve different base digests minutes apart, so
+   the scan was evidence about an image nobody installed.
+
+This is what the 3.7.1 hold actually exposed — CVE-2026-103111 in `node:26-slim`,
+in a base that a fresh pull still ships at `deb13u2`.
+
+High, and precise about why: no vulnerability was exploitable *through* Keystone,
+and the base is a widely-patched image rather than something neglected. The
+severity is the size of the unexamined surface, not a live compromise.
+
+### The gate
+
+`scripts/verify-image-vulnerabilities.mjs`, running in the `docker` job **on the
+image just pushed**, with `publish` now declaring `needs: [verify, npm, docker]`.
+
+That second change is the load-bearing one. A gate nothing waits on is not a gate
+— the same mistake as `--strict` passing in 3.5.12 and the inert `publicReason`
+lookup before that.
+
+**Exits 2 when the scan cannot run** — missing binary, failed scan, unreadable
+output — and never 0. A gate that cannot distinguish "the scan found nothing" from
+"the scan did not run" reports success on an empty result.
+
+CRITICAL and HIGH only, `--ignore-unfixed`, and it reads
+`docs/security/registry-exceptions.md` for accepted advisories — the same contract
+`npm audit` already has in `release.yml`: a reason, a mitigation, an expiry, an
+owner. A gate that blocks on everything gets bypassed, and then blocks nothing.
+
+### The bug the regression found, which is the instructive one
+
+The first version destructured the exceptions table by index and read **Owner** as
+the expiry, because the schema has seven columns and the code assumed six. Every
+exception failed the expiry check and was rejected — a recorded, reasoned, dated
+exception treated as no exception.
+
+The failure direction is *safe*: it blocks. Which is exactly why nothing would have
+noticed until the first person tried to use the mechanism, mid-release, needing the
+gate to do the one thing gates exist for. Columns are now read by position from the
+documented schema, and six cases cover unexpired, expired, no-expiry,
+wrong-advisory, wrong-severity, and a historical entry that must not authorise a
+live finding.
+
+Also fixed en route: the first draft used TypeScript casts in a `.mjs` file and did
+not run at all.
+
+### Regression
+
+13 cases with a stubbed `trivy` on `PATH`, because installing a scanner is not
+something a test should do and the decision logic is what is under test. The real
+binary, real image and real database run in CI, in the `docker` job, against the
+image just pushed.
+
+Two structural assertions close the loop the earlier work kept leaving open: the
+workflow must invoke the gate **on `steps.meta.outputs.tags`**, and `publish` must
+depend on `docker`. A correct gate that nothing calls, or that scans a different
+image, is the gap itself.
+
 ## [3.7.1] - 2026-09-30
 
 *The delivery row stored 2000 bytes of whatever the consumer returned, and served it back through the admin API.*
