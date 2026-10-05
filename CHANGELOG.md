@@ -5,6 +5,90 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.1] - 2026-09-30
+
+*Plan §3.3: a consumer had no header to deduplicate on. Finding it turned up a function with no tests at all, which threw on malformed input.*
+
+### SEC-083, low — no header a consumer could deduplicate on
+
+A delivery sent three headers. The identifier a consumer actually needs — the
+**event** id, stable across every attempt — existed, but only *inside the JSON body*
+as `payload.id`. And the attempt number was not sent at all.
+
+So deduplication required parsing Keystone's payload shape, which a consumer that
+routes on headers, or that discards the body before storing anything, cannot do.
+And a consumer could not distinguish attempt 1 from attempt 3, nor accept the first
+and drop the rest without counting them as distinct.
+
+Low, and deliberately: nothing is lost or mis-delivered, and the body already
+carries the information. The cost is imposed on integrators, not on Keystone.
+
+Two additive headers now: `X-Keystone-Event-ID` and `X-Keystone-Attempt`. The event
+id **falls back to the delivery id** for rows written before 3.8.1 — deliberately
+conservative, since an absent header is worse than an approximate one: a consumer
+written to dedupe on it treats the absence as its own parsing having failed and skips
+dedup entirely.
+
+`signWebhookPayload` is unchanged, so signatures are byte-identical and a consumer
+upgrading sees no wave of verification failures.
+
+### SEC-082, medium — the signature verifier threw on malformed input
+
+Found while looking for §3.3, in the function a consumer calls to verify what those
+headers arrived with. It ended in:
+
+```ts
+return crypto.timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(expected, "hex"));
+```
+
+and `timingSafeEqual` **throws `RangeError` on a length mismatch**. Every malformed
+signature a peer can send is a different length.
+
+The nastier route: **`Buffer.from(x, "hex")` silently drops invalid characters**, so
+`"zz"` decodes to an *empty buffer*, not an error. A header can be malformed in a way
+that survives parsing entirely, and only a length check catches it.
+
+So: a consumer calling the documented verifier on an attacker-influenced header got
+a thrown exception instead of `false` — its endpoint 500s instead of ignoring the
+delivery. A small denial-of-service reachable by anyone who can POST to it.
+
+**There were no tests for this function at all.** It is the code a webhook integrator
+depends on most directly, and the only exported helper in the webhook surface with
+no coverage.
+
+Fixed by validating the hex *before* decoding, checking the lengths before
+`timingSafeEqual`, and keeping the constant-time comparison — which is the property
+worth having. Rejecting on length is not a timing leak; a wrong length is not a
+secret.
+
+Also fixed: the guard was `if (!timestamp)`, so a legitimate `t=0` was rejected as
+though the header carried no timestamp. Rare and harmless, but it was a
+falsy-check where a presence-check belonged.
+
+### Regression
+
+12 cases. Verified by removing both fixes from the compiled output:
+
+| restored | result |
+|---|---|
+| both headers deleted; verifier guards removed | **7 pass, 5 fail** |
+| this release | 12 pass |
+
+Worth recording: on the first attempt the malformed-header case **passed against the
+reverted verifier**, because my `str.replace` had missed the hex guard at its
+compiled indentation. A green regression against a reverted fix is worse than a red
+one — it looks like proof. I did not accept it, checked the compiled text, and only
+counted the run once both guards were actually gone.
+
+One test-only limitation, recorded in the file: a delivery **cannot** carry a
+non-object payload — `payload` is `jsonb` and Postgres will not bind a scalar — so
+`eventIdOf`'s shape-handling is tested directly rather than end-to-end. That is the
+branch that must not throw, and it is precisely the one no real row can reach.
+
+Two failures during this work were the tests being wrong, not the code: a table
+built at `describe`-body time read a `before`-assigned value and failed to load the
+file; and a fixture tried to insert scalar payloads Postgres correctly refused.
+
 ## [3.8.0] - 2026-09-30
 
 *Every retry of every delivery fired at exactly t+30s. During a consumer outage that is a self-inflicted thundering herd.*

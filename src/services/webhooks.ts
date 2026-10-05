@@ -43,6 +43,37 @@ const RETRY_BASE_DELAY_MS = 30_000;
 const RETRY_MAX_DELAY_MS = 15 * 60_000;
 
 /**
+ * The event id a delivery carries, for `X-Keystone-Event-ID`.
+ *
+ * The payload body is `{ id, type, version, timestamp, payload }` — see
+ * `dispatchEvent` — and `id` is what a consumer deduplicates on.
+ *
+ * **Rows written before 3.8.0 may not have one.** `payload` is a plain jsonb
+ * column, so a delivery inserted by an earlier version carries whatever shape that
+ * version wrote. Falling back to the delivery id keeps the header present and
+ * unique rather than absent, and a fallback is *conservative in the right
+ * direction*: treating a delivery id as an event id can only cause the consumer to
+ * fail to recognise a duplicate, never to drop a distinct event.
+ *
+ * That asymmetry is the reason for the fallback rather than omitting the header. An
+ * absent header is worse than a slightly-wrong one: a consumer written to
+ * deduplicate on this will treat "no event id" as a gap in its own parsing and skip
+ * the dedup entirely.
+ *
+ * Exported so the shape-handling can be tested directly. A delivery cannot carry a
+ * non-object payload at all — `payload` is a `jsonb` column and Postgres will not
+ * bind a scalar to one — so an end-to-end test cannot reach these branches, and the
+ * branch that must not throw is precisely the one no real row can exercise.
+ */
+export function eventIdOf(delivery: { id: string; payload: unknown }): string {
+  const payload = delivery.payload as { id?: unknown } | null;
+  if (payload && typeof payload === "object" && typeof payload.id === "string" && payload.id) {
+    return payload.id;
+  }
+  return delivery.id;
+}
+
+/**
  * The delay before the next attempt, with full jitter.
  *
  * `attempts` is the number of attempts *already made*, so 1 means "one attempt has
@@ -461,6 +492,27 @@ export async function deliverNow(deliveryId: string): Promise<void> {
         "X-Keystone-Signature": signWebhookPayload(readWebhookSecret(endpoint.secret), delivery.payload),
         "X-Keystone-Event": delivery.eventType,
         "X-Keystone-Delivery": delivery.id,
+        // SEC-083. The three identifiers a consumer needs to deduplicate, and none
+        // of them were reachable before.
+        //
+        // - **Event** is stable across every attempt at the same logical event, so a
+        //   consumer that receives a retry can tell it already has this one.
+        // - **Delivery** identifies the endpoint's copy of it, so two endpoints
+        //   subscribed to the same event are distinguishable and each can be retried
+        //   independently.
+        // - **Attempt** says which try this is, which is what lets a consumer accept
+        //   a first attempt and drop later ones without counting them as distinct.
+        //
+        // The event id was already generated in `dispatchEvent` and already sent — in
+        // the **body**, as `id` — so a consumer had to parse the payload to find it.
+        // Headers are the right place for routing and deduplication metadata: they
+        // survive a consumer that discards the body, and a consumer never has to
+        // understand the payload shape to use them.
+        //
+        // Additive only. A consumer that ignores them is unaffected, and no existing
+        // header changes value or meaning.
+        "X-Keystone-Event-ID": eventIdOf(delivery),
+        "X-Keystone-Attempt": String(attempts),
       },
       body: JSON.stringify(delivery.payload),
       signal: AbortSignal.timeout(10_000),
