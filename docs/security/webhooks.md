@@ -107,6 +107,47 @@ distinction an operator needs and which they cannot get from the consumer. Contr
 characters are stripped because a remote party can shape them, and a stored value
 a remote party can shape is a log-injection vector for anyone tailing the row.
 
+## Headers
+
+| Header | Meaning |
+|---|---|
+| `X-Keystone-Signature` | `t=<unix>,v1=<hex>` — HMAC-SHA256 over `<timestamp>.<raw body>` |
+| `X-Keystone-Event` | the event type, e.g. `user.login` |
+| `X-Keystone-Event-ID` | **stable across every attempt** at the same logical event |
+| `X-Keystone-Delivery` | this endpoint's copy of the event |
+| `X-Keystone-Attempt` | which attempt this is, starting at 1 |
+
+### Verifying a delivery
+
+```ts
+import { verifyWebhookPayload } from "@hilbras/keystone/dist/lib/webhookSignature.js";
+
+const ok = verifyWebhookPayload(secret, req.headers["x-keystone-signature"], rawBody);
+```
+
+**This never throws.** A malformed signature header returns `false`. That is the
+whole contract, and it matters: `timingSafeEqual` throws on a length mismatch, and
+until 3.8.1 that reached it — so a consumer that exposed this verifier on a
+reachable endpoint had a small denial-of-service available by sending a 3-byte
+header. Verify the raw request body, not a re-serialised object; JSON key order is
+not guaranteed to survive a round trip.
+
+### Deduplicating
+
+Deduplicate on `X-Keystone-Event-ID`. It is the same across every retry, so a
+consumer that has already processed an event can drop the retry. Use
+`X-Keystone-Attempt` to decide policy — accept the first and drop the rest, or keep
+the last — and `X-Keystone-Delivery` when you subscribe to the same event at two
+endpoints and need to track them separately.
+
+All three were added in 3.8.1. Before that the event id was only inside the JSON
+body as `id`, so deduplication required parsing Keystone's payload shape, and the
+attempt number was not sent at all.
+
+A delivery whose payload predates 3.8.1 has no `id`, so `X-Keystone-Event-ID` falls
+back to the delivery id. That is deliberately conservative: it can cause a consumer
+to fail to recognise a duplicate, never to drop a distinct event.
+
 ## Retries
 
 A failed delivery is attempted up to **5 times**. The wait before each attempt is
