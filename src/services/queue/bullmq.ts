@@ -1,6 +1,8 @@
 import { Queue as BullQueue, Worker, type Job as BullJob } from "bullmq";
 import type { Queue, Job, JobHandler, QueueStats } from "./types.js";
 import { serviceLogger } from "../../lib/logger.js";
+import { config } from "../../config.js";
+import { WORKER_ID } from "./workerIdentity.js";
 
 const moduleLog = serviceLogger("queue");
 
@@ -9,9 +11,13 @@ export class BullMQQueue implements Queue {
   private workers = new Map<string, Worker>();
   private handlers = new Map<string, JobHandler>();
   private redisUrl: string;
+  private concurrency: number;
 
   constructor(redisUrl: string) {
     this.redisUrl = redisUrl;
+    // §2.5: was a hardcoded 5. Read once here rather than per `process()` call so
+    // every queue type on one instance drains at the same rate.
+    this.concurrency = config.QUEUE_CONCURRENCY;
     this.queue = new BullQueue("keystone", {
       connection: { url: redisUrl },
       defaultJobOptions: {
@@ -46,12 +52,18 @@ export class BullMQQueue implements Queue {
           payload: bullJob.data,
           attempts: bullJob.attemptsMade,
           createdAt: bullJob.timestamp ? new Date(bullJob.timestamp) : undefined,
+          // §2.5. Recorded per job rather than per process, so a handler can name
+          // its owner in a span or a lock without reaching for a global. The
+          // in-process driver sets the same two fields, so a handler written
+          // against one driver behaves identically on the other.
+          workerId: WORKER_ID,
+          workerHeartbeatAt: new Date(),
         };
         await handler(job);
       },
       {
         connection: { url: this.redisUrl },
-        concurrency: 5,
+        concurrency: this.concurrency,
       }
     );
 

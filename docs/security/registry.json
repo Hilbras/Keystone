@@ -1139,6 +1139,11 @@
       "test": "src/tests/security/webhooks/webhookDeliveryRefusesPrivateUrl.test.ts",
       "covers": "That `deliverNow` actually applies the outbound URL policy before it fetches, that a policy rejection is terminal rather than retried, and that the admin API answers 400 rather than 500 for the same rejection.",
       "why": "Not a separate finding: the defect and its fix are SEC-075, and this suite is the structural half of that regression. `outboundUrlPolicy.test.ts` covers the policy rules and would keep passing if the worker stopped calling it — a check that no longer measures the thing it is named for, which is the defect class this project has found repeatedly. These assertions close that gap by requiring the call to precede the request (an index comparison, so a check placed after the fetch fails), and by breaking the compiled worker in a scratch copy to confirm the assertions notice."
+    },
+    {
+      "test": "src/tests/security/queue/workerIdentity.test.ts",
+      "covers": "That a queue worker presents an identity unique per process, and that `Job` carries `workerId`/`workerHeartbeatAt` on both drivers so a handler can name a lock owner without knowing which driver it runs under.",
+      "why": "Not a finding: the roadmap §2.5 item is additive, and nothing was broken. `Job` had no owner field at all, which is a missing affordance rather than a defect — the absence of a worker id cannot itself cause a fault. It becomes load-bearing the moment §2.4 distributed locks or §6.4 startup recovery land, both of which must name an owner; a lock implemented against an absent or colliding id would give the wrong guarantee silently. Uniqueness is asserted by spawning real processes rather than calling the function twice, because the pid and the random suffix exist precisely for the case two calls in one process cannot represent."
     }
   ]
 }
