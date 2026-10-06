@@ -144,6 +144,19 @@ export const config = {
 
   // Queue provider: "in-process" (default/fallback), "bullmq", or "" to auto-select bullmq when REDIS_URL is set.
   KEYSTONE_QUEUE_PROVIDER: getEnv("KEYSTONE_QUEUE_PROVIDER", "in-process"),
+  /**
+   * Jobs one instance runs at once (§2.5).
+   *
+   * Was hardcoded to 5 inside the BullMQ driver. Concurrency is the main lever on how
+   * much load one instance puts on its database and on every downstream HTTP
+   * consumer, so an operator could not choose it — which in a multi-instance
+   * deployment (§2.7) means capacity cannot be divided between instances at all.
+   *
+   * Clamped to at least 1, because `concurrency: 0` is silently accepted by BullMQ
+   * and means *never process anything*: a worker that appears healthy and drains
+   * nothing.
+   */
+  QUEUE_CONCURRENCY: Math.max(1, Number(getEnv("KEYSTONE_QUEUE_CONCURRENCY", "5")) || 5),
 
   // Cache key prefix for Redis/in-memory cache entries.
   CACHE_KEY_PREFIX: getEnv("CACHE_KEY_PREFIX", "keystone:"),

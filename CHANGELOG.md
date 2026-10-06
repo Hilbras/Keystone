@@ -5,6 +5,79 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.0] - 2026-09-30
+
+*Plan §2.5, part one: a queue worker had no identity, so "which instance holds this job" had no answer.*
+
+### Worker ownership, and a concurrency setting that could not be set
+
+`Job` carried no owner field at all. BullMQ already guarantees a job runs on one
+worker at a time — what it does not expose is *which* one, so with two Keystone
+instances there was no way to answer "is instance 3 still draining its queue, or did
+it die holding jobs?"
+
+That question has to be answerable before the rest of the distributed work can be
+built: **a distributed lock (§2.4) needs an owner to name**, and **a crashed owner
+(§6.4) needs to be identifiable** so its work can be recovered.
+
+`WORKER_ID` is `hostname#pid#random`. Each component earns its place:
+
+- **hostname** separates pods, which is the multi-instance case that matters;
+- **pid** separates two processes on one host — a developer's machine, a
+  `docker compose up` — which is exactly where a hostname-only id collides;
+- **random** handles a recycled pid on a long-lived host, where a restarted process
+  would otherwise present as the dead worker that held the same pid — and a lease
+  held under that id would look live.
+
+Deliberately **not configurable**: an operator who sets one value across instances
+reintroduces precisely the ambiguity this removes, and that misconfiguration is worse
+than no identity.
+
+`Job.workerId` and `Job.workerHeartbeatAt` are populated by **both** drivers, so
+code that names a lock owner does not have to know which one it is running under.
+Both fields are optional, so no existing handler breaks.
+
+### Concurrency was hardcoded to 5
+
+`concurrency: 5` sat inside the BullMQ driver, so a deployment could not choose it.
+Concurrency is the main lever on how much load one instance puts on its database and
+on every downstream webhook consumer — which means in a multi-instance deployment
+capacity could not be divided between instances at all.
+
+`KEYSTONE_QUEUE_CONCURRENCY`, default 5 so behaviour does not shift. **Clamped to at
+least 1**, because BullMQ accepts `concurrency: 0` and that means *never process
+anything*: a worker that looks healthy and drains nothing, which is the worst shape
+this project keeps finding.
+
+### What this is not
+
+**This is not multi-instance support, and nothing here has been tested with two
+instances running.** It is the precondition for it — the identity a lock needs, and
+a capacity knob. §2.7's multi-instance compose still does not exist, and §2.4's
+`DistributedLock` with acquire/renew/release/expire/owner is not started.
+
+The remaining §2 items — the lock itself, worker leases with heartbeat renewal, the
+`Idempotency-Key`, and the extended job model — are untouched.
+
+### Regression
+
+5 cases. Verified by removing the random suffix from the compiled module:
+
+| restored | result |
+|---|---|
+| `WORKER_ID` reduced to `hostname#pid` | **3 pass, 2 fail** |
+| this release | 5 pass |
+
+Uniqueness is asserted by **spawning real processes** rather than calling the
+function twice in one process — the pid and the random suffix exist precisely for
+the case two in-process calls cannot represent.
+
+Worth recording: with the suffix removed, the "5 processes, 5 ids" case still
+**passed**, because the OS gave those children distinct pids. That is the exact
+limitation the case cannot see, and it is why the two that do fail assert the
+*shape* — a third component that is neither the hostname nor the pid — rather than
+relying on the process test alone.
+
 ## [3.8.1] - 2026-09-30
 
 *Plan §3.3: a consumer had no header to deduplicate on. Finding it turned up a function with no tests at all, which threw on malformed input.*

@@ -1,5 +1,6 @@
 import type { Queue, Job, JobHandler, QueueStats } from "./types.js";
 import { serviceLogger } from "../../lib/logger.js";
+import { WORKER_ID } from "./workerIdentity.js";
 
 const log = serviceLogger("queue");
 
@@ -10,9 +11,19 @@ export class InProcessQueue implements Queue {
   private stats = new Map<string, { count: number; failed: number }>();
 
   async enqueue<T>(job: Job<T>): Promise<void> {
+    // §2.5. The two ownership fields are filled in here so a handler written against
+    // this driver sees the same shape it would on BullMQ. On this driver they are
+    // constant rather than meaningful — there is only ever one worker, and it cannot
+    // die holding work — but code that reads `job.workerId` to name a lock owner
+    // must not have to know which driver it is running under.
+    const owned: Job<T> = {
+      ...job,
+      workerId: job.workerId ?? WORKER_ID,
+      workerHeartbeatAt: job.workerHeartbeatAt ?? new Date(),
+    };
     setImmediate(() => {
-      this.run(job, 1).catch((err) => {
-        log.error({ err, jobType: job.type }, "job failed permanently");
+      this.run(owned, 1).catch((err) => {
+        log.error({ err, jobType: owned.type }, "job failed permanently");
       });
     });
   }
