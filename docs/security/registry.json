@@ -1088,6 +1088,18 @@
       "test": "src/tests/security/webhooks/deliveryHeaders.test.ts",
       "documentation": "docs/security/webhooks.md",
       "covers": []
+    },
+    {
+      "id": "SEC-084",
+      "title": "No distributed lock existed, so no cross-instance invariant could be enforced",
+      "severity": "low",
+      "component": "queue",
+      "release": "3.9.1",
+      "issue": "Every cross-instance invariant this project needs — one worker per job, one bootstrap per setup, one key rotation at a time — reduces to \"at most one holder of X, and only while it is alive\". BullMQ solves that for its own jobs. **Nothing solved it for Keystone own work.**\n\nThere was one hand-rolled instance of the pattern: `routes/saml.ts` uses `SET … EX … NX` to make a SAML transaction single-use, which is correct for what it does. So the primitive was understood and available; there was simply no reusable lock, no ownership verification, and no lease renewal.\n\n**Low, and the severity is the point rather than a hedge.** Nothing was broken: a missing abstraction is a missing affordance, not a fault. It is recorded because the plan (§2.4) asks for it and because §2.5, §6.4 and §7.4 all depend on it — a lock implemented ad hoc per call site would be one that is subtly wrong somewhere, and §2.4 explicitly names acquire/renew/release/expire/owner as the contract.\n\nThe interesting part is what a naive lock gets wrong, because the wrong version is the obvious one and the failure is invisible in normal operation. `SET key token NX PX ttl` then a plain `DEL` on release is **not safe**: a holder that pauses longer than its TTL (a GC pause, a slow downstream) has its lease stolen, and then its own release **deletes the new holder lock**. Two callers then believe they hold it, and nothing reports it. That is not a race a test suite trips over; it is an intermittent double-execution discovered in production, under load, unreproducible.",
+      "fix": "`src/services/lock.ts` (new) — `acquireLock`, `releaseLock`, `renewLock`, `inspectLock`, `withLock`.\n\n**Ownership verification is the design, not a nicety.** Release and renew are single-round-trip Lua compare-and-delete / compare-and-expire scripts, so two callers cannot interleave between a read and a write, and a holder whose lease expired is refused rather than permitted to delete the new holder lock. A blind `DEL` guarded by a `GET` has a window; a blind `PEXPIRE` has the same bug as a blind `DEL`.\n\n**The token is a fresh random value per acquisition, never the worker id.** Reusing `WORKER_ID` would be a subtle trap: two *different* acquisitions by the same worker would share a token, so the first release would be permitted while the second still held it — the exact bug the design removes. `WORKER_ID` goes in the log line, which is what makes an expiry diagnosable. Asserted directly.\n\n`PX` rather than `EX`, because the lease is in milliseconds and `EX` takes seconds — an `EX` lock silently rounds a 250ms TTL up to a full second, which is a correctness bug in a lock that looks like it works.\n\n`withLock` releases in a `finally`. The common bug is a thrown error leaving the lock held for the whole lease, turning one failure into a stall for every other caller.\n\n**Not yet used.** No call site adopts this yet; `routes/saml.ts` keeps its own correct `SET NX` because converting it is a separate, separately-tested change. A lock nothing depends on is infrastructure, and the honest claim is that the primitive exists and is tested — not that anything is protected by it.",
+      "test": "src/tests/security/queue/distributedLock.test.ts",
+      "documentation": "docs/ARCHITECTURE.md",
+      "covers": []
     }
   ],
   "withdrawn": [

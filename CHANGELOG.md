@@ -5,6 +5,76 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.1] - 2026-09-30
+
+*Plan §2.4: nothing solved "at most one holder of X" for Keystone's own work. BullMQ solves it for its jobs.*
+
+### SEC-084, low — no distributed lock existed
+
+Every cross-instance invariant this project needs — one worker per job, one bootstrap
+per setup, one key rotation at a time — reduces to "at most one holder of X, and
+only while it is alive". BullMQ solves that for its own jobs. Nothing solved it for
+Keystone's own work.
+
+There was one hand-rolled instance of the pattern: `routes/saml.ts` uses
+`SET … EX … NX` to make a SAML transaction single-use, which is correct for what it
+does. The primitive was understood and available; there was simply no reusable lock,
+no ownership verification, and no lease renewal.
+
+Low, and the severity is the point rather than a hedge. Nothing was broken — a
+missing abstraction is a missing affordance, not a fault. It is recorded because
+§2.4 asks for it and because **§2.5, §6.4 and §7.4 all depend on it.**
+
+### The wrong version is the obvious one
+
+`SET key token NX PX ttl` then a plain `DEL` on release is **not safe**:
+
+```text
+A acquires with a 5s TTL, then pauses 6s (GC, a slow downstream).
+The lease expires; B acquires.
+A finishes and DELs — deleting B's lock.
+Now two callers believe they hold it, and nothing reports it.
+```
+
+Not a race a test suite trips over: an intermittent double-execution discovered in
+production, under load, unreproducible. So release and renew are single-round-trip
+Lua **compare-and-delete** and **compare-and-expire** — a `GET` followed by a `DEL`
+has a window, and a blind `PEXPIRE` has the same bug as a blind `DEL`.
+
+**The token is a fresh random value per acquisition, never the worker id.** Reusing
+`WORKER_ID` would be a subtle trap: two *different* acquisitions by the same worker
+would share a token, so the first release would be permitted while the second still
+held it — the exact bug the design removes. `WORKER_ID` goes in the log line, which is
+what makes an expiry diagnosable.
+
+`PX`, not `EX`: the lease is in milliseconds and `EX` takes seconds, so an `EX` lock
+silently rounds a 250ms TTL up to a full second — a correctness bug in a lock that
+looks like it works. Asserted.
+
+`withLock` releases in a `finally`. The common bug is a thrown error leaving the lock
+held for the whole lease, turning one failure into a stall for every other caller.
+
+### Not yet used
+
+**No call site adopts this yet.** `routes/saml.ts` keeps its own correct `SET NX`,
+because converting it is a separate and separately-testable change. A lock nothing
+depends on is infrastructure, and the honest claim is that the primitive exists and
+is tested — not that anything is protected by it.
+
+### Regression
+
+16 cases. Verified by replacing the ownership-verified release with a naive
+unconditional `DEL`/`PEXPIRE`:
+
+| restored | result |
+|---|---|
+| naive DEL / PEXPIRE | **11 pass, 5 fail** |
+| this release | 16 pass |
+
+The expiry race is simulated deliberately — A takes a 1ms lease, the test waits past
+it, B acquires, and A's release must be refused and B's lock must survive. That is
+the property the module exists for, and it is invisible in normal operation.
+
 ## [3.9.0] - 2026-09-30
 
 *Plan §2.5, part one: a queue worker had no identity, so "which instance holds this job" had no answer.*
