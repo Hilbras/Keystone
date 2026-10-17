@@ -16,7 +16,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-hilbras}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-env}
+      # No fallback: a database that happily starts with a published default
+      # password is the failure mode this used to permit.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env (see .env.example)}
       POSTGRES_DB: ${POSTGRES_DB:-hilbras}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -25,6 +27,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 512m
     networks:
       - keystone
 
@@ -40,6 +43,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 256m
     networks:
       - keystone
 
@@ -56,11 +60,29 @@ services:
         condition: service_healthy
     ports:
       - "${KEYSTONE_PORT:-4001}:4001"
+    # Match the k8s securityContext: non-root uid 1000 (the Dockerfile's USER),
+    # no privileges, read-only rootfs. /tmp is the only writable path — node
+    # and any transient scratch files use it.
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 1.0
     environment:
       NODE_ENV: production
       PORT: 4001
       HOST: 0.0.0.0
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-hilbras}:${POSTGRES_PASSWORD:-change-me-in-env}@postgres:5432/${POSTGRES_DB:-hilbras}}
+      # The setup server binds loopback whenever HOST is 0.0.0.0 unless told
+      # otherwise; inside a published container the wizard must listen on the
+      # interface the port map reaches. The setup server logs a warning when
+      # this deliberately picks all interfaces.
+      KEYSTONE_SETUP_HOST: ${KEYSTONE_SETUP_HOST:-0.0.0.0}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-hilbras}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env (see .env.example)}@postgres:5432/${POSTGRES_DB:-hilbras}}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       AUTH_API_PUBLIC_URL: ${AUTH_API_PUBLIC_URL:-http://localhost:4001}
       CLIENT_APP_URL: ${CLIENT_APP_URL:-http://localhost:5173}
@@ -68,7 +90,7 @@ services:
       KEYSTONE_INTERNAL_API_KEY: ${KEYSTONE_INTERNAL_API_KEY}
       KEYSTONE_ENCRYPTION_KEY: ${KEYSTONE_ENCRYPTION_KEY}
       KEYSTONE_SETUP_MODE: ${KEYSTONE_SETUP_MODE:-false}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-none}
       EMAIL_FROM: ${EMAIL_FROM:-keystone@local.hilbras.ai}

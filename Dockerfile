@@ -9,8 +9,11 @@ RUN npm ci
 COPY packages/keystone-sdk/package*.json ./packages/keystone-sdk/
 RUN cd packages/keystone-sdk && npm ci
 
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm ci
+
 COPY . .
-RUN npm run build:sdk && npm run build
+RUN npm run build:sdk && npm run build && cd frontend && npm run build
 
 # ---------- Production stage ----------
 FROM node:26-slim
@@ -37,8 +40,17 @@ RUN rm -rf /usr/local/lib/node_modules/npm \
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/packages/keystone-sdk/dist ./packages/keystone-sdk/dist
+# The setup wizard serves this directory when KEYSTONE_SETUP_MODE=true; without
+# it the documented /setup page 404s and the container only works after manual
+# configuration.
+COPY --from=builder /app/frontend/dist ./frontend/dist
 
 ENV NODE_ENV=production
 EXPOSE 4001
+
+# Run as the same uid the k8s manifests pin (runAsUser: 1000), so bare
+# `docker run` and compose get the same posture as the cluster.
+RUN chown -R node:node /app
+USER node
 
 CMD ["node", "dist/index.js"]

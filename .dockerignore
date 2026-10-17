@@ -74,12 +74,12 @@ docs/
 
 # Tests — not shipped, and they carry test-only credentials.
 #
-# `packages/*/src` is deliberately NOT excluded: the builder stage runs
-# `npm run build:sdk`, which compiles packages/keystone-sdk/src. Excluding it was
-# tried and the image stopped building — a .dockerignore that breaks the build is
-# worse than a large context.
+# `packages/*/src` and `frontend/src` are deliberately NOT excluded: the builder
+# stage runs `npm run build:sdk`, `npm run build` and `cd frontend && npm run
+# build`, all of which compile these sources. Excluding them was tried and the
+# image stopped building — a .dockerignore that breaks the build is worse than
+# a large context.
 src/tests
 **/*.test.ts
 **/*.test.js
-frontend/src
 frontend/e2e

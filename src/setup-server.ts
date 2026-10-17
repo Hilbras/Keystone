@@ -49,6 +49,11 @@ async function buildSetupApp() {
     if (stat.isDirectory()) {
       app.register(import("@fastify/static"), {
         root: frontendDist,
+        // Under /setup/, where DEPLOYMENT.md sends operators. Registered at the
+        // app root instead, `GET /setup/` resolves to `<dist>/setup/` (which
+        // does not exist) and the documented page 404s while the files sit in
+        // the image — which is how the container shipped.
+        prefix: "/setup/",
         wildcard: true,
       });
     }
@@ -90,7 +95,7 @@ function setupBindHost(): string {
   return config.HOST;
 }
 
-async function start() {
+export async function startSetupServer() {
   generateSetupToken();
   printSetupToken();
 
@@ -114,5 +119,5 @@ async function start() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  start();
+  startSetupServer();
 }

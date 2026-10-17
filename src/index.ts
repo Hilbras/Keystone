@@ -453,6 +453,16 @@ async function start() {
     }
   }
 
+  // The JWT signing keypair is stored in `secrets`; without an environment
+  // wrap key its protection degrades to "whoever can read the database in
+  // plaintext" — the same trust the database connection already implies, but
+  // stated once so an operator knows a table dump is a token-forging dump.
+  if (config.NODE_ENV === "production" && !config.KEYSTONE_ENCRYPTION_KEY) {
+    app.log.warn(
+      "KEYSTONE_ENCRYPTION_KEY is not set: the JWT signing keypair in the secrets table is stored unwrapped. Set it so a database dump alone cannot mint tokens."
+    );
+  }
+
   try {
     await app.listen({ port: config.PORT, host: config.HOST });
     app.log.info(`Hilbras Keystone running on http://${config.HOST}:${config.PORT}`);
@@ -463,5 +473,14 @@ async function start() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  start();
+  if (config.SETUP_MODE) {
+    // The container entrypoint is always `dist/index.js`; setup mode must pick
+    // the standalone setup server here or `KEYSTONE_SETUP_MODE=true` silently
+    // boots the main application — which needs a database that does not exist
+    // yet, which is the entire point of setup mode.
+    const { startSetupServer } = await import("./setup-server.js");
+    void startSetupServer();
+  } else {
+    start();
+  }
 }

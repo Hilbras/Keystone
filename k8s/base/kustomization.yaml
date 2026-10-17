@@ -7,7 +7,13 @@ resources:
   - namespace.yaml
   - serviceaccount.yaml
   - configmap.yaml
-  - secret.example.yaml
+  # NOTE: no secret.yaml here on purpose. `secret.example.yaml` used to be in
+  # this list, so `kubectl apply -k base` deployed its placeholder values
+  # (`change-me`, an example DATABASE_URL) as the live Secret. Delete or edit
+  # only the example file, not a real credential. Create the real Secret
+  # out-of-band before applying — see the Quick start in k8s/README.md. The
+  # verify gate still holds the manifest against the deployment's envFrom
+  # references, so every required key must exist in the example/template.
   - deployment.yaml
   - service.yaml
   # **No ingress.yaml here, and its absence is the control.** The base Service is

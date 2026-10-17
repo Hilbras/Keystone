@@ -207,6 +207,13 @@ export const config = {
   TOTP_ISSUER: getEnv("TOTP_ISSUER", "Hilbras"),
   TOTP_ENCRYPTION_KEY: getEnv("KEYSTONE_TOTP_ENCRYPTION_KEY"),
   /**
+   * Setup-wizard entrypoint: `index.ts` delegates to the standalone setup
+   * server instead of booting the main application, which is what makes
+   * `KEYSTONE_SETUP_MODE=true node dist/index.js` (the container entrypoint)
+   * actually serve `/setup`.
+   */
+  SETUP_MODE: getEnv("KEYSTONE_SETUP_MODE", "false") === "true",
+  /**
    * Escape hatch for a production boot with deliberately weak defaults — the
    * TOTP key guard in index.ts refuses to start without this set to true.
    */
