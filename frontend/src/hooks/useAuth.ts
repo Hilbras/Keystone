@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, getKeystoneAccessToken } from "../api.ts";
+import { api, SESSION_EXPIRED_EVENT } from "../api.ts";
 
 export interface AuthUser {
   id: string;
@@ -11,55 +11,60 @@ export interface AuthUser {
 }
 
 export interface AuthState {
-  token: string | null;
   user: AuthUser | null;
   loading: boolean;
   error: string | null;
 }
 
 /**
- * Hook for Keystone token-based admin authentication.
+ * Hook for Keystone cookie-based admin authentication.
  */
 export function useAuth(): AuthState & { logout: () => void } {
-  const [token, setToken] = useState<string | null>(getKeystoneAccessToken());
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setToken(getKeystoneAccessToken());
-  }, []);
-
-  useEffect(() => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
+    let cancelled = false;
     api
       .getMe()
       .then((result) => {
-        setUser(result.user as AuthUser);
+        if (!cancelled) setUser(result.user as AuthUser);
       })
       .catch((err) => {
+        if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
-        if (message.toLowerCase().includes("invalid token") || message.toLowerCase().includes("unauthorized")) {
-          localStorage.removeItem("keystone-access-token");
-          window.location.reload();
-          return;
+        const lower = message.toLowerCase();
+        if (lower.includes("unauthorized") || lower.includes("401")) {
+          // Being signed out is a state, not an error to surface.
+          setUser(null);
+          setError(null);
+        } else {
+          setError(message);
         }
-        setError(message);
       })
-      .finally(() => setLoading(false));
-  }, [token]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onExpired = () => {
+      setUser(null);
+      setLoading(false);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
 
   const logout = () => {
-    localStorage.removeItem("keystone-access-token");
+    // Fire-and-forget: the reload below tears the page down either way.
+    api.logout().catch(() => {});
     window.location.reload();
   };
 
-  return { token, user, loading, error, logout };
+  return { user, loading, error, logout };
 }
