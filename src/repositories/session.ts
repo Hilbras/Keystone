@@ -26,7 +26,7 @@ export class SessionRepository {
 
   async listByUser(userId: string) {
     return db.select().from(userSessions)
-      .where(eq(userSessions.userId, userId))
+      .where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)))
       .orderBy(desc(userSessions.lastSeenAt));
   }
 
@@ -64,15 +64,6 @@ export class SessionRepository {
   async deleteExpired() {
     await db.delete(userSessions)
       .where(lt(userSessions.expiresAt, new Date()));
-  }
-
-  async deleteAllForUser(userId: string, exceptRefreshTokenId?: string) {
-    if (exceptRefreshTokenId) {
-      await db.delete(userSessions)
-        .where(and(eq(userSessions.userId, userId), lt(userSessions.refreshTokenId, exceptRefreshTokenId)));
-    } else {
-      await db.delete(userSessions).where(eq(userSessions.userId, userId));
-    }
   }
 
   async revokeRefreshToken(tokenId: string) {

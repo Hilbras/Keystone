@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { config } from "../config.js";
 import { SessionRepository } from "../repositories/session.js";
+import { revokeUserSessions } from "../services/sessionRevocation.js";
 
 const sessions = new SessionRepository();
 
@@ -48,15 +49,28 @@ export default async function sessionRoutes(app: FastifyInstance) {
     const userId = request.user?.id;
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
 
-    const currentRefreshToken = request.cookies?.[config.COOKIE_NAME];
-    let currentRefreshTokenId: string | undefined;
+    // The refresh cookie carries the credential that must survive "log out
+    // everywhere else"; the access cookie (`config.COOKIE_NAME`) never matches
+    // a row in refresh_tokens, so reading it here left the except-branch dead.
+    const currentRefreshToken = request.cookies?.[`${config.COOKIE_NAME}-refresh`];
+    let exceptSessionId: string | undefined;
+    let exceptRefreshTokenId: string | undefined;
     if (currentRefreshToken) {
       const row = await sessions.findRefreshTokenByHash(hashToken(currentRefreshToken));
-      currentRefreshTokenId = row?.id;
+      if (row) {
+        exceptRefreshTokenId = row.id;
+        exceptSessionId = (await sessions.findByRefreshTokenId(row.id))?.id;
+      }
     }
 
-    await sessions.deleteAllForUser(userId, currentRefreshTokenId);
-    await request.audit("sessions_revoked_all", { exceptSessionId: currentRefreshTokenId });
+    // Deleting session rows alone never revoked refresh_tokens, so every
+    // outstanding refresh token kept minting access tokens after a revoke-all.
+    const counts = await revokeUserSessions(userId, { exceptSessionId, exceptRefreshTokenId });
+    await request.audit("sessions_revoked_all", {
+      exceptSessionId,
+      sessions: counts.sessions,
+      refreshTokens: counts.refreshTokens,
+    });
     return { success: true };
   });
 }

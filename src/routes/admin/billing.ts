@@ -41,7 +41,15 @@ export default async function billingRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const user = request.user!;
       const result = await provisionBillingCustomer(id, user.email!);
-      await request.audit("billing_customer_provisioned", { orgId: id });
+      const success = result.ok !== false;
+      await request.audit("billing_customer_provisioned", {
+        orgId: id,
+        success,
+        ...(success ? {} : { reason: result.reason }),
+      });
+      if (!success) {
+        return reply.status(503).send(result);
+      }
       return reply.status(201).send(result);
     }
   );

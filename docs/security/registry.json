@@ -1112,6 +1112,20 @@
       "test": "src/tests/security/supplyChain/releaseDispatchRecovery.test.ts",
       "documentation": "docs/security/RELEASE-HOLD-3.7.1.md",
       "covers": []
+    },
+    {
+      "id": "SEC-086",
+      "title": "Revoke-all sessions left every refresh token able to mint access tokens",
+      "severity": "critical",
+      "component": "sessions",
+      "release": "3.9.3",
+      "issue": "Three stacked defects in one control, with zero route-level tests - the suite exercised only the service primitives the route failed to call.\n\n1. `POST /auth/sessions/revoke-all` deleted rows from `user_sessions` and never touched `refresh_tokens`. Refresh validation checks only `refresh_tokens.revoked_at`/`expires_at`, so after \"log out everywhere\" every outstanding refresh token kept rotating into fresh access tokens for the full `JWT_REFRESH_TOKEN_TTL`. The correct primitive (`revokeUserSessions` in `sessionRevocation.ts`, which revokes both tables and whose own comments describe exactly this failure mode) existed and was used by password reset - but not by the route.\n2. The \"except current session\" carve-out read the **access** cookie (`config.COOKIE_NAME`) and hashed it against `refresh_tokens`, where only refresh-cookie values ever appear. The lookup could never match, so the except-branch was permanently dead, and the audit row reported a refresh-token id while labelling it `exceptSessionId`.\n3. The repository's except-filter used `lt(userSessions.refreshTokenId, exceptId)` - a lexicographic `<` on UUID text where \"not equal\" was meant - so even a fixed cookie read would have deleted only the sessions whose token ids sorted below the kept one.\n\nIntroduced alongside the fix: revoking tokens made admin-revocations indistinguishable from rotation-consumed ones (both just `revokedAt`), and replay detection treats any revoked-token presentation as a leak, revoking **all** credentials. A stale tab - or an ex-holder of an already-revoked token - could then repeatedly kill the caller's fresh session, giving the very token the control just mooted a session-DoS against the account.",
+      "fix": "`src/routes/sessions.ts` - reads `${COOKIE_NAME}-refresh`, resolves the caller's own session id via `findByRefreshTokenId`, and calls `revokeUserSessions(userId, { exceptSessionId, exceptRefreshTokenId })`; the audit row now carries a real session id plus both revocation counts.\n\n`src/repositories/session.ts` - `deleteAllForUser` (the `lt` bug) removed; `listByUser` filters `revokedAt` since revocation now marks rows instead of deleting them.\n\n`src/db/schema.ts` + migration `0019_refresh_token_consumed_at` - new `refresh_tokens.consumedAt`, set only by the rotation claim in `tokens.ts`. `refreshTokenState.ts` keys replay detection on `consumedAt`, so re-presenting a consumed token (two parties hold it) still revokes everything while an administratively revoked token gets a plain 401.\n\n`src/tests/security/sessions/route-revoke-all.test.ts` - route-level coverage: revoked tokens cannot rotate, the caller's own token survives, the audit payload is truthful, revoked sessions disappear from the list, and `DELETE /auth/sessions/:id` actually kills that token (also previously untested).",
+      "test": "src/tests/security/sessions/route-revoke-all.test.ts",
+      "documentation": "docs/security/tokens.md",
+      "covers": [
+        "session-persistence"
+      ]
     }
   ],
   "withdrawn": [

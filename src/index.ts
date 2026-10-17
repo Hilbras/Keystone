@@ -428,6 +428,31 @@ async function start() {
     await stopTracing();
   });
 
+  // TOTP secrets (and backup-code peppers) are encrypted with a key derived
+  // from TOTP_ENCRYPTION_KEY, falling back to INTERNAL_API_KEY. Without a real
+  // key, production would encrypt every enrolled authenticator with a fallback
+  // any reader of the source can reconstruct from an empty database dump.
+  {
+    // Long enough to pass a length check but public: the value shipped in
+    // .env.example and k8s examples.
+    const PLACEHOLDER_SECRET = "change-me-to-a-random-32-char-secret";
+    const totpKey = config.TOTP_ENCRYPTION_KEY || config.INTERNAL_API_KEY;
+    const weakKey = !totpKey || totpKey.length < 32 || totpKey === PLACEHOLDER_SECRET;
+    if (config.NODE_ENV === "production" && weakKey) {
+      app.log.fatal(
+        "KEYSTONE_TOTP_ENCRYPTION_KEY (or KEYSTONE_INTERNAL_API_KEY) must be a real 32+ character secret — placeholder and default values are refused so TOTP secrets are not encrypted with a publicly known key. Set KEYSTONE_ALLOW_DEV_DEFAULTS=true to override."
+      );
+      if (!config.ALLOW_DEV_DEFAULTS) {
+        process.exit(1);
+      }
+      app.log.warn("Continuing with a weak TOTP key because KEYSTONE_ALLOW_DEV_DEFAULTS=true");
+    } else if (weakKey) {
+      app.log.warn(
+        "TOTP secrets are encrypted with the development default key — set KEYSTONE_TOTP_ENCRYPTION_KEY (or a 32+ char KEYSTONE_INTERNAL_API_KEY) before deploying this database."
+      );
+    }
+  }
+
   try {
     await app.listen({ port: config.PORT, host: config.HOST });
     app.log.info(`Hilbras Keystone running on http://${config.HOST}:${config.PORT}`);

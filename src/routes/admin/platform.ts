@@ -160,12 +160,14 @@ export default async function platformRoutes(app: FastifyInstance) {
       return reply.status(501).send({ error: "Retry is not supported by the current queue provider" });
     }
     await queue.retry(id);
+    await request.audit("platform_queue_retry_requested", { jobId: id });
     return { success: true };
   });
 
-  app.post("/platform/queue/retry-all", { preHandler: [requirePlatformRole("owner")] }, async () => {
+  app.post("/platform/queue/retry-all", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
     const queue = app.container.queue;
     if (queue.retryAll) await queue.retryAll();
+    await request.audit("platform_queue_retry_requested", { all: true });
     return { success: true };
   });
 

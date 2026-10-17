@@ -178,6 +178,14 @@ export const refreshTokens = pgTable(
     tokenHash: text("token_hash").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /**
+     * Set only when rotation consumes the token — a successful exchange, not an
+     * administrative revocation (logout, revoke-all, deactivation). Replaying a
+     * *consumed* token means two parties hold it; replaying an admin-revoked
+     * token means nothing (a stale tab after "log out everywhere else").
+     * Only `consumedAt` triggers the revoke-everything replay response.
+     */
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),

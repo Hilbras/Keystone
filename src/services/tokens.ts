@@ -477,7 +477,7 @@ async function rotateRefreshTokenInternal(
   // pass. The conditional update makes concurrent rotations single-use.
   const [claimed] = await db
     .update(refreshTokens)
-    .set({ revokedAt: now })
+    .set({ revokedAt: now, consumedAt: now })
     .where(
       and(
         eq(refreshTokens.id, existing.id),

@@ -206,6 +206,11 @@ export const config = {
   OAUTH_CODE_TTL_SECONDS: Number(getEnv("OAUTH_CODE_TTL_SECONDS", "60")),
   TOTP_ISSUER: getEnv("TOTP_ISSUER", "Hilbras"),
   TOTP_ENCRYPTION_KEY: getEnv("KEYSTONE_TOTP_ENCRYPTION_KEY"),
+  /**
+   * Escape hatch for a production boot with deliberately weak defaults — the
+   * TOTP key guard in index.ts refuses to start without this set to true.
+   */
+  ALLOW_DEV_DEFAULTS: getEnv("KEYSTONE_ALLOW_DEV_DEFAULTS", "false") === "true",
   // SCIM. `SCIM_BEARER_TOKEN` / `SCIM_ORG_ID` are legacy: they are read once at
   // startup to create a per-organization connection, then superseded by the
   // connection API. New deployments should use the connection API only.
