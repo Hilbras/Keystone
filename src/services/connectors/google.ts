@@ -1,3 +1,4 @@
+import { config } from "../../config.js";
 import { fetchSsoEndpoint } from "../ssoEndpointPolicy.js";
 import { OidcConnector, normalizePayload } from "./oidc.js";
 import type { ExternalIdentity, AuthorizeUrlOptions } from "./types.js";
@@ -113,7 +114,7 @@ export class GoogleConnector extends OidcConnector {
   }
 
   private logDebug(message: string, err: unknown): void {
-    if (process.env.NODE_ENV !== "test") {
+    if (config.NODE_ENV !== "test") {
       // eslint-disable-next-line no-console
       console.debug(`[GoogleConnector] ${message}:`, err);
     }

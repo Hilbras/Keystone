@@ -36,7 +36,7 @@ export interface MfaCompleteResponse extends AuthResponse {
 
 export interface AuthenticationSdk {
   register(input: { username: string; email: string; password: string; name?: string; clientId?: string; metadata?: Record<string, unknown> }): Promise<Result<AuthResponse>>;
-  login(input: { email: string; password: string; clientId?: string; flow?: "login" | "token_login" }): Promise<Result<LoginResponse>>;
+  login(input: { email: string; password: string; clientId?: string; flow?: "login" | "token_login"; ipAddress?: string; userAgent?: string }): Promise<Result<LoginResponse>>;
   completeMfa(input: { challenge: string; code: string; factor?: "totp" | "backup_code"; ipAddress?: string; userAgent?: string }): Promise<Result<MfaCompleteResponse>>;
   refresh(refreshToken: string, clientId?: string): Promise<Result<{ accessToken: string; refreshToken: string; expiresAt: Date; userId?: string }>>;
   logout(refreshToken?: string): Promise<Result<void>>;

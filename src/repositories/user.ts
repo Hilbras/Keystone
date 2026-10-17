@@ -295,10 +295,6 @@ export class DrizzleUserRepository implements UserRepository {
     }
   }
 
-  async listAll(): Promise<User[]> {
-    return db.select().from(users);
-  }
-
   async countByRole(role: string): Promise<number> {
     const [row] = await db
       .select({ count: sql<number>`count(*)`.mapWith(Number) })
@@ -317,6 +313,10 @@ export class DrizzleUserRepository implements UserRepository {
 
   async disableTotp(userId: string): Promise<void> {
     await db.update(users).set({ totpSecret: null, totpEnabled: false, totpVerifiedAt: null }).where(eq(users.id, userId));
+  }
+
+  async updatePasswordHash(userId: string, passwordHash: string): Promise<void> {
+    await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, userId));
   }
 
   async deleteById(userId: string): Promise<void> {
@@ -350,7 +350,7 @@ export class DrizzleIdentityRepository {
     const [existing] = await db
       .select({ user: users })
       .from(userIdentities)
-      .where(eq(userIdentities.externalSub, externalSub))
+      .where(and(eq(userIdentities.providerId, providerId), eq(userIdentities.externalSub, externalSub)))
       .innerJoin(users, eq(userIdentities.userId, users.id))
       .limit(1);
     return existing?.user;

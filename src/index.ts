@@ -463,6 +463,16 @@ async function start() {
     );
   }
 
+  // A production boot carrying development cookie posture would send session
+  // cookies over plaintext. config already defaults COOKIE_SECURE to true when
+  // NODE_ENV=production, so reaching here means somebody set it to false.
+  if (config.NODE_ENV === "production" && !config.COOKIE_SECURE && !config.ALLOW_DEV_DEFAULTS) {
+    app.log.fatal(
+      "COOKIE_SECURE is false in production — sessions would travel in plaintext. Refusing to start: set COOKIE_SECURE=true, or KEYSTONE_ALLOW_DEV_DEFAULTS=true if this really is a development deployment."
+    );
+    process.exit(1);
+  }
+
   try {
     await app.listen({ port: config.PORT, host: config.HOST });
     app.log.info(`Hilbras Keystone running on http://${config.HOST}:${config.PORT}`);

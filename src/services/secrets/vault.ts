@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } from "jose";
+import { config } from "../../config.js";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
 
@@ -22,9 +23,9 @@ export class VaultSecretsProvider implements SecretsProvider {
   private mountPath: string;
 
   constructor() {
-    this.vaultAddr = (process.env.VAULT_ADDR || "").replace(/\/$/, "");
-    this.vaultToken = process.env.VAULT_TOKEN || "";
-    this.mountPath = (process.env.VAULT_MOUNT_PATH || "secret").replace(/(^\/)|(\/$)/g, "");
+    this.vaultAddr = config.VAULT_ADDR.replace(/\/$/, "");
+    this.vaultToken = config.VAULT_TOKEN;
+    this.mountPath = config.VAULT_MOUNT_PATH.replace(/(^\/)|(\/$)/g, "");
 
     if (!this.vaultAddr || !this.vaultToken) {
       throw new Error("VaultSecretsProvider requires VAULT_ADDR and VAULT_TOKEN");

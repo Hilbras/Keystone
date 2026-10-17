@@ -267,7 +267,7 @@ export async function getDiscovery(): Promise<Record<string, unknown>> {
 }
 
 function configPublicUrl(): string {
-  return process.env.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
+  return config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
 }
 
 function splitName(name: string): { givenName: string; familyName: string } {

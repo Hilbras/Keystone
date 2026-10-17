@@ -89,6 +89,7 @@ async function buildSetupApp() {
  * a warning, because that is the decision this default exists to make explicit.
  */
 function setupBindHost(): string {
+  // Allowed bootstrap read: read at listen time so an in-process override still applies after config has snapshotted the environment; documented bootstrap site.
   const explicit = process.env.KEYSTONE_SETUP_HOST?.trim();
   if (explicit) return explicit;
   if (config.HOST === "0.0.0.0" || config.HOST === "::") return "127.0.0.1";

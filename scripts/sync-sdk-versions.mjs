@@ -21,6 +21,10 @@
  * Run as a script rather than a hand edit so the five files cannot drift from each
  * other, and so the *next* release is one command rather than five.
  *
+ * Each package's `package-lock.json` is carried along too: it repeats the version
+ * in two places and npm only recomputes them when an install runs, so a bump that
+ * stops at package.json leaves the pair disagreeing.
+ *
  * Usage: node scripts/sync-sdk-versions.mjs [--check]
  */
 import { readFile, readdir, writeFile } from "node:fs/promises";
@@ -98,18 +102,41 @@ for (const name of dirs) {
   const after = JSON.stringify(manifest, null, 2) + "\n";
   if (after === original) {
     console.log(`  ${name.padEnd(18)} already at ${server.version}, supports ${range}`);
-    continue;
+  } else if (check) {
+    stale.push(
+      `packages/${name} is at ${was} and should be at ${server.version} (supports ${range})`
+    );
+  } else {
+    await writeIfUnchanged(file, original, after);
+    console.log(`  ${name.padEnd(18)} ${was} -> ${server.version}, supports ${range}`);
   }
+
+  // The lockfile repeats the version in two places — top-level and under
+  // `packages[""]` — and npm recomputes neither unless an install runs. A bump
+  // that reaches package.json and not its lock leaves the pair disagreeing about
+  // what version was released: what was found at 3.5.9 against a 3.9.2 manifest.
+  // So both files are versioned together here, by the same CAS write.
+  const lockFile = path.join(PACKAGES, name, "package-lock.json");
+  if (!existsSync(lockFile)) continue;
+  const lockOriginal = await readFile(lockFile, "utf8");
+  const lock = JSON.parse(lockOriginal);
+  const locked = [lock.version, lock.packages?.[""]?.version];
+  if (locked.every((v) => v === server.version)) continue;
+  const wasLock = locked.find((v) => v !== server.version) ?? lock.version;
+
+  lock.version = server.version;
+  if (lock.packages?.[""]) lock.packages[""].version = server.version;
+  const lockAfter = JSON.stringify(lock, null, 2) + "\n";
 
   if (check) {
     stale.push(
-      `packages/${name} is at ${was} and should be at ${server.version} (supports ${range})`
+      `packages/${name}/package-lock.json is at ${wasLock} and should be at ${server.version}`
     );
     continue;
   }
 
-  await writeIfUnchanged(file, original, after);
-  console.log(`  ${name.padEnd(18)} ${was} -> ${server.version}, supports ${range}`);
+  await writeIfUnchanged(lockFile, lockOriginal, lockAfter);
+  console.log(`  ${name.padEnd(18)} package-lock.json ${wasLock} -> ${server.version}`);
 }
 
 if (check && stale.length > 0) {

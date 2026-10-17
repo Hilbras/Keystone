@@ -51,11 +51,15 @@ export class DrizzlePlatformRepository implements PlatformRepository {
         createdAt: users.createdAt,
       })
       .from(users)
-      .orderBy(users.createdAt);
+      .orderBy(users.createdAt)
+      // Owner-only, but unbounded: whole tables were materialised into memory
+      // on every call, and the second-largest table on a long-lived deployment
+      // has no natural ceiling. Newest-first cap keeps the admin view useful.
+      .limit(1000);
   }
 
   async listOrganizations(): Promise<PlatformOrganization[]> {
-    return db.select().from(organizations).orderBy(organizations.createdAt);
+    return db.select().from(organizations).orderBy(organizations.createdAt).limit(1000);
   }
 
   async listApplications(): Promise<PlatformApplication[]> {
@@ -75,7 +79,8 @@ export class DrizzlePlatformRepository implements PlatformRepository {
         updatedAt: applications.updatedAt,
       })
       .from(applications)
-      .orderBy(applications.createdAt);
+      .orderBy(applications.createdAt)
+      .limit(1000);
   }
 
   /**

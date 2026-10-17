@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { emailVerificationTokens, users, type User } from "../db/schema.js";
 import { emailProvider } from "./email.js";
 import { consumeEmailVerificationTokenRow } from "./singleUse.js";
+import { config } from "../config.js";
 
 const TOKEN_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 
@@ -51,7 +52,7 @@ export async function consumeVerificationToken(token: string): Promise<User | un
 }
 
 function verificationUrl(token: string): string {
-  const base = process.env.CLIENT_APP_URL || "http://localhost:5173";
+  const base = config.CLIENT_APP_URL;
   return `${base}/#verify-email=${encodeURIComponent(token)}`;
 }
 

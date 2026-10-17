@@ -94,34 +94,41 @@ export class DrizzleOrganizationRepository implements OrganizationRepository {
   }
 
   async addMembership(input: { orgId: string; userId: string; role: "owner" | "admin" | "member" }): Promise<OrgMembership> {
-    // Lock the user row first. A concurrent organization removal decides
-    // whether the account should be deactivated by counting memberships, so
-    // adding one must not be able to slip in after that count is taken.
-    await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.id, input.userId))
-      .for("update");
-
     if (!ORGANIZATION_ROLES.has(input.role)) throw new Error("Invalid organization role");
-    const [membership] = await db
-      .insert(orgMemberships)
-      .values({
-        orgId: input.orgId,
-        userId: input.userId,
-        role: input.role,
-      })
-      .onConflictDoNothing({ target: [orgMemberships.orgId, orgMemberships.userId] })
-      .returning();
 
-    if (membership) return membership;
+    // Lock and insert in ONE transaction: as separate autocommit statements the
+    // FOR UPDATE lock released before the insert, so the check the lock exists
+    // for (a concurrent organization removal counting memberships) never ran
+    // against a row that was still being added.
+    return db.transaction(async (tx) => {
+      // Lock the user row first. A concurrent organization removal decides
+      // whether the account should be deactivated by counting memberships, so
+      // adding one must not be able to slip in after that count is taken.
+      await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, input.userId))
+        .for("update");
 
-    const [existing] = await db
-      .select()
-      .from(orgMemberships)
-      .where(and(eq(orgMemberships.orgId, input.orgId), eq(orgMemberships.userId, input.userId)))
-      .limit(1);
-    return existing;
+      const [membership] = await tx
+        .insert(orgMemberships)
+        .values({
+          orgId: input.orgId,
+          userId: input.userId,
+          role: input.role,
+        })
+        .onConflictDoNothing({ target: [orgMemberships.orgId, orgMemberships.userId] })
+        .returning();
+
+      if (membership) return membership;
+
+      const [existing] = await tx
+        .select()
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, input.orgId), eq(orgMemberships.userId, input.userId)))
+        .limit(1);
+      return existing;
+    });
   }
 
   async findMembership(orgId: string, userId: string): Promise<OrgMembership | undefined> {

@@ -4,12 +4,12 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**84 findings.**
+**85 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 7 |
-| high | 36 |
+| high | 37 |
 | medium | 27 |
 | low | 14 |
 
@@ -49,7 +49,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 | `xff-spoofing` | SEC-008, SEC-009 |
 | `api-scope-escalation` | SEC-023, SEC-024, SEC-025 |
 | `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031 |
-| `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038, SEC-086 |
+| `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038, SEC-086, SEC-087 |
 | `password-reset-invalidation` | SEC-014 |
 
 ## Critical
@@ -688,6 +688,26 @@ Scanned after the push rather than before it. The alternative is a second full b
 **Test.** `src/tests/security/supplyChain/imageVulnerabilityGate.test.ts`
 
 **Documentation.** [docs/security/RELEASE-HOLD-3.7.1.md](RELEASE-HOLD-3.7.1.md)
+
+### SEC-087 — Per-application IP lists vanished when client_id was omitted from the login body
+
+*Fixed in v3.9.3. Component: `anomaly-detection`.*
+
+**Issue.** `checkIpAllowed(clientId, ip)` returned `{ allowed: true }` whenever `clientId` was falsy, and the value came straight from an optional body field on `POST /auth/login`, `/auth/register` and token-login. Omitting — or inventing — that one field walked past `allowedIps` and `blockedIps` entirely, so a deployment using them as a network control (the only way they are documented to be usable) enforced nothing against anyone who chose not to identify an application. The check also ran before the account was known, so no property of the *account's* applications could ever be consulted for a bare login.
+
+Promoted from a deep-scan finding: the bypass was structural, not an edge case — the control's entire input was attacker-controlled and optional.
+
+**Fix.** `src/services/domain/authentication.ts` — after the lockout guard and before the password verify, every login whose caller address is known consults the applications of each organization the account belongs to: a `blockedIps` match or a miss against a non-empty `allowedIps` refuses with `IP_NOT_ALLOWED` regardless of what `client_id` the body claims. Placing it before the password check keeps the refusal from proving which secret was correct, matching how the pre-existing up-front check behaves.
+
+`src/routes/auth.ts` + `src/sdk/index.ts` — login and token-login now forward `ipAddress`/`userAgent` into the application service; before this, `LoginRequest.ipAddress` existed on the interface but nothing in the HTTP path ever populated it, so every downstream consumer (this check, session rows, MFA challenge context) saw `undefined`.
+
+The up-front route check (`services/ipControls.ts`) stays: a submitted `client_id` for a real application is still verified directly, so a restricted app is refused before the account lookup even runs.
+
+**Test.** `src/tests/security/authentication/ip-allowlist.test.ts`
+
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
+
+**Attack classes.** `session-persistence`
 
 ## Medium
 

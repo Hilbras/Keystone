@@ -12,10 +12,12 @@ import type {
   ScimGroupRepository,
   WorkflowRepository,
   PlatformRepository,
+  PasswordResetTokenRepository,
 } from "./repositories/types.js";
 import type { ApiKeyRepository } from "./repositories/apiKey.js";
 import type { SamlConnectionRepository } from "./repositories/samlConnection.js";
 import type { OidcConnectionRepository } from "./repositories/oidcConnection.js";
+import type { SessionRepository } from "./repositories/session.js";
 import type { SecretsProvider } from "./services/secrets/provider.js";
 import type { Queue } from "./services/queue/types.js";
 
@@ -33,9 +35,11 @@ export interface Container {
   scimGroupRepository: ScimGroupRepository;
   workflowRepository: WorkflowRepository;
   platformRepository: PlatformRepository;
+  passwordResetTokenRepository: PasswordResetTokenRepository;
   apiKeyRepository: ApiKeyRepository;
   samlConnectionRepository: SamlConnectionRepository;
   oidcConnectionRepository: OidcConnectionRepository;
+  sessionRepository: SessionRepository;
   secretsProvider: SecretsProvider;
   queue: Queue;
 }

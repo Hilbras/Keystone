@@ -43,7 +43,13 @@ export function requireOrganizationRole(
     await request.server.authenticate(request, reply);
     if (reply.sent) return;
 
-    const { id: orgId } = request.params as { id: string };
+    // A malformed uuid here would otherwise reach the Postgres uuid columns as
+    // a cast error (500); a bad id is a client error, not a server failure.
+    const params = OrganizationParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: "Invalid input", details: params.error.issues });
+    }
+    const orgId = params.data.id;
     const sdk = getSdk();
     const membershipResult = await sdk.authorization.requireOrgRole(request.user!.id, orgId, allowedRoles);
     if (!membershipResult.success) {
@@ -108,3 +114,16 @@ export const BrandingSchema = z
     loginSubtitle: z.string().max(500).optional(),
   })
   .strict();
+
+/**
+ * Bounded pagination for list endpoints. The shared defaults cover the common
+ * case; endpoints with a different historical fallback override `limit` at the
+ * call site via `.extend` so the old default keeps applying.
+ */
+export const ListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+/** Path params for `/organizations/:id/...` routes. */
+export const OrganizationParamsSchema = z.object({ id: z.string().uuid() });

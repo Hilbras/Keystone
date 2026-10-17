@@ -1,20 +1,25 @@
 import crypto from "node:crypto";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { config } from "../config.js";
-import { SessionRepository } from "../repositories/session.js";
 import { revokeUserSessions } from "../services/sessionRevocation.js";
-
-const sessions = new SessionRepository();
 
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
 export default async function sessionRoutes(app: FastifyInstance) {
+  const sessions = app.container.sessionRepository;
   app.get("/sessions", { preHandler: [app.authenticate, app.requireScopes("sessions:read")] }, async (request: FastifyRequest) => {
     const userId = request.user?.id;
     if (!userId) return { sessions: [] };
     const list = await sessions.listByUser(userId);
+    // Only the refresh cookie names a row in refresh_tokens (the access cookie
+    // never hashes to one), so it is the credential that identifies this
+    // browser's own session. No cookie / no row → nothing is "current".
+    const currentRefreshToken = request.cookies?.[`${config.COOKIE_NAME}-refresh`];
+    const currentRefreshRow = currentRefreshToken
+      ? await sessions.findRefreshTokenByHash(hashToken(currentRefreshToken))
+      : undefined;
     return {
       sessions: list.map((s) => ({
         id: s.id,
@@ -24,6 +29,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
         lastSeenAt: s.lastSeenAt,
         expiresAt: s.expiresAt,
         createdAt: s.createdAt,
+        current: !!currentRefreshRow && currentRefreshRow.id === s.refreshTokenId,
       })),
     };
   });

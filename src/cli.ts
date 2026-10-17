@@ -144,7 +144,8 @@ program
           container.userRepository,
           container.applicationRepository,
           container.organizationRepository,
-          new MfaService(container.mfaChallengeRepository, container.userRepository)
+          new MfaService(container.mfaChallengeRepository, container.userRepository),
+          container.passwordResetTokenRepository
         );
         const result = await authService.register({
           email: options.email,
@@ -237,6 +238,7 @@ program
   .action(async () => {
     const { config } = await import("./config.js");
     const required = ["DATABASE_URL"];
+    // Allowed bootstrap read: `required` holds arbitrary variable names, which config's fixed keys cannot index; documented bootstrap site.
     const missing = required.filter((name) => !process.env[name]);
     if (missing.length > 0) {
       console.error(`Missing required environment variables: ${missing.join(", ")}`);

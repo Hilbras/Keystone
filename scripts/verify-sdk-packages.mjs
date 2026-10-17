@@ -25,6 +25,10 @@
  * - **The declared range admits the current version.** A range that excludes the
  *   version being released is a contradiction, and reading it requires arithmetic.
  * - **Every dependency between packages is exact**, and points at the same version.
+ * - **Every declared entry point exists on disk.** `main`, `types`, `module`, and
+ *   `browser` are promises about files a build produces; a `types` field pointing
+ *   at a `.d.ts` nothing emits is a package that fails to install cleanly, and no
+ *   amount of version agreement makes consumers able to resolve it.
  * - **Every package compiles**, so `1.0.0` is a claim about code that exists rather
  *   than a version field nothing is built from.
  *
@@ -89,6 +93,26 @@ function admits(range, version) {
     if (op === "=" && cmp(target, bound) !== 0) return false;
   }
   return true;
+}
+
+/**
+ * Which declared entry-point fields name files that are not on disk.
+ *
+ * Every manifest field that points at a build product: `main`, `types`,
+ * `module`, `browser`. Fields declared as something other than a string (or not
+ * declared at all) are not this gate's problem — `exports`-only layouts, for
+ * instance, are resolved by the consumer's resolver, not by an existence check.
+ */
+function missingEntryFiles(name, manifest) {
+  const missing = [];
+  for (const field of ["main", "types", "module", "browser"]) {
+    const declared = manifest[field];
+    if (typeof declared !== "string") continue;
+    if (!existsSync(path.join(PACKAGES, name, declared))) {
+      missing.push(`"${field}": "${declared}"`);
+    }
+  }
+  return missing;
 }
 
 if (!existsSync(PACKAGES)) {
@@ -170,6 +194,42 @@ for (const [name, manifest] of manifests) {
       }
     }
     void field;
+  }
+
+  // The declared entry points must be files that exist on disk. `main`, `types`,
+  // `module`, and `browser` are promises to consumers about files a build
+  // produces; a `types` field naming a `.d.ts` that no build emits (or a `main`
+  // naming a file that was never written) breaks every install of the package,
+  // and no amount of version agreement makes it resolve.
+  //
+  // The artefacts are gitignored, so a checkout that has never run `npm run
+  // build` has none of them — the same situation the CI gates job documents for
+  // the dashboard generator ("A gate that depends on a build artefact needs the
+  // build"). So a missing entry point first gets the package built once and is
+  // then re-checked: the gate still fails when no build produces what the field
+  // promises — which is what a stale `types` field is — without failing merely
+  // because the tree is clean.
+  let gaps = missingEntryFiles(name, manifest);
+  let buildOut = "";
+  if (gaps.length > 0 && manifest.scripts?.build) {
+    try {
+      await run("npm", ["run", "build"], {
+        cwd: path.join(PACKAGES, name),
+        maxBuffer: 8 * 1024 * 1024,
+      });
+    } catch (err) {
+      const e = /** @type {{ stdout?: string; stderr?: string }} */ (err);
+      buildOut = `${e.stdout ?? ""}${e.stderr ?? ""}`.trim().split("\n").slice(0, 6).join("\n      ");
+    }
+    gaps = missingEntryFiles(name, manifest);
+  }
+  if (gaps.length > 0) {
+    fail(
+      `packages/${name} declares ${gaps.join(", ")}, but that file does not exist ` +
+        `and no build produced it. The field promises consumers a file; either a ` +
+        `build must write it or the field is wrong.` +
+        (buildOut ? `\n      build output:\n      ${buildOut}` : "")
+    );
   }
 
   // Compiled, so the version is a claim about code rather than a field nothing

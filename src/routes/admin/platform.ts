@@ -1,5 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { requirePlatformRole, sendResultError } from "./helpers.js";
+import {
+  ListQuerySchema,
+  requirePlatformRole,
+  sendResultError,
+} from "./helpers.js";
 import { toPublicUser } from "../../types.js";
 import { getSdk } from "../../sdk/index.js";
 import { listRegisteredPlugins, listExtensionPoints, unregisterPlugin } from "../../services/plugins/registry.js";
@@ -28,6 +32,32 @@ const FeatureFlagSchema = z.object({
   description: z.string().max(500).optional(),
 });
 
+const AuditLogQuerySchema = ListQuerySchema.extend({
+  // This endpoint has always defaulted to 100 rows, not the shared 50.
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  event: z.string().max(128).optional(),
+});
+
+const AuditExportQuerySchema = z.object({
+  event: z.string().max(128).optional(),
+  format: z.enum(["csv", "json"]).optional(),
+  limit: z.coerce.number().int().min(1).max(10000).default(1000),
+  orgId: z.string().uuid().optional(),
+  userId: z.string().uuid().optional(),
+});
+
+const UsageQuerySchema = z.object({
+  // A non-numeric `days` fell back to 30 before (`Number(query.days) || 30`),
+  // so `.catch` keeps that fallback; the 1..365 clamp below is unchanged.
+  days: z.coerce.number().catch(30),
+});
+
+const QueueFailedQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+});
+
+const UserParamsSchema = z.object({ id: z.string().uuid() });
+
 export default async function platformRoutes(app: FastifyInstance) {
   const sdk = getSdk();
 
@@ -44,23 +74,31 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { applications: await app.container.platformRepository.listApplications() };
   });
 
-  app.get("/platform/audit-logs", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
-    const query = request.query as { limit?: string; offset?: string; event?: string };
+  app.get("/platform/audit-logs", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
+    const parsed = AuditLogQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+    }
+    const query = parsed.data;
     const logs = await app.container.auditRepository.list({
       event: query.event,
-      limit: query.limit ? Number(query.limit) : 100,
-      offset: query.offset ? Number(query.offset) : 0,
+      limit: query.limit,
+      offset: query.offset,
     });
     return { logs };
   });
 
   app.get("/platform/audit-logs/export", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
-    const query = request.query as { event?: string; format?: string; limit?: string; orgId?: string; userId?: string };
+    const parsed = AuditExportQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+    }
+    const query = parsed.data;
     const logs = await app.container.auditRepository.list({
       event: query.event,
       orgId: query.orgId,
       userId: query.userId,
-      limit: Math.min(Number(query.limit) || 1000, 10000),
+      limit: query.limit,
       offset: 0,
     });
 
@@ -109,9 +147,12 @@ export default async function platformRoutes(app: FastifyInstance) {
     return reply.send([header, ...rows].join("\n"));
   });
 
-  app.get("/platform/metrics/usage", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
-    const query = request.query as { days?: string };
-    const days = Math.min(Math.max(Number(query.days) || 30, 1), 365);
+  app.get("/platform/metrics/usage", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
+    const parsed = UsageQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+    }
+    const days = Math.min(Math.max(parsed.data.days || 30, 1), 365);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
     const series = await app.container.platformRepository.dailySeries(since);
@@ -146,10 +187,13 @@ export default async function platformRoutes(app: FastifyInstance) {
     return { stats };
   });
 
-  app.get("/platform/queue/failed", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
-    const query = request.query as { limit?: string };
+  app.get("/platform/queue/failed", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
+    const parsed = QueueFailedQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
+    }
     const queue = app.container.queue;
-    const failed = queue.getFailed ? await queue.getFailed(Number(query.limit) || 50) : [];
+    const failed = queue.getFailed ? await queue.getFailed(parsed.data.limit) : [];
     return { failed };
   });
 
@@ -243,7 +287,11 @@ export default async function platformRoutes(app: FastifyInstance) {
     "/platform/users/:id/role",
     { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const params = UserParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply.status(400).send({ error: "Invalid input", details: params.error.issues });
+      }
+      const { id } = params.data;
       const parsed = UpdatePlatformRoleSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
@@ -263,7 +311,11 @@ export default async function platformRoutes(app: FastifyInstance) {
     "/platform/users/:id",
     { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const params = UserParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply.status(400).send({ error: "Invalid input", details: params.error.issues });
+      }
+      const { id } = params.data;
       const parsed = UpdateUserSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
@@ -283,7 +335,11 @@ export default async function platformRoutes(app: FastifyInstance) {
     "/platform/users/:id/account-review",
     { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const params = UserParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply.status(400).send({ error: "Invalid input", details: params.error.issues });
+      }
+      const { id } = params.data;
       const parsed = AccountReviewSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.status(400).send({ error: "Invalid input", details: parsed.error.issues });
@@ -302,7 +358,11 @@ export default async function platformRoutes(app: FastifyInstance) {
     "/platform/users/:id",
     { preHandler: [requirePlatformRole("owner")] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const params = UserParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        return reply.status(400).send({ error: "Invalid input", details: params.error.issues });
+      }
+      const { id } = params.data;
       if (request.user!.id === id) {
         return reply.status(400).send({ error: "Cannot deactivate yourself" });
       }

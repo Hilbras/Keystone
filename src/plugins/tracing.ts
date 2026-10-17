@@ -28,7 +28,7 @@ export interface StartTracingOptions {
 
 export function startTracing(options: StartTracingOptions = {}): void {
   if (sdk) return;
-  const endpoint = config.OTEL_EXPORTER_OTLP_ENDPOINT || process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  const endpoint = config.OTEL_EXPORTER_OTLP_ENDPOINT;
   if (!endpoint && !options.spanProcessors) return;
   sdk = new NodeSDK({
     spanProcessors: options.spanProcessors as never,

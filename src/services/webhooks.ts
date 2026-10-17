@@ -118,7 +118,7 @@ const RECLAIM_INTERVAL_MS = 60_000;
  * operator reads when a delivery is being retried by nobody. `process.pid` alone
  * is ambiguous across hosts, which is the case that matters.
  */
-const WORKER_ID = `${process.env.HOSTNAME ?? "local"}#${process.pid}`;
+const WORKER_ID = `${config.HOSTNAME}#${process.pid}`;
 const workerId = () => WORKER_ID;
 
 /**

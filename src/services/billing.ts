@@ -2,6 +2,7 @@ import { eq, and, gte, count } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { organizations, auditLog, orgMemberships, applications } from "../db/schema.js";
 import { getBillingProviderFactory } from "./plugins/registry.js";
+import { config } from "../config.js";
 
 const DEFAULT_PLANS = ["free", "starter", "growth", "enterprise"];
 
@@ -57,7 +58,7 @@ export async function getBillingSummary(orgId: string): Promise<BillingSummary> 
     signups30d: signupRow?.total ?? 0,
   };
 
-  const factory = getBillingProviderFactory(process.env.KEYSTONE_BILLING_PROVIDER || "none");
+  const factory = getBillingProviderFactory(config.BILLING_PROVIDER);
   if (!factory) {
     return { plan: org.plan, usage };
   }
@@ -78,7 +79,7 @@ export async function setOrganizationPlan(orgId: string, plan: string): Promise<
 }
 
 export async function provisionBillingCustomer(orgId: string, email: string): Promise<Record<string, unknown>> {
-  const factory = getBillingProviderFactory(process.env.KEYSTONE_BILLING_PROVIDER || "none");
+  const factory = getBillingProviderFactory(config.BILLING_PROVIDER);
   if (!factory) {
     return { ok: false, reason: "No billing provider configured" };
   }

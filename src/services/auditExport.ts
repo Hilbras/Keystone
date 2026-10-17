@@ -43,11 +43,11 @@ class ConsoleSink implements AuditSink {
 
 function createSinks(): AuditSink[] {
   const sinks: AuditSink[] = [];
-  const webhookUrl = config.AUDIT_WEBHOOK_URL || process.env.AUDIT_WEBHOOK_URL;
+  const webhookUrl = config.AUDIT_WEBHOOK_URL;
   if (webhookUrl) {
     sinks.push(new WebhookSink(webhookUrl));
   }
-  if (config.AUDIT_CONSOLE_EXPORT === "true" || process.env.AUDIT_CONSOLE_EXPORT === "true") {
+  if (config.AUDIT_CONSOLE_EXPORT === "true") {
     sinks.push(new ConsoleSink());
   }
   return sinks;

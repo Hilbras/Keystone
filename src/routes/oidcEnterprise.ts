@@ -16,7 +16,7 @@ import { rateLimit } from "../plugins/rateLimit.js";
 const OIDC_STATE_COOKIE = "keystone_oidc_enterprise_state";
 
 function publicUrl(): string {
-  return process.env.AUTH_API_PUBLIC_URL || "http://localhost:4001";
+  return config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
 }
 
 function setStateCookie(reply: FastifyReply, state: string): void {

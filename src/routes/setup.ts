@@ -107,7 +107,15 @@ async function ensureDbInitialized(request: FastifyRequest, reply: FastifyReply)
       reply.status(400).send({ error: "DATABASE_URL is not configured. Apply configuration first.", code: "DATABASE_URL_MISSING" });
       return false;
     }
-    process.env.DATABASE_URL = databaseUrl;
+    // Re-persist what `writer.read()` just returned: the store already holds
+    // the value and the post-setup restart reloads it from there. The
+    // `process.env` mutation that used to sit here could never feed `initDb()`,
+    // which binds to `config.DATABASE_URL` — a boot-time snapshot that does not
+    // re-read the environment.
+    const persisted = await writer.write({ DATABASE_URL: databaseUrl });
+    if (!persisted.success) {
+      request.log.warn({ error: persisted.error }, "DATABASE_URL could not be re-persisted to the config store");
+    }
     initDb();
     return true;
   } catch (err) {

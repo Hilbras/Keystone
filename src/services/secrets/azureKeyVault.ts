@@ -3,6 +3,7 @@ import { importPKCS8, importSPKI, exportPKCS8, exportSPKI, generateKeyPair } fro
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { decryptAtRest, encryptAtRest, isLegacyCiphertext } from "./cipher.js";
+import { config } from "../../config.js";
 import { serviceLogger } from "../../lib/logger.js";
 
 const moduleLog = serviceLogger("secrets");
@@ -27,10 +28,10 @@ export class AzureKeyVaultSecretsProvider implements SecretsProvider {
   private clientSecret: string;
 
   constructor() {
-    this.vaultUrl = (process.env.AZURE_KEY_VAULT_URL || "").replace(/\/$/, "");
-    this.tenantId = process.env.AZURE_TENANT_ID || "";
-    this.clientId = process.env.AZURE_CLIENT_ID || "";
-    this.clientSecret = process.env.AZURE_CLIENT_SECRET || "";
+    this.vaultUrl = config.AZURE_KEY_VAULT_URL.replace(/\/$/, "");
+    this.tenantId = config.AZURE_TENANT_ID;
+    this.clientId = config.AZURE_CLIENT_ID;
+    this.clientSecret = config.AZURE_CLIENT_SECRET;
 
     if (!this.vaultUrl || !this.tenantId || !this.clientId || !this.clientSecret) {
       throw new Error(

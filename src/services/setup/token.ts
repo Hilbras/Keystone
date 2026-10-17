@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
+import { config } from "../../config.js";
 
 const SETUP_TOKEN_ENV = "KEYSTONE_SETUP_TOKEN";
 
 let generatedToken: string | null = null;
 
 export function getSetupToken(): string | undefined {
-  return process.env[SETUP_TOKEN_ENV] || generatedToken || undefined;
+  return config.SETUP_TOKEN || generatedToken || undefined;
 }
 
 export function generateSetupToken(): string {
@@ -49,9 +50,9 @@ export function printSetupToken(): void {
   const token = getSetupToken();
   if (!token) return;
 
-  const port = process.env.PORT || 4001;
-  const explicit = process.env.KEYSTONE_PRINT_SETUP_TOKEN === "true";
-  const isProduction = process.env.NODE_ENV === "production";
+  const port = config.PORT;
+  const explicit = config.PRINT_SETUP_TOKEN;
+  const isProduction = config.NODE_ENV === "production";
 
   if (explicit && !isProduction) {
     // eslint-disable-next-line no-console

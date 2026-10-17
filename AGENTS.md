@@ -16,7 +16,7 @@ Keystone is a standalone identity platform. It provides:
 
 ## Technology stack
 
-- **Runtime:** Node.js 22, Fastify 5, TypeScript (ES modules)
+- **Runtime:** Node.js 26, Fastify 5, TypeScript (ES modules)
 - **Database:** PostgreSQL 16, Drizzle ORM, `postgres` driver
 - **Cache / Queue:** Redis (ioredis), BullMQ optional
 - **Tokens:** `jose`, RSA key pairs
@@ -76,6 +76,7 @@ src/
     samlConnection.ts # SamlConnectionRepository (CRUD, findActive)
     oidcConnection.ts # OidcConnectionRepository (CRUD, findActive)
     session.ts       # SessionRepository (CRUD, refresh token ops)
+    passwordResetToken.ts # DrizzlePasswordResetTokenRepository (create reset tokens)
     user.ts          # DrizzleUserRepository + DrizzleIdentityRepository
     organization.ts  # DrizzleOrganizationRepository
     application.ts   # DrizzleApplicationRepository
@@ -137,7 +138,7 @@ Database / External providers
 - Abstract persistence. Domain services depend on repository interfaces.
 - Implementations live in `src/repositories/*.ts` (Drizzle-specific).
 - Add new repository interfaces in `src/repositories/types.ts`.
-- Available repositories: `userRepository`, `organizationRepository`, `applicationRepository`, `identityRepository`, `auditRepository`, `permissionRepository`, `apiKeyRepository`, `samlConnectionRepository`, `oidcConnectionRepository`.
+- Available repositories: `userRepository`, `organizationRepository`, `applicationRepository`, `identityRepository`, `auditRepository`, `permissionRepository`, `apiKeyRepository`, `samlConnectionRepository`, `oidcConnectionRepository`, `sessionRepository`, `passwordResetTokenRepository`.
 
 ## Dependency injection
 

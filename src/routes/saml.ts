@@ -30,6 +30,19 @@ export const RelayStateSchema = z.object({
   signature: z.string().min(16),
 });
 
+const AcsBodySchema = z.object({
+  SAMLResponse: z.string().min(1),
+  RelayState: z.string().optional(),
+});
+
+const SsoStartParamsSchema = z.object({ connectionId: z.string().uuid() });
+
+const SsoStartQuerySchema = z.object({
+  // orgId picks the connection row to read; a non-uuid would otherwise reach
+  // the uuid column as a Postgres cast error (500) instead of a bad request.
+  orgId: z.string().uuid(),
+});
+
 type SamlTransaction = {
   connectionId: string;
   orgId: string;
@@ -291,9 +304,12 @@ export default async function samlRoutes(app: FastifyInstance) {
       }),
     ],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { connectionId } = request.params as { connectionId: string };
-    const orgId = (request.query as { orgId?: string }).orgId;
-    if (!orgId) return reply.status(400).send({ error: "orgId is required" });
+    const params = SsoStartParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid connectionId" });
+    const query = SsoStartQuerySchema.safeParse(request.query);
+    if (!query.success) return reply.status(400).send({ error: "orgId is required" });
+    const { connectionId } = params.data;
+    const { orgId } = query.data;
     const connection = await app.container.samlConnectionRepository.findActiveByIdAndOrgId(connectionId, orgId);
 
     if (!connection) {
@@ -360,11 +376,12 @@ export default async function samlRoutes(app: FastifyInstance) {
       }),
     ],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = request.body as { SAMLResponse?: string; RelayState?: string };
-    if (!body.SAMLResponse) {
+    const parsedBody = AcsBodySchema.safeParse(request.body);
+    if (!parsedBody.success) {
       clearTransactionCookie(reply);
       return reply.status(400).send({ error: "Missing SAMLResponse" });
     }
+    const body = parsedBody.data;
 
     let relayState: z.infer<typeof RelayStateSchema> | undefined;
     try {
@@ -474,9 +491,12 @@ export default async function samlRoutes(app: FastifyInstance) {
   });
 
   app.get("/saml/:connectionId/metadata", async (request: FastifyRequest, reply: FastifyReply) => {
-    const { connectionId } = request.params as { connectionId: string };
-    const orgId = (request.query as { orgId?: string }).orgId;
-    if (!orgId) return reply.status(400).send({ error: "orgId is required" });
+    const params = SsoStartParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "Invalid connectionId" });
+    const query = SsoStartQuerySchema.safeParse(request.query);
+    if (!query.success) return reply.status(400).send({ error: "orgId is required" });
+    const { connectionId } = params.data;
+    const { orgId } = query.data;
     const connection = await app.container.samlConnectionRepository.findActiveByIdAndOrgId(connectionId, orgId);
 
     if (!connection) {

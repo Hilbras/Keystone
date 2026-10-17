@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { requireOrganizationRole } from "./helpers.js";
+import { OrganizationParamsSchema, requireOrganizationRole } from "./helpers.js";
 import { config } from "../../config.js";
 import { escapeXml } from "../helpers.js";
 import { toPublicOidcConnection, toPublicSamlConnection } from "../../types.js";
@@ -43,6 +43,8 @@ const OidcConnectionSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+const OrgConnectionParamsSchema = OrganizationParamsSchema.extend({ connectionId: z.string().uuid() });
+
 export default async function ssoRoutes(app: FastifyInstance) {
   const requireSsoManager = requireOrganizationRole(["owner", "admin"], { resource: "sso_connection", action: "manage" });
   const requireSsoReader = requireOrganizationRole(["owner", "admin", "member"], { resource: "sso_connection", action: "read" });
@@ -57,7 +59,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/saml-connections",
     { preHandler: [requireSsoReader] },
     async (request) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const connections = await app.container.samlConnectionRepository.listByOrgId(id);
       return { connections };
     }
@@ -67,7 +69,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/saml-connections",
     { preHandler: [requireSsoManager] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const body = SamlConnectionSchema.parse(request.body);
       try {
         if (body.idpSsoUrl) validateSsoEndpoint(body.idpSsoUrl, "idpSsoUrl");
@@ -85,7 +87,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/saml-connections/:connectionId/metadata",
     { preHandler: [requireSsoReader] },
     async (request, reply) => {
-      const { id, connectionId } = request.params as { id: string; connectionId: string };
+      const { id, connectionId } = OrgConnectionParamsSchema.parse(request.params);
       const connection = await app.container.samlConnectionRepository.findByIdAndOrgId(connectionId, id);
       if (!connection) return reply.status(404).send({ error: "Connection not found" });
 
@@ -103,7 +105,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/saml-connections/:connectionId",
     { preHandler: [requireSsoManager] },
     async (request, reply) => {
-      const { id, connectionId } = request.params as { id: string; connectionId: string };
+      const { id, connectionId } = OrgConnectionParamsSchema.parse(request.params);
       const record = await app.container.samlConnectionRepository.deleteByIdAndOrgId(connectionId, id);
       if (!record) return reply.status(404).send({ error: "Connection not found" });
       await request.audit("saml_connection_deleted", { orgId: id, connectionId: record.id });
@@ -116,7 +118,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/oidc-connections",
     { preHandler: [requireSsoReader] },
     async (request) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const connections = await app.container.oidcConnectionRepository.listByOrgId(id);
       return { connections };
     }
@@ -126,7 +128,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/oidc-connections",
     { preHandler: [requireSsoManager] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const body = OidcConnectionSchema.parse(request.body);
       try {
         validateSsoEndpoint(body.issuer, "issuer");
@@ -147,7 +149,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/oidc-connections/:connectionId",
     { preHandler: [requireSsoManager] },
     async (request, reply) => {
-      const { id, connectionId } = request.params as { id: string; connectionId: string };
+      const { id, connectionId } = OrgConnectionParamsSchema.parse(request.params);
       const record = await app.container.oidcConnectionRepository.deleteByIdAndOrgId(connectionId, id);
       if (!record) return reply.status(404).send({ error: "Connection not found" });
       await request.audit("oidc_connection_deleted", { orgId: id, connectionId: record.id });
@@ -165,7 +167,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/scim-config",
     { preHandler: [requireSsoReader] },
     async (request) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const base = config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
       const connections = await app.container.scimConnectionRepository.listByOrg(id);
       const active = connections.find((c) => c.revokedAt === null) ?? null;
@@ -184,7 +186,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/scim-connections",
     { preHandler: [requireSsoReader] },
     async (request) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const connections = await app.container.scimConnectionRepository.listByOrg(id);
       return { connections: connections.map(publicScimConnection) };
     }
@@ -194,7 +196,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/scim-connections",
     { preHandler: [requireSsoOwner] },
     async (request, reply) => {
-      const { id: orgId } = request.params as { id: string };
+      const { id: orgId } = OrganizationParamsSchema.parse(request.params);
       const body = ScimConnectionSchema.parse(request.body);
 
       const organization = await app.container.organizationRepository.findById(orgId);
@@ -233,7 +235,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/scim-connections/:connectionId/rotate",
     { preHandler: [requireSsoOwner] },
     async (request, reply) => {
-      const { id: orgId, connectionId } = request.params as { id: string; connectionId: string };
+      const { id: orgId, connectionId } = OrgConnectionParamsSchema.parse(request.params);
       const body = ScimRotateSchema.parse(request.body ?? {});
 
       const connection = await app.container.scimConnectionRepository.findById(connectionId);
@@ -266,7 +268,7 @@ export default async function ssoRoutes(app: FastifyInstance) {
     "/organizations/:id/scim-connections/:connectionId",
     { preHandler: [requireSsoOwner] },
     async (request, reply) => {
-      const { id: orgId, connectionId } = request.params as { id: string; connectionId: string };
+      const { id: orgId, connectionId } = OrgConnectionParamsSchema.parse(request.params);
       const connection = await app.container.scimConnectionRepository.findById(connectionId);
       if (!connection || connection.orgId !== orgId) {
         return reply.status(404).send({ error: "SCIM connection not found" });

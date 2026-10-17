@@ -139,7 +139,8 @@ POST   /v1/admin/organizations
 GET    /v1/admin/organizations
 GET    /v1/admin/organizations/:id
 GET    /v1/admin/organizations/:id/members
-POST   /v1/admin/organizations/:id/members/:userId      # role change: owner-only
+PATCH  /v1/admin/organizations/:id/members/:userId      # role change: owner/admin with manage_members
+DELETE /v1/admin/organizations/:id/members/:userId      # remove member (same guard)
 GET    /v1/admin/organizations/:id/users
 ```
 
@@ -197,7 +198,7 @@ Standard provisioning, for pushing users and groups from an IdP.
 ```
 GET    /scim/v2/Users
 POST   /scim/v2/Users
-GET    /scim/v2/Users/.search
+POST   /scim/v2/Users/.search
 GET    /scim/v2/Groups
 ```
 
@@ -232,7 +233,7 @@ POST /auth/totp/disable       requires password step-up
 Passkeys as a second factor.
 
 ```
-POST /auth/webauthn/register/options
+GET  /auth/webauthn/register/options
 POST /auth/webauthn/register/verify
 POST /auth/webauthn/authenticate/options
 POST /auth/webauthn/authenticate/verify

@@ -1126,6 +1126,20 @@
       "covers": [
         "session-persistence"
       ]
+    },
+    {
+      "id": "SEC-087",
+      "title": "Per-application IP lists vanished when client_id was omitted from the login body",
+      "severity": "high",
+      "component": "anomaly-detection",
+      "release": "3.9.3",
+      "issue": "`checkIpAllowed(clientId, ip)` returned `{ allowed: true }` whenever `clientId` was falsy, and the value came straight from an optional body field on `POST /auth/login`, `/auth/register` and token-login. Omitting — or inventing — that one field walked past `allowedIps` and `blockedIps` entirely, so a deployment using them as a network control (the only way they are documented to be usable) enforced nothing against anyone who chose not to identify an application. The check also ran before the account was known, so no property of the *account's* applications could ever be consulted for a bare login.\n\nPromoted from a deep-scan finding: the bypass was structural, not an edge case — the control's entire input was attacker-controlled and optional.",
+      "fix": "`src/services/domain/authentication.ts` — after the lockout guard and before the password verify, every login whose caller address is known consults the applications of each organization the account belongs to: a `blockedIps` match or a miss against a non-empty `allowedIps` refuses with `IP_NOT_ALLOWED` regardless of what `client_id` the body claims. Placing it before the password check keeps the refusal from proving which secret was correct, matching how the pre-existing up-front check behaves.\n\n`src/routes/auth.ts` + `src/sdk/index.ts` — login and token-login now forward `ipAddress`/`userAgent` into the application service; before this, `LoginRequest.ipAddress` existed on the interface but nothing in the HTTP path ever populated it, so every downstream consumer (this check, session rows, MFA challenge context) saw `undefined`.\n\nThe up-front route check (`services/ipControls.ts`) stays: a submitted `client_id` for a real application is still verified directly, so a restricted app is refused before the account lookup even runs.",
+      "test": "src/tests/security/authentication/ip-allowlist.test.ts",
+      "documentation": "docs/security/trust-boundaries.md",
+      "covers": [
+        "session-persistence"
+      ]
     }
   ],
   "withdrawn": [
