@@ -5,6 +5,67 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.2] - 2026-10-06
+
+*SEC-085: the release hold cleared itself, and then six releases turned out to have no way to publish.*
+
+### The hold is cleared
+
+`CVE-2026-103111` is gone from `node:26-slim`. `libpcre2-8-0` is now `10.46-1~deb13u3`,
+which is exactly the condition the hold named — so `v3.7.1` through `v3.9.1` were tagged
+and pushed.
+
+Worth keeping, because it is the second way to get this answer wrong. Scanning
+`node:26-slim` directly reports **3 blocking advisories** and looks like the hold still
+applies. Scanning the **built image** reports **0**, because the runtime stage has npm
+deleted from it — and `brace-expansion` and `undici` are both in the base image's
+bundled npm 11.19.1, not in ours. Our lockfile carries `brace-expansion 5.0.12` and no
+`undici` at all. The release gate scans the built image, so the built image is the only
+thing worth measuring.
+
+Also worth stating plainly: a fresh base still carries **46 HIGH advisories with no fix
+available**. Those do not block, because the gate passes `--ignore-unfixed` — and that
+is the correct policy, since an unfixable advisory cannot be remediated by holding a
+release.
+
+### SEC-085, low — no manual path, and a dispatch that never came
+
+Pushing the six tags produced **zero** workflow runs. Not queued, not in progress, not
+waiting, and no failure record either.
+
+The absence of a failure record is what makes this worth fixing rather than retrying. A
+failed run is visible. A run that never exists is not — the release was neither
+happening nor reported as not happening, and the only symptom was an absence.
+
+And there was no way out. You cannot re-push an unchanged tag, and `release.yml` had no
+`workflow_dispatch`. Six releases were merged, gated green, and stuck with no lever.
+
+Low, and deliberately: the trigger was correct, the workflow active and healthy, and
+nothing in the repository was wrong. What was missing was recovery from a platform-side
+dispatch failure — a gap in the release contract, not a defect in the release.
+
+### Three silent failures in the obvious manual path
+
+Each is wrong in a way that reports **success**:
+
+- **`type=semver` reads the git tag.** A dispatch has no tag, so it resolves to nothing
+  and the image is built and pushed **with no tag at all**.
+- **`if: startsWith(github.ref, 'refs/tags/v')` is false on a branch**, so the npm job
+  **silently skips** rather than failing.
+- **`${GITHUB_REF_NAME#v}` on `main` expands to `main`**, so the version gate would
+  compare `package.json` against the literal string `main`.
+
+All three fixed: one top-level `RELEASE_VERSION` resolved once, the version passed
+explicitly to the image tagger, and the publish guard now
+`always() && needs.verify.result == 'success'` — which keeps verification mandatory, so
+the manual path is a recovery route and **not a bypass**.
+
+### Regression
+
+6 cases. Restoring the pre-fix workflow fails 5 of 6; the sixth is the version gate
+against `package.json`, which was never broken and must stay intact — a manual path
+that could publish a version the tree does not claim would be a hole, not a hatch.
+
 ## [3.9.1] - 2026-09-30
 
 *Plan §2.4: nothing solved "at most one holder of X" for Keystone's own work. BullMQ solves it for its jobs.*

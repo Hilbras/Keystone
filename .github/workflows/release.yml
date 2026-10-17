@@ -4,9 +4,41 @@ on:
   push:
     tags:
       - "v*"
+  # The tag push is the normal trigger. This exists because a tag push is not
+  # guaranteed to dispatch: on 2026-10-06 six annotated tags pushed in one command
+  # (`v3.7.1` … `v3.9.1`, all release-worthy, all reachable on the remote) produced
+  # **zero** workflow runs — no queued, no in-progress, no waiting, and no failure
+  # record either, which is the worst shape: the release was neither happening nor
+  # reported as not happening.
+  #
+  # Without a manual path there is no recovery. You cannot re-push an unchanged tag,
+  # and there is nothing to re-run. So the escape hatch is part of the release
+  # contract, not a convenience.
+  #
+  # `version` is explicit because a dispatch runs against a ref, not a tag event, and
+  # the workflow derives its image tag from `github.ref` — dispatching this on `main`
+  # would otherwise build and publish an image called `latest` from the wrong commit.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v (e.g. 3.9.1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  # One resolved release version for the whole workflow.
+  #
+  # A tag push sets GITHUB_REF_NAME, and `${GITHUB_REF_NAME#v}` was read inline in four
+  # places. A workflow_dispatch runs against a branch ref instead — `main` — where
+  # that expansion yields `main`, which would fail the version gate on a tag dispatch
+  # or, worse, publish an image tagged `latest` built from the wrong commit.
+  #
+  # Resolving once at the top means every later step reads the same value, and the
+  # dispatch input is authoritative for a manual run rather than being decorative.
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   verify:
@@ -44,10 +76,12 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Verify tag and package versions
+      - name: Verify version and package versions
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          # RELEASE_VERSION still carries the leading `v` on a tag push, so strip it.
+          VERSION="${RELEASE_VERSION#v}"
+          echo "Releasing $VERSION (event=${{ github.event_name }}, ref=$GITHUB_REF_NAME)"
           test "$(node -p "require('./package.json').version")" = "$VERSION"
           test "$(node -p "require('./package-lock.json').version")" = "$VERSION"
 
@@ -191,7 +225,7 @@ jobs:
 
       - name: Package release artifacts
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_VERSION#v}"
           tar -czf "hilbras-keystone-${VERSION}-dist.tar.gz" dist
           tar -czf "hilbras-keystone-${VERSION}-frontend.tar.gz" -C frontend dist
           tar -czf "hilbras-keystone-sdk-${VERSION}.tar.gz" -C packages/keystone-sdk dist
@@ -224,7 +258,10 @@ jobs:
 
   npm:
     needs: verify
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    # A dispatch runs on a branch ref, so `startsWith(github.ref, 'refs/tags/v')` would
+    # skip publishing entirely — the manual recovery path would silently do nothing.
+    # A dispatch supplies the version explicitly and is therefore just as intentional.
+    if: ${{ always() && needs.verify.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -292,6 +329,15 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
+            # `type=semver` reads the **git tag**. On a workflow_dispatch there is no
+            # tag, so semver resolves to nothing and the image is published with no
+            # tag at all — a silent, total failure of the image half of the release.
+            #
+            # So the resolved version is passed explicitly and `semver` is kept only
+            # as the tag-push path. `raw` is listed first so it wins when a dispatch
+            # supplies the version, and both routes produce the same three tags.
+            type=raw,value=${{ env.RELEASE_VERSION }}
+            type=raw,value=${{ inputs.version }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
