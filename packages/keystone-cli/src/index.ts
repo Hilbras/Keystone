@@ -3,7 +3,7 @@
  * keystone-cli — manage a Hilbras Keystone instance from the terminal.
  *
  * Config is stored in ~/.keystonerc (JSON: { url, email, accessToken }).
- * Access tokens expire; run `keystone login` again when you get 401s.
+ * Access tokens expire; run `keystone-cli login` again when you get 401s.
  */
 import { createInterface } from "node:readline";
 import { readFile, writeFile, unlink, chmod } from "node:fs/promises";
@@ -55,6 +55,24 @@ function flagList(args: ParsedArgs, name: string): string[] {
   return (Array.isArray(v) ? v : v.split(",")).filter(Boolean);
 }
 
+/**
+ * `--password` still parses, but it is deprecated: a password on the command
+ * line lands in argv, visible to every process on the machine via `ps` and to
+ * anything that records shell history. The interactive prompt is the way.
+ */
+function passwordFlag(args: ParsedArgs): string | undefined {
+  const value = flag(args, "password");
+  if (value !== undefined) {
+    console.error(
+      "Warning: --password is deprecated. It exposes the password to anyone who can " +
+        "read this process's command line (e.g. `ps`, shell history). Omit the flag to " +
+        "be prompted for the password instead; support for --password will be removed in " +
+        "a future release."
+    );
+  }
+  return value;
+}
+
 // ---------- config ----------
 
 async function loadConfig(): Promise<CliConfig> {
@@ -64,7 +82,7 @@ async function loadConfig(): Promise<CliConfig> {
     if (!cfg.url || !cfg.accessToken) throw new Error("incomplete");
     return cfg;
   } catch {
-    fail("Not logged in. Run: keystone login --url <server> --email <email>");
+    fail("Not logged in. Run: keystone-cli login --url <server> --email <email>");
   }
 }
 
@@ -104,7 +122,7 @@ async function request<T = unknown>(
   }
   if (!res.ok) {
     const err = (data as { error?: string; message?: string }) ?? {};
-    if (res.status === 401 && token) fail("Unauthorized (401). Your token may have expired — run `keystone login` again.");
+    if (res.status === 401 && token) fail("Unauthorized (401). Your token may have expired — run `keystone-cli login` again.");
     fail(`HTTP ${res.status} ${method} ${path}: ${err.error ?? err.message ?? text}`);
   }
   return data as T;
@@ -127,14 +145,56 @@ function printTable(rows: Record<string, unknown>[], columns?: string[]): void {
   }
 }
 
+/**
+ * Read a secret without echoing it.
+ *
+ * On a terminal, readline echoes each keystroke by writing every redisplayed
+ * line to `rl.output` — so wrapping `write` while the secret is typed drops the
+ * paints (acknowledging their callbacks) without touching readline's own line
+ * buffer: backspace and editing still work, only the display goes dark. The
+ * prompt itself is printed before muting starts, since `rl.question` writes it
+ * synchronously, and the original `write` is put back afterwards whether the
+ * answer arrives or the stream closes.
+ */
 async function promptSecret(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer);
+  // The same object passed as the interface's `output`, so gating its `write`
+  // — rather than reaching for an `rl.output` the types no longer expose —
+  // covers every paint readline makes: prompt, repaints, cursor moves.
+  const output = process.stdout;
+  const originalWrite = output.write.bind(output) as (
+    chunk: unknown,
+    encoding?: unknown,
+    cb?: unknown,
+  ) => boolean;
+  let muted = false;
+
+  output.write = ((chunk: unknown, encoding?: unknown, cb?: unknown): boolean => {
+    if (muted) {
+      const done = (
+        typeof encoding === "function" ? encoding : typeof cb === "function" ? cb : undefined
+      ) as (() => void) | undefined;
+      done?.();
+      return true;
+    }
+    return originalWrite(chunk, encoding, cb);
+  }) as typeof output.write;
+
+  try {
+    const answer = await new Promise<string>((resolve, reject) => {
+      rl.question(question, (line) => resolve(line));
+      // EOF (Ctrl-D, closed pipe) with no answer: fail rather than hang with
+      // the terminal still muted. A later reject after resolve is a no-op.
+      rl.once("close", () => reject(new Error("Input closed before a secret was given")));
+      muted = true;
     });
-  });
+    return answer;
+  } finally {
+    muted = false;
+    rl.close();
+    output.write = originalWrite as typeof output.write;
+    process.stdout.write("\n");
+  }
 }
 
 // ---------- commands ----------
@@ -142,7 +202,7 @@ async function promptSecret(question: string): Promise<string> {
 async function cmdLogin(args: ParsedArgs): Promise<void> {
   const url = flag(args, "url") ?? process.env.KEYSTONE_URL ?? "http://localhost:4001";
   const email = flag(args, "email") ?? fail("--email is required");
-  const password = flag(args, "password") ?? (await promptSecret("Password: "));
+  const password = passwordFlag(args) ?? (await promptSecret("Password: "));
   const res = await request<{ accessToken: string; user: { id: string; email: string } }>(
     { url },
     "POST",
@@ -190,7 +250,7 @@ async function cmdUsersCreate(args: ParsedArgs): Promise<void> {
   const cfg = await loadConfig();
   const email = flag(args, "email") ?? fail("--email is required");
   const username = flag(args, "username") ?? email.split("@")[0].replace(/[^a-zA-Z0-9_-]/g, "_");
-  const password = flag(args, "password") ?? fail("--password is required (min 8 chars)");
+  const password = passwordFlag(args) ?? fail("--password is required (min 8 chars)");
   const name = flag(args, "name");
   const res = await request<{ user: Record<string, unknown> }>(
     cfg,
@@ -282,7 +342,7 @@ async function cmdKeysCreate(args: ParsedArgs): Promise<void> {
 function printHelp(): void {
   console.log(`keystone-cli — manage a Hilbras Keystone instance
 
-Usage: keystone <command> [flags]
+Usage: keystone-cli <command> [flags]
 
 Auth:
   login --url <url> --email <email> [--password <pw>]   Log in (saves ~/.keystonerc)
@@ -306,6 +366,8 @@ API keys:
   keys:create --name <n> [--scopes a,b]
 
 Flags can also be given as --flag=value. KEYSTONE_URL env var sets the default server.
+--password on login is deprecated: it exposes the password in the process list.
+Omit it to be prompted for the password instead.
 `);
 }
 

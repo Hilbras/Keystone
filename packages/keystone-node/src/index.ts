@@ -3,8 +3,11 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 export interface KeystoneNodeConfig {
   /** Keystone API base URL, e.g. https://auth.example.com */
   url: string;
-  /** Expected issuer claim (defaults to config.url) */
-  issuer?: string;
+  /**
+   * Expected issuer claim (defaults to config.url).
+   * Pass `null` to skip the issuer check entirely.
+   */
+  issuer?: string | null;
   /** Expected audience claim (optional) */
   audience?: string;
   /** Service API key for admin calls (optional) */
@@ -35,14 +38,16 @@ export interface VerifiedToken {
  */
 export class KeystoneNodeClient {
   private url: string;
-  private issuer?: string;
+  private issuer: string | null;
   private audience?: string;
   private apiKey?: string;
   private jwks: ReturnType<typeof createRemoteJWKSet>;
 
   constructor(config: KeystoneNodeConfig) {
     this.url = config.url.replace(/\/$/, "");
-    this.issuer = config.issuer;
+    // No explicit issuer means the instance's own URL, as the docstring
+    // promises; `issuer: null` is the deliberate opt-out and stays one.
+    this.issuer = config.issuer === undefined ? this.url : config.issuer;
     this.audience = config.audience;
     this.apiKey = config.apiKey;
     this.jwks = createRemoteJWKSet(new URL(`${this.url}/.well-known/jwks.json`));
@@ -52,7 +57,10 @@ export class KeystoneNodeClient {
   async verifyToken(token: string): Promise<VerifiedToken> {
     try {
       const { payload } = await jwtVerify(token, this.jwks, {
-        issuer: this.issuer,
+        // jose skips the issuer check entirely when this is omitted, which is
+        // exactly what `issuer: null` asks for — and never what leaving the
+        // option `undefined` should have meant for a defaulted issuer.
+        ...(this.issuer === null ? {} : { issuer: this.issuer }),
         audience: this.audience,
       });
       return { valid: true, claims: payload as KeystoneTokenClaims };

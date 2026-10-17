@@ -1,7 +1,14 @@
 {
   "name": "@hilbras/keystone-react",
   "version": "3.9.2",
+  "license": "MIT",
   "description": "React hooks for the Hilbras Keystone identity platform",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hilbras/Keystone.git",
+    "directory": "packages/keystone-react"
+  },
+  "homepage": "https://github.com/Hilbras/Keystone/tree/main/packages/keystone-react",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
