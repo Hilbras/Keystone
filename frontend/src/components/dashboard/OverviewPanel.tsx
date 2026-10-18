@@ -4,8 +4,7 @@ import { SectionCard } from "../ui/SectionCard.tsx";
 import { Button } from "../ui/Button.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { PageHeader } from "../ui/PageHeader.tsx";
-
-const API_BASE = import.meta.env.VITE_KEYSTONE_API_URL || "http://localhost:4001";
+import { API_BASE } from "../../lib/apiBase.ts";
 
 interface OverviewPanelProps {
   health: { status: string } | null;
@@ -31,7 +30,7 @@ export function OverviewPanel({ health, config, queueStatus }: OverviewPanelProp
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="API URL"
-          value={API_BASE}
+          value={API_BASE || window.location.origin}
           icon={<Server className="w-5 h-5" />}
           iconClassName="bg-gold/10 text-gold"
         />

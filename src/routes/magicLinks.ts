@@ -22,12 +22,12 @@ const SendSchema = z.object({
 function magicLinkUrl(token: string): string {
   // The link lands on the client app (Keystone admin UI or a client
   // application), which exchanges the token via the verify endpoint.
-  const base = process.env.CLIENT_APP_URL || "http://localhost:5173";
+  const base = config.CLIENT_APP_URL;
   return `${base}/#magic-link=${encodeURIComponent(token)}`;
 }
 
 function postLoginRedirect(): string {
-  return process.env.CLIENT_APP_URL || "http://localhost:5173";
+  return config.CLIENT_APP_URL;
 }
 
 export default async function magicLinkRoutes(app: FastifyInstance) {

@@ -712,12 +712,6 @@ export default async function scimRoutes(app: FastifyInstance) {
     return scimGroupResponse(group, members.map((m) => ({ value: m.userId, display: m.email })));
   }
 
-  /** Only users who are members of this credential's organization can join. */
-  async function assertMemberOfOrg(request: FastifyRequest, userId: string): Promise<void> {
-    const user = await app.container.userRepository.findByIdInOrg(request.state.scimOrgId!, userId);
-    if (!user) throw new ScimNotFound("User not found");
-  }
-
   app.get(
     "/scim/v2/Groups",
     { preHandler: [scimRateLimit] },
@@ -794,16 +788,20 @@ export default async function scimRoutes(app: FastifyInstance) {
       const orgId = request.state.scimOrgId!;
 
       try {
-        const group = await app.container.scimGroupRepository.create({
+        // Group and first members in one transaction: the per-member loop
+        // validated members *after* the group row had committed, so a 404
+        // mid-list left an orphaned group the caller never learned existed.
+        const { group, rejected } = await app.container.scimGroupRepository.createWithMembers(
           orgId,
-          displayName: body.displayName,
-          description: body.description ?? null,
-          externalId: body.externalId ?? null,
-        });
-
-        for (const member of body.members ?? []) {
-          await assertMemberOfOrg(request, member.value);
-          await app.container.scimGroupRepository.addMember(orgId, group.id, member.value);
+          {
+            displayName: body.displayName,
+            description: body.description ?? null,
+            externalId: body.externalId ?? null,
+          },
+          (body.members ?? []).map((m) => m.value)
+        );
+        if (!group || rejected.length > 0) {
+          throw new ScimNotFound("User not found");
         }
 
         await request.audit("scim_group_created", {
@@ -915,23 +913,28 @@ export default async function scimRoutes(app: FastifyInstance) {
         }
 
         const members = Array.isArray(patch.members) ? patch.members : undefined;
-        if (members) {
-          for (const entry of members) {
-            const value = typeof entry === "string" ? entry : (entry as { value?: string })?.value;
-            if (typeof value !== "string") continue;
-            await assertMemberOfOrg(request, value);
-            await app.container.scimGroupRepository.addMember(orgId, existing.id, value);
-          }
+        const addValues: string[] = [];
+        for (const entry of members ?? []) {
+          const value = typeof entry === "string" ? entry : (entry as { value?: string })?.value;
+          if (typeof value === "string") addValues.push(value);
         }
-        const removeMembers = Array.isArray(patch["members.remove"])
-          ? (patch["members.remove"] as unknown[]).map(
-              (entry) => (typeof entry === "string" ? entry : (entry as { value?: string })?.value)
-            )
-          : undefined;
-        for (const value of removeMembers ?? []) {
-          if (typeof value === "string") {
-            await app.container.scimGroupRepository.removeMember(orgId, existing.id, value);
-          }
+        const removeValues = (
+          Array.isArray(patch["members.remove"])
+            ? (patch["members.remove"] as unknown[]).map(
+                (entry) => (typeof entry === "string" ? entry : (entry as { value?: string })?.value)
+              )
+            : []
+        ).filter((value): value is string => typeof value === "string");
+
+        if (addValues.length > 0 || removeValues.length > 0) {
+          // One transaction: the per-member loops validated against the org
+          // one at a time, so a rejected add arrived after earlier adds had
+          // already committed — a half-applied PATCH.
+          const delta = await app.container.scimGroupRepository.applyMemberDelta(orgId, existing.id, {
+            add: addValues,
+            remove: removeValues,
+          });
+          if (delta.rejected.length > 0) throw new ScimNotFound("User not found");
         }
 
         await request.audit("scim_group_updated", {
@@ -1007,11 +1010,14 @@ export default async function scimRoutes(app: FastifyInstance) {
       try {
         const group = await loadGroup(request, groupId);
         const values = "value" in body ? [body.value] : body.members.map((m) => m.value);
-        let added = 0;
-        for (const value of values) {
-          await assertMemberOfOrg(request, value);
-          if (await app.container.scimGroupRepository.addMember(orgId, group.id, value)) added++;
-        }
+        // One transaction instead of addMember-per-value: same six-statements-
+        // per-member loop the batch path exists to kill, with a partial apply
+        // when a later value is not an org member.
+        const delta = await app.container.scimGroupRepository.applyMemberDelta(orgId, group.id, {
+          add: values,
+        });
+        if (delta.rejected.length > 0) throw new ScimNotFound("User not found");
+        const added = delta.added;
         if (added === 0) return reply.status(409).send(scimError(409, "No new members were added"));
 
         await request.audit("scim_group_updated", {

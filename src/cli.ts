@@ -31,8 +31,20 @@ async function withReleasedConnections<T>(body: () => Promise<T>): Promise<T> {
     // from the shared module. `migrate` and `keys:list` exit without it; anything
     // that builds the container — `user:create`, `org:create` — does not.
     const { cache } = await import("./services/cache.js");
+    // And a **fourth**, when the queue provider is BullMQ: it owns its own Redis
+    // connections, which nothing above releases.
+    //
+    // This was invisible because the default provider is `in-process` and that
+    // setting is what CI runs, so every command exited. A deployment that followed
+    // the roadmap's own §2.1 advice — `KEYSTONE_QUEUE_PROVIDER=bullmq` in
+    // production — got a CLI where `user:create` and `org:create` printed their
+    // success line and then hung forever, which is the exact defect this file's
+    // `withReleasedConnections` exists to prevent. Finding it needed a local
+    // `.env` that sets a provider CI never sees.
+    const { queue } = await import("./services/queue/index.js");
     await closeDb().catch(() => {});
     await cache.close().catch(() => {});
+    await queue.close?.().catch(() => {});
     await closeRedis().catch(() => {});
   }
 }
@@ -144,7 +156,8 @@ program
           container.userRepository,
           container.applicationRepository,
           container.organizationRepository,
-          new MfaService(container.mfaChallengeRepository, container.userRepository)
+          new MfaService(container.mfaChallengeRepository, container.userRepository),
+          container.passwordResetTokenRepository
         );
         const result = await authService.register({
           email: options.email,
@@ -237,6 +250,7 @@ program
   .action(async () => {
     const { config } = await import("./config.js");
     const required = ["DATABASE_URL"];
+    // Allowed bootstrap read: `required` holds arbitrary variable names, which config's fixed keys cannot index; documented bootstrap site.
     const missing = required.filter((name) => !process.env[name]);
     if (missing.length > 0) {
       console.error(`Missing required environment variables: ${missing.join(", ")}`);

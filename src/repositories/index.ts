@@ -12,3 +12,5 @@ export { DrizzleScimConnectionRepository } from "./scimConnection.js";
 export { DrizzleScimGroupRepository } from "./scimGroup.js";
 export { DrizzleWorkflowRepository } from "./workflow.js";
 export { DrizzlePlatformRepository } from "./platform.js";
+export { SessionRepository } from "./session.js";
+export { DrizzlePasswordResetTokenRepository } from "./passwordResetToken.js";

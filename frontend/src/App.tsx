@@ -62,8 +62,7 @@ export default function App() {
     setMagicLinkState("pending");
     api
       .verifyMagicLink(token)
-      .then((result) => {
-        localStorage.setItem("keystone-access-token", result.accessToken);
+      .then(() => {
         window.location.hash = "#/dashboard/overview";
         setMagicLinkState("done");
         window.location.reload();

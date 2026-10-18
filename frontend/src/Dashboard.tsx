@@ -26,6 +26,7 @@ import {
   BarChart3,
 } from "lucide-react";
 import { api, type ScimConfig } from "./api.ts";
+import { API_BASE } from "./lib/apiBase.ts";
 import { Button } from "./components/ui/Button.tsx";
 import { Alert } from "./components/ui/Alert.tsx";
 import { LoadingState } from "./components/ui/LoadingState.tsx";
@@ -149,8 +150,6 @@ interface Plan {
   description: string;
 }
 
-const API_BASE = import.meta.env.VITE_KEYSTONE_API_URL || "http://localhost:4001";
-
 const TABS = [
   { id: "overview", label: "Home", icon: <Activity className="w-4 h-4" />, group: "Home", mode: "simple" as const },
   { id: "profile", label: "Profile", icon: <UserCircle className="w-4 h-4" />, group: "Home", mode: "simple" as const },
@@ -181,7 +180,7 @@ interface DashboardProps {
 
 export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
   const { navigate } = useHashRoute();
-  const { token, user, loading: authLoading, error: authError, logout } = useAuth();
+  const { user, loading: authLoading, error: authError, logout } = useAuth();
   const { mode, setMode } = useUiMode();
   const health = useHealth();
   const { theme, toggleTheme } = useTheme();
@@ -240,7 +239,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
       user?.role === "owner" ? api.getQueueStatus() : Promise.resolve(null),
     ]);
     return { health, config, queueStatus };
-  }, [token, user?.role]);
+  }, [user?.role]);
 
   // Tab data states
   const [users, setUsers] = useState<DataTabState<{ users: unknown[] }>>({ data: null, loading: false, error: null });
@@ -422,7 +421,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
   }, [organizations.data, selectedOrgId]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!user) return;
     switch (activeTab) {
       case "users":
         loadTab(users, setUsers, api.getUsers);
@@ -465,11 +464,7 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
         break;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, token, refreshWorkflows, selectedOrgId]);
-
-  if (!token) {
-    return <LoginForm onLogin={() => window.location.reload()} />;
-  }
+  }, [activeTab, user, refreshWorkflows, selectedOrgId]);
 
   const logo = useMemo(
     () => (
@@ -772,6 +767,12 @@ export default function Dashboard({ initialTab = "overview" }: DashboardProps) {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
+
+  // The gate must sit after every hook above: bailing out earlier would change
+  // the hook count when the initial cookie check finishes (authLoading flips).
+  if (!user && !authLoading) {
+    return <LoginForm onLogin={() => window.location.reload()} />;
+  }
 
   return (
     <AppShell

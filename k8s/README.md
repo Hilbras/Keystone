@@ -11,11 +11,14 @@ This directory contains Kustomize manifests for deploying Keystone on Kubernetes
 
 ## Quick start
 
-1. Copy and edit the example secret:
+1. Create the secrets manifest **out-of-band** — the kustomization deliberately
+   does not bundle it, so `apply -k` cannot deploy the example placeholders:
 
    ```bash
    cp base/secret.example.yaml base/secret.yaml
    # edit base/secret.yaml with real credentials
+   kubectl -n keystone create namespace keystone 2>/dev/null || true
+   kubectl apply -f base/secret.yaml          # gitignored; never commit it
    ```
 
 2. Apply the production overlay:

@@ -28,7 +28,7 @@ class SdkAuthenticationClient implements AuthenticationSdk {
     };
   }
 
-  async login(input: { email: string; password: string; clientId?: string; flow?: "login" | "token_login" }) {
+  async login(input: { email: string; password: string; clientId?: string; flow?: "login" | "token_login"; ipAddress?: string; userAgent?: string }) {
     const result = await this.app.login(input);
     if (!result.success) return result;
     if (result.data.status === "requires_mfa") {
@@ -159,8 +159,11 @@ class SdkOrganizationClient implements OrganizationSdk {
     return this.app.getOrganization(userId, orgId);
   }
 
-  listUserOrganizations(userId: string) {
-    return this.app.listUserOrganizations(userId);
+  async listUserOrganizations(userId: string) {
+    const result = await this.app.listUserOrganizations(userId);
+    // The domain list cannot fail; empty rather than an error union keeps the
+    // SDK contract (and its route consumer) an Organization[].
+    return result.success ? result.data : [];
   }
 
   async inviteMember(actorId: string, orgId: string, input: { email: string; role: "owner" | "admin" | "member" }, context?: EventContext) {

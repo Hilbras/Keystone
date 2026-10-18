@@ -1,3 +1,4 @@
+import net from "node:net";
 import { config } from "../config.js";
 import { isPrivateAddress, assertSafeSsoEndpoint } from "./ssoEndpointPolicy.js";
 
@@ -90,13 +91,13 @@ export function validateWebhookUrl(value: string): URL {
     // by proxies, by the delivery row, and by anyone reading a failed request.
     reject("webhook URL must not contain embedded credentials", url);
   }
-  if (url.protocol !== "https:" && !(config.NODE_ENV !== "production" && url.protocol === "http:")) {
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && insecureHttpAllowed(url))) {
     // Plan §1.2. A signing secret in a plain-HTTP body is a credential in every
     // proxy log between here and the consumer.
     reject(
       config.NODE_ENV === "production"
         ? "webhook URL must use HTTPS in production"
-        : "webhook URL must use HTTPS or http to a loopback address",
+        : "webhook URL must use HTTPS, or http to a loopback address with KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost",
       url
     );
   }
@@ -144,6 +145,42 @@ function isLiteralPrivateAddress(host: string): boolean {
   // can actually know, rather than pretending to resolve a name.
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return isPrivateAddress(host);
   if (host.includes(":")) return isPrivateAddress(host); // IPv6 literal, possibly bracketed
+  return false;
+}
+
+/**
+ * Whether plain HTTP may be used for this URL (plan §1.2).
+ *
+ * Three conditions, all required: the operator opted in with the literal value
+ * `localhost`; the process is not production; and the destination is this
+ * machine. Previously any non-production environment allowed HTTP to *any* host,
+ * which put the signing secret in the clear on whatever public hop a shared
+ * staging deployment happened to traverse — a staging box is not a developer's
+ * laptop, and nothing in the config distinguished them.
+ */
+function insecureHttpAllowed(url: URL): boolean {
+  return (
+    config.ALLOW_INSECURE_WEBHOOK === "localhost" &&
+    config.NODE_ENV !== "production" &&
+    isLoopbackHost(url.hostname)
+  );
+}
+
+/**
+ * Loopback only — narrower than `isLoopbackOrPrivateHostname`.
+ *
+ * The §1.2 exception is for a developer's own machine, so RFC1918 space
+ * (`10.0.0.5`) and cluster names (`redis.svc.cluster.local`) are not loopback
+ * even though they are private. The private-target rule is a separate decision
+ * with its own flag.
+ */
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (normalized === "localhost" || normalized === "ip6-localhost" || normalized.endsWith(".localhost")) {
+    return true;
+  }
+  if (normalized === "::1") return true;
+  if (net.isIPv4(normalized)) return normalized.startsWith("127.");
   return false;
 }
 

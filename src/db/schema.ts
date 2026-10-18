@@ -26,10 +26,7 @@ export const organizations = pgTable(
     branding: jsonb("branding").default({}).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => ({
-    slugIdx: index("organizations_slug_idx").on(table.slug),
-  })
+  }
 );
 
 export const users = pgTable(
@@ -63,8 +60,6 @@ export const users = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
-    emailIdx: index("users_email_idx").on(table.email),
-    zitadelIdx: index("users_zitadel_idx").on(table.zitadelUserId),
     defaultOrgIdx: index("users_default_org_idx").on(table.defaultOrgId),
     platformRoleCheck: check("users_platform_role_check", sql`role in ('owner', 'user')`),
   })
@@ -89,6 +84,9 @@ export const userSessions = pgTable(
   (table) => ({
     userIdx: index("user_sessions_user_idx").on(table.userId),
     refreshTokenIdx: index("user_sessions_refresh_token_idx").on(table.refreshTokenId),
+    // Cleanup deletes `WHERE expires_at < now()` regardless of revocation;
+    // the scan this replaces grows with the table until it runs.
+    expiresIdx: index("user_sessions_expires_idx").on(table.expiresAt),
   })
 );
 
@@ -128,7 +126,6 @@ export const applications = pgTable(
   },
   (table) => ({
     orgIdx: index("applications_org_idx").on(table.orgId),
-    clientIdIdx: index("applications_client_id_idx").on(table.clientId),
     // A public client has no secret, so client authentication cannot be the
     // thing that stops it. Enforced here rather than only in application code
     // so the invariant holds for every writer.
@@ -178,6 +175,14 @@ export const refreshTokens = pgTable(
     tokenHash: text("token_hash").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /**
+     * Set only when rotation consumes the token — a successful exchange, not an
+     * administrative revocation (logout, revoke-all, deactivation). Replaying a
+     * *consumed* token means two parties hold it; replaying an admin-revoked
+     * token means nothing (a stale tab after "log out everywhere else").
+     * Only `consumedAt` triggers the revoke-everything replay response.
+     */
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
@@ -194,6 +199,9 @@ export const refreshTokens = pgTable(
     userIdx: index("refresh_tokens_user_idx").on(table.userId),
     appIdx: index("refresh_tokens_app_idx").on(table.appId),
     hashIdx: index("refresh_tokens_hash_idx").on(table.tokenHash),
+    // Same shape as user_sessions: cleanup is `expires_at < now()` regardless
+    // of revocation, so a plain index serves it and a partial one would not.
+    expiresIdx: index("refresh_tokens_expires_idx").on(table.expiresAt),
     mfaFactorCheck: check(
       "refresh_tokens_mfa_factor_check",
       sql`mfa_factor is null or mfa_factor in ('totp', 'backup_code', 'webauthn', 'session')`
@@ -250,6 +258,11 @@ export const apiKeys = pgTable(
     userIdx: index("api_keys_user_idx").on(table.userId),
     serviceAccountIdx: index("api_keys_service_account_idx").on(table.serviceAccountId),
     prefixIdx: index("api_keys_prefix_idx").on(table.prefix),
+    // Every API-key-authenticated request runs `WHERE key_hash = ? AND
+    // revoked_at IS NULL` (src/plugins/auth.ts) — without this the lookup
+    // degrades to a sequential scan that grows with the key count.
+    keyHashIdx: uniqueIndex("api_keys_key_hash_unique").on(table.keyHash),
+    orgIdx: index("api_keys_org_idx").on(table.orgId),
   })
 );
 
@@ -271,6 +284,10 @@ export const auditLog = pgTable(
     userIdx: index("audit_log_user_idx").on(table.userId),
     eventIdx: index("audit_log_event_idx").on(table.event),
     createdAtIdx: index("audit_log_created_at_idx").on(table.createdAt),
+    // The two hottest shapes on the largest table: filter by org/event, then
+    // sort by createdAt. Composite prefix serves both without a sort spill.
+    orgCreatedIdx: index("audit_log_org_created_idx").on(table.orgId, table.createdAt),
+    eventCreatedIdx: index("audit_log_event_created_idx").on(table.event, table.createdAt),
     orgIdx: index("audit_log_org_idx").on(table.orgId),
     appIdx: index("audit_log_app_idx").on(table.appId),
   })
@@ -693,10 +710,7 @@ export const featureFlags = pgTable(
     enabled: boolean("enabled").default(false).notNull(),
     description: text("description"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => ({
-    keyIdx: index("feature_flags_key_idx").on(table.key),
-  })
+  }
 );
 
 export const workflows = pgTable(
@@ -713,6 +727,7 @@ export const workflows = pgTable(
   },
   (table) => ({
     triggerIdx: index("workflows_trigger_idx").on(table.trigger),
+    orgIdx: index("workflows_org_idx").on(table.orgId),
   })
 );
 

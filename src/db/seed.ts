@@ -9,6 +9,7 @@ import { persistAudit } from "../services/audit.js";
 import { DrizzleOrganizationRepository } from "../repositories/organization.js";
 
 async function seed() {
+  // Allowed bootstrap read: seed runs as its own bootstrap entrypoint and takes per-run app URLs and the owner password straight from the operator's environment; documented bootstrap site.
   const clientAppUrl = process.env.CLIENT_APP_URL || "http://localhost:5173";
   const aiAppUrl = process.env.AI_APP_URL || "http://localhost:5174";
   const landingAppUrl = process.env.LANDING_APP_URL || "http://localhost:5175";
@@ -100,6 +101,7 @@ async function seed() {
       continue;
     }
 
+    // Allowed bootstrap read: per-application secret names arrive as data (`def.secretEnv`), which config's fixed keys cannot index; documented bootstrap site.
     const secret = process.env[def.secretEnv] || def.defaultSecret;
     const app = await createApplication({
       orgId: hilbrasOrg.id,

@@ -1,7 +1,14 @@
 {
   "name": "@hilbras/keystone-vue",
-  "version": "3.9.1",
+  "version": "3.9.4",
+  "license": "MIT",
   "description": "Vue composables for the Hilbras Keystone identity platform",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hilbras/Keystone.git",
+    "directory": "packages/keystone-vue"
+  },
+  "homepage": "https://github.com/Hilbras/Keystone/tree/main/packages/keystone-vue",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -27,7 +27,7 @@ import {
   listValidSigningKeys,
   type SigningKeyPair,
 } from "./secrets.js";
-import { SessionRepository } from "../repositories/session.js";
+import { resolve } from "../container.js";
 
 /** Active signing key used to issue new tokens. */
 let activeKey: SigningKeyPair | null = null;
@@ -76,7 +76,7 @@ export async function getPublicJwks() {
 }
 
 function issuer(): string {
-  return process.env.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
+  return config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}`;
 }
 
 /**
@@ -293,7 +293,9 @@ async function mintTokenSet(
   }).returning();
 
   try {
-    const sessions = new SessionRepository();
+    // Resolved through the container rather than constructed here so every
+    // session row comes from the same repository instance the routes read.
+    const sessions = resolve("sessionRepository");
     await sessions.create({
       userId: user.id,
       refreshTokenId: inserted.id,
@@ -477,7 +479,7 @@ async function rotateRefreshTokenInternal(
   // pass. The conditional update makes concurrent rotations single-use.
   const [claimed] = await db
     .update(refreshTokens)
-    .set({ revokedAt: now })
+    .set({ revokedAt: now, consumedAt: now })
     .where(
       and(
         eq(refreshTokens.id, existing.id),

@@ -21,7 +21,7 @@
  * an error rather than a silent skip, because a check that quietly ignores half
  * a file is worse than no check.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -327,6 +327,22 @@ for (const match of configSource.matchAll(/requireEnvUnlessSetup\(\s*"([A-Z_]+)"
 
 const baseResources = await collectResources(path.join(K8S, "base"));
 const byName = new Map(baseResources.map((r) => [r.name, r]));
+// Also index YAMLs that sit in `k8s/base/` but are deliberately *not* in the
+// kustomization — `secret.example.yaml` is a template an operator copies, not
+// something `apply -k` should deploy (its placeholders were live values once).
+// The reachability check below must keep enforcing that every required key has
+// a definition sitting somewhere an operator can copy from, whether or not the
+// template is rendered.
+for (const file of await readdir(path.join(K8S, "base"))) {
+  if (!file.endsWith(".yaml") || file === "kustomization.yaml") continue;
+  const target = path.join(K8S, "base", file);
+  if (baseResources.some((r) => r.file === target)) continue;
+  const doc = await loadYaml(target);
+  const name = doc?.metadata?.name;
+  if (name && !byName.has(name)) {
+    byName.set(name, { name, file: target, source: path.relative(K8S, target) });
+  }
+}
 
 const deploymentDoc = await loadYaml(path.join(K8S, "base", "deployment.yaml"));
 const container = deploymentDoc.spec.template.spec.containers[0];

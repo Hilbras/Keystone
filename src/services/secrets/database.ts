@@ -71,10 +71,14 @@ export class DatabaseSecretsProvider implements SecretsProvider {
     const publicPem = await exportSPKI(pair.publicKey);
     const keyId = crypto.randomBytes(KEY_ID_BYTES).toString("base64url");
 
+    // Wrapped rather than stored plaintext: with KEYSTONE_ENCRYPTION_KEY set,
+    // a dump of this table alone no longer yields the key that mints every
+    // access token. The payload is self-describing (`aes-256-gcm$...`) so
+    // legacy plaintext rows still parse.
     await db.insert(secrets).values({
       keyId,
       type: "jwt_signing",
-      value: JSON.stringify({ private: privatePem, public: publicPem }),
+      value: await this.encryptSecret(JSON.stringify({ private: privatePem, public: publicPem })),
       algorithm: "RS256",
       isActive: true,
       rotatedAt: new Date(),
@@ -84,7 +88,21 @@ export class DatabaseSecretsProvider implements SecretsProvider {
   }
 
   private async loadKeyPair(record: Secret): Promise<SigningKeyPair> {
-    const parsed = JSON.parse(record.value) as { private: string; public: string };
+    let payload = record.value;
+    if (payload.startsWith(`${ENCRYPTION_ALGORITHM}$`)) {
+      payload = await this.decryptSecret(payload);
+    } else if (config.KEYSTONE_ENCRYPTION_KEY) {
+      // Legacy plaintext row: re-wrap in place so existing deployments upgrade
+      // without an operator action. A failed write must not fail the read — the
+      // row stays plaintext and the next load retries.
+      try {
+        const wrapped = await this.encryptSecret(payload);
+        await db.update(secrets).set({ value: wrapped }).where(eq(secrets.id, record.id));
+      } catch {
+        /* read continues with the plaintext payload */
+      }
+    }
+    const parsed = JSON.parse(payload) as { private: string; public: string };
     const privateKey = await importPKCS8(parsed.private, "RS256");
     const publicKey = await importSPKI(parsed.public, "RS256");
     return { keyId: record.keyId, privateKey, publicKey };

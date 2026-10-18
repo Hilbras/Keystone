@@ -55,7 +55,6 @@ export interface UserRepository {
   updateRole(id: string, role: "owner" | "user"): Promise<User | undefined>;
   deactivate(id: string): Promise<void>;
   listByOrg(orgId: string): Promise<User[]>;
-  listAll(): Promise<User[]>;
   countByRole(role: string): Promise<number>;
   updateLastSeen(id: string): Promise<void>;
   ensureUniqueUsername(base: string, excludeId?: string): Promise<string>;
@@ -91,6 +90,8 @@ export interface UserRepository {
   setTotpSecret(userId: string, totpSecret: string): Promise<void>;
   enableTotp(userId: string): Promise<void>;
   disableTotp(userId: string): Promise<void>;
+  /** Password-reset completion only; deliberately outside UpdateUserInput so a profile update can never carry a credential. */
+  updatePasswordHash(userId: string, passwordHash: string): Promise<void>;
   deleteById(userId: string): Promise<void>;
 }
 
@@ -217,6 +218,25 @@ export interface ScimGroupRepository {
     orgId: string,
     groupId: string,
     submittedUserIds: string[]
+  ): Promise<{ added: number; removed: number; rejected: string[] }>;
+  /**
+   * Create the group and its first members in one transaction. When any
+   * submitted user is not an `orgId` member, `group` is undefined, `rejected`
+   * lists them, and no group row exists.
+   */
+  createWithMembers(
+    orgId: string,
+    input: { displayName: string; description?: string | null; externalId?: string | null },
+    submittedUserIds: string[]
+  ): Promise<{ group: { id: string; displayName: string } | undefined; rejected: string[] }>;
+  /**
+   * Apply an add/remove delta atomically (the PATCH shape); `reconcileMembers`
+   * would delete members the patch never mentioned. Same rejection contract.
+   */
+  applyMemberDelta(
+    orgId: string,
+    groupId: string,
+    delta: { add?: string[]; remove?: string[] }
   ): Promise<{ added: number; removed: number; rejected: string[] }>;
 }
 
@@ -364,4 +384,8 @@ export interface PermissionRepository {
   removeFromRole(role: string, permissionId: string): Promise<void>;
   hasPermission(role: string, resource: string, action: string): Promise<boolean>;
   hasAnyPermission(role: string, required: { resource: string; action: string }[]): Promise<boolean>;
+}
+
+export interface PasswordResetTokenRepository {
+  create(input: { userId: string; tokenHash: string; expiresAt: Date }): Promise<void>;
 }

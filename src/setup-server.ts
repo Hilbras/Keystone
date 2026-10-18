@@ -49,6 +49,11 @@ async function buildSetupApp() {
     if (stat.isDirectory()) {
       app.register(import("@fastify/static"), {
         root: frontendDist,
+        // Under /setup/, where DEPLOYMENT.md sends operators. Registered at the
+        // app root instead, `GET /setup/` resolves to `<dist>/setup/` (which
+        // does not exist) and the documented page 404s while the files sit in
+        // the image — which is how the container shipped.
+        prefix: "/setup/",
         wildcard: true,
       });
     }
@@ -84,13 +89,14 @@ async function buildSetupApp() {
  * a warning, because that is the decision this default exists to make explicit.
  */
 function setupBindHost(): string {
+  // Allowed bootstrap read: read at listen time so an in-process override still applies after config has snapshotted the environment; documented bootstrap site.
   const explicit = process.env.KEYSTONE_SETUP_HOST?.trim();
   if (explicit) return explicit;
   if (config.HOST === "0.0.0.0" || config.HOST === "::") return "127.0.0.1";
   return config.HOST;
 }
 
-async function start() {
+export async function startSetupServer() {
   generateSetupToken();
   printSetupToken();
 
@@ -114,5 +120,5 @@ async function start() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  start();
+  startSetupServer();
 }

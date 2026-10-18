@@ -1,0 +1,1 @@
+ALTER TABLE "refresh_tokens" ADD COLUMN "consumed_at" timestamp with time zone;

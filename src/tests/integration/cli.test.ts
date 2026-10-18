@@ -396,6 +396,30 @@ describe("CLI", () => {
       assert.notEqual(user.passwordHash, "Passw0rd!x", "the password must not be stored as given");
     });
 
+    it("exits with a BullMQ queue provider, whose connections nothing else released", async () => {
+      // The provider this suite runs under is whatever the environment says, and
+      // CI's default is `in-process` — a driver that holds no handles, so every
+      // command exited and this stayed invisible. A deployment that follows the
+      // roadmap's own §2.1 advice sets `bullmq`, and BullMQ's Redis connections
+      // then kept the process alive: `user:create` printed its success line and
+      // hung, which is the exact defect the header of this file describes.
+      //
+      // Forced here rather than inherited, because inheriting it is how the defect
+      // hid in the first place.
+      const email = `clibullmq-${RUN_ID}@example.test`;
+      const res = await cli(
+        ["user:create", "--email", email, "--password", "Passw0rd!x", "--role", "user"],
+        { KEYSTONE_QUEUE_PROVIDER: "bullmq" }
+      );
+
+      assert.equal(res.timedOut, false, "a live BullMQ connection kept the process alive");
+      assert.equal(res.code, 0, `user:create failed under bullmq: ${res.stderr}`);
+
+      const [user] = await db.select().from(users).where(eq(users.email, email));
+      assert.ok(user, "the user row was not written");
+      createdUserIds.push(user.id);
+    });
+
     it("creates an owner, records the role change, and says so", async () => {
       const email = `cliowner-${RUN_ID}@example.test`;
       const res = await cli([

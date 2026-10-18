@@ -13,6 +13,7 @@ import { canonicalFingerprint, isValidFingerprint } from "../services/trustedPro
 import { knownScopes, validateScopes } from "../services/scopes.js";
 import { generateApiKey, hashApiKey } from "../services/tokens.js";
 import { toPublicApiKey } from "../types.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 
 const CreateSchema = z.object({
   name: z.string().min(1).max(100),
@@ -51,7 +52,7 @@ const CreateKeySchema = z.object({
 export default async function serviceAccountRoutes(app: FastifyInstance) {
   app.post(
     "/organizations/:id/service-accounts",
-    { preHandler: [app.requirePermission("service_account", "create")] },
+    { preHandler: [rateLimit({ keyPrefix: "service-account-write", maxAttempts: 60, windowSeconds: 60, emergencyLocalLimit: true }), app.requirePermission("service_account", "create")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
       const body = CreateSchema.parse(request.body);
@@ -93,7 +94,7 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
 
   app.patch(
     "/organizations/:id/service-accounts/:accountId",
-    { preHandler: [app.requirePermission("service_account", "update")] },
+    { preHandler: [rateLimit({ keyPrefix: "service-account-write", maxAttempts: 60, windowSeconds: 60, emergencyLocalLimit: true }), app.requirePermission("service_account", "update")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id, accountId } = request.params as { id: string; accountId: string };
       const body = UpdateSchema.parse(request.body);
@@ -113,7 +114,7 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
 
   app.put(
     "/organizations/:id/service-accounts/:accountId/certificate",
-    { preHandler: [app.requirePermission("service_account", "update")] },
+    { preHandler: [rateLimit({ keyPrefix: "service-account-write", maxAttempts: 60, windowSeconds: 60, emergencyLocalLimit: true }), app.requirePermission("service_account", "update")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id, accountId } = request.params as { id: string; accountId: string };
       const body = CertificateSchema.parse(request.body);
@@ -149,7 +150,7 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
 
   app.post(
     "/organizations/:id/service-accounts/:accountId/revoke",
-    { preHandler: [app.requirePermission("service_account", "update")] },
+    { preHandler: [rateLimit({ keyPrefix: "service-account-write", maxAttempts: 60, windowSeconds: 60, emergencyLocalLimit: true }), app.requirePermission("service_account", "update")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id, accountId } = request.params as { id: string; accountId: string };
 
@@ -174,7 +175,7 @@ export default async function serviceAccountRoutes(app: FastifyInstance) {
 
   app.post(
     "/organizations/:id/service-accounts/:accountId/api-keys",
-    { preHandler: [app.requirePermission("api_key", "create")] },
+    { preHandler: [rateLimit({ keyPrefix: "service-account-write", maxAttempts: 60, windowSeconds: 60, emergencyLocalLimit: true }), app.requirePermission("api_key", "create")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id, accountId } = request.params as { id: string; accountId: string };
       const body = CreateKeySchema.parse(request.body);

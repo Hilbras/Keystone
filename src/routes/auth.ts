@@ -174,6 +174,8 @@ export default async function authRoutes(app: FastifyInstance) {
         password: body.password,
         clientId: body.client_id,
         flow: "login",
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
       });
 
       if (!result.success) {
@@ -268,6 +270,8 @@ export default async function authRoutes(app: FastifyInstance) {
         password: body.password,
         clientId: body.client_id,
         flow: "token_login",
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"],
       });
 
       if (!result.success) {
@@ -378,7 +382,21 @@ export default async function authRoutes(app: FastifyInstance) {
     return { user: request.user ? toSelfUser(request.user) : null };
   });
 
-  app.post("/refresh", async (request, reply) => {
+  app.post("/refresh", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "token-refresh",
+        maxAttempts: config.REFRESH_RATE_MAX,
+        windowSeconds: config.REFRESH_RATE_WINDOW,
+        // Every attempt writes to the database. The global limiter also
+        // covers this route, but a per-prefix budget keeps a refresh storm
+        // bounded even when the two would disagree — and the local fallback
+        // matters most here: an outage must not turn rotation into
+        // unbounded writes.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request, reply) => {
     const body = RefreshSchema.parse(request.body ?? {});
     const clientId = body.client_id;
 
@@ -446,7 +464,11 @@ export default async function authRoutes(app: FastifyInstance) {
     const result = await sdk.authentication.logout(refreshToken);
     if (!result.success) return sendResultError(reply, result);
 
-    await request.audit("user_logout", { userId: request.user?.id });
+    // The route has no `authenticate` preHandler (presenting the token being
+    // revoked is what proves the caller), so `request.user` was always
+    // undefined here and every `user_logout` row lost its subject. The token
+    // itself names its owner: the row survives revocation, only marked.
+    await request.audit("user_logout", { userId: refreshToken ? await refreshTokenUserId(refreshToken) : undefined });
     clearSessionCookies(reply, appClientId);
     clearSessionCookies(reply);
     return { success: true };

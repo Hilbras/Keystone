@@ -3,7 +3,7 @@ import { validateRedirectUris } from "../../services/redirectUri.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getSdk } from "../../sdk/index.js";
 import { toPublicApplication, toPublicUser } from "../../types.js";
-import { requireOrganizationRole, sendResultError, ipEntry, BrandingSchema } from "./helpers.js";
+import { requireOrganizationRole, sendResultError, ipEntry, BrandingSchema, ListQuerySchema, OrganizationParamsSchema } from "./helpers.js";
 import { rateLimit } from "../../plugins/rateLimit.js";
 import type { EventContext } from "../../services/events/types.js";
 
@@ -76,6 +76,14 @@ const UpdateMemberSchema = z.object({
   role: z.enum(["owner", "admin", "member"]),
 });
 
+const OrgAppParamsSchema = OrganizationParamsSchema.extend({ appId: z.string().uuid() });
+const OrgMemberParamsSchema = OrganizationParamsSchema.extend({ userId: z.string().uuid() });
+const ApiKeyParamsSchema = OrganizationParamsSchema.extend({ keyId: z.string().uuid() });
+
+const AuditLogQuerySchema = ListQuerySchema.extend({
+  event: z.string().max(128).optional(),
+});
+
 function requestEventContext(request: FastifyRequest): EventContext {
   return {
     requestId: request.id,
@@ -123,7 +131,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
   });
 
   app.get("/organizations/:id", { preHandler: [app.authenticate] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const { id } = OrganizationParamsSchema.parse(request.params);
     const result = await sdk.organization.getOrganization(request.user!.id, id);
     if (!result.success) return sendResultError(reply, result);
 
@@ -139,7 +147,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/applications",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "application", action: "create" })] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const body = CreateAppSchema.parse(request.body);
       const result = await sdk.organization.createApplication(request.user!.id, id, body);
       if (!result.success) return sendResultError(reply, result);
@@ -151,7 +159,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/applications",
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "application", action: "read" })] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const result = await sdk.organization.listOrganizationApplications(request.user!.id, id);
       if (!result.success) return sendResultError(reply, result);
       return { applications: result.data.map(toPublicApplication) };
@@ -162,7 +170,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "organization", action: "update" })] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const body = UpdateOrgSchema.parse(request.body);
       if (body.name === undefined && body.branding === undefined) {
         return reply.status(400).send({ error: "Nothing to update" });
@@ -181,7 +189,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/applications/:appId",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "application", action: "update" })] },
     async (request, reply) => {
-      const { id, appId } = request.params as { id: string; appId: string };
+      const { id, appId } = OrgAppParamsSchema.parse(request.params);
       const body = UpdateAppSchema.parse(request.body);
       const result = await sdk.organization.updateApplication(request.user!.id, id, appId, body);
       if (!result.success) return sendResultError(reply, result);
@@ -194,7 +202,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/invites",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "organization", action: "invite" })] },
     async (request, reply) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const body = InviteSchema.parse(request.body);
       const result = await sdk.organization.inviteMember(request.user!.id, id, body, requestEventContext(request));
       if (!result.success) return sendResultError(reply, result);
@@ -209,7 +217,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/members",
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "organization", action: "read" })] },
     async (request) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const members = await app.container.organizationRepository.listMembers(id);
       return {
         members: members.map(({ membership, user }) => ({
@@ -224,7 +232,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/members/:userId",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "organization", action: "manage_members" })] },
     async (request, reply) => {
-      const { id, userId } = request.params as { id: string; userId: string };
+      const { id, userId } = OrgMemberParamsSchema.parse(request.params);
       const body = UpdateMemberSchema.parse(request.body);
       const result = await sdk.organization.updateMemberRole(request.user!.id, id, userId, body.role, requestEventContext(request));
       if (!result.success) return sendResultError(reply, result);
@@ -236,7 +244,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/members/:userId",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "organization", action: "manage_members" })] },
     async (request, reply) => {
-      const { id, userId } = request.params as { id: string; userId: string };
+      const { id, userId } = OrgMemberParamsSchema.parse(request.params);
       const result = await sdk.organization.removeMember(request.user!.id, id, userId, requestEventContext(request));
       if (!result.success) return sendResultError(reply, result);
       return result.data;
@@ -247,7 +255,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/users",
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "organization", action: "read" })] },
     async (request) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const members = await app.container.organizationRepository.listMembers(id);
       return {
         users: members.map(({ membership, user }) => ({
@@ -262,7 +270,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/users/:userId",
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "organization", action: "read" })] },
     async (request, reply) => {
-      const { id, userId } = request.params as { id: string; userId: string };
+      const { id, userId } = OrgMemberParamsSchema.parse(request.params);
       const membership = await sdk.authorization.isOrgMember(userId, id);
       if (!membership) return reply.status(404).send({ error: "User is not a member of this organization" });
       const members = await app.container.organizationRepository.listMembers(id);
@@ -276,7 +284,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/users/:userId",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "organization", action: "manage_members" })] },
     async (request, reply) => {
-      const { id, userId } = request.params as { id: string; userId: string };
+      const { id, userId } = OrgMemberParamsSchema.parse(request.params);
       const membership = await sdk.authorization.isOrgMember(userId, id);
       if (!membership) return reply.status(404).send({ error: "User is not a member of this organization" });
       return reply.status(410).send({
@@ -291,7 +299,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/users/:userId",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "organization", action: "manage_members" })] },
     async (request, reply) => {
-      const { id, userId } = request.params as { id: string; userId: string };
+      const { id, userId } = OrgMemberParamsSchema.parse(request.params);
       const membership = await sdk.authorization.isOrgMember(userId, id);
       if (!membership) return reply.status(404).send({ error: "User is not a member of this organization" });
       return reply.status(410).send({
@@ -307,7 +315,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/api-keys",
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "api_key", action: "read" })] },
     async (request) => {
-      const { id } = request.params as { id: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
       const keys = await app.container.apiKeyRepository.listByOrgId(id);
       return { keys };
     }
@@ -317,7 +325,7 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/api-keys/:keyId",
     { preHandler: [requireOrganizationRole(["owner", "admin"], { resource: "api_key", action: "revoke" })] },
     async (request, reply) => {
-      const { id, keyId } = request.params as { id: string; keyId: string };
+      const { id, keyId } = ApiKeyParamsSchema.parse(request.params);
       const record = await app.container.apiKeyRepository.revokeByKeyIdAndOrgId(keyId, id);
       if (!record) return reply.status(404).send({ error: "API key not found" });
       await request.audit("api_key_revoked", { keyId: record.id, name: record.name, orgId: id });
@@ -330,13 +338,13 @@ export default async function organizationsRoutes(app: FastifyInstance) {
     "/organizations/:id/audit-logs",
     { preHandler: [requireOrganizationRole(["owner", "admin", "member"], { resource: "audit_log", action: "read" })] },
     async (request) => {
-      const { id } = request.params as { id: string };
-      const query = request.query as { limit?: string; offset?: string; event?: string };
+      const { id } = OrganizationParamsSchema.parse(request.params);
+      const query = AuditLogQuerySchema.parse(request.query);
       const logs = await app.container.auditRepository.list({
         orgId: id,
         event: query.event,
-        limit: query.limit ? Number(query.limit) : 50,
-        offset: query.offset ? Number(query.offset) : 0,
+        limit: query.limit,
+        offset: query.offset,
       });
       return { logs };
     }

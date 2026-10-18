@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**70 findings.**
+**89 findings.**
 
 | Severity | Count |
 | --- | --- |
-| critical | 6 |
-| high | 34 |
-| medium | 21 |
-| low | 9 |
+| critical | 7 |
+| high | 39 |
+| medium | 28 |
+| low | 15 |
 
 ## Scope
 
@@ -39,7 +39,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 | Attack class | Findings |
 | --- | --- |
-| `privilege-escalation` | SEC-001, SEC-002, SEC-003, SEC-007, SEC-023, SEC-025, SEC-028, SEC-032 |
+| `privilege-escalation` | SEC-001, SEC-002, SEC-003, SEC-007, SEC-023, SEC-025, SEC-028, SEC-032, SEC-089 |
 | `mfa-bypass` | SEC-004, SEC-005, SEC-015, SEC-034 |
 | `tenant-isolation` | SEC-001, SEC-003, SEC-006 |
 | `token-replay` | SEC-012, SEC-013, SEC-038 |
@@ -48,8 +48,8 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 | `mtls-spoofing` | SEC-007, SEC-009, SEC-010 |
 | `xff-spoofing` | SEC-008, SEC-009 |
 | `api-scope-escalation` | SEC-023, SEC-024, SEC-025 |
-| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031 |
-| `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038 |
+| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031, SEC-088, SEC-090, SEC-091 |
+| `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038, SEC-086, SEC-087 |
 | `password-reset-invalidation` | SEC-014 |
 
 ## Critical
@@ -137,6 +137,32 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 **Documentation.** [docs/security/scopes.md](scopes.md)
 
 **Attack classes.** `api-scope-escalation`, `privilege-escalation`
+
+### SEC-086 — Revoke-all sessions left every refresh token able to mint access tokens
+
+*Fixed in v3.9.3. Component: `sessions`.*
+
+**Issue.** Three stacked defects in one control, with zero route-level tests - the suite exercised only the service primitives the route failed to call.
+
+1. `POST /auth/sessions/revoke-all` deleted rows from `user_sessions` and never touched `refresh_tokens`. Refresh validation checks only `refresh_tokens.revoked_at`/`expires_at`, so after "log out everywhere" every outstanding refresh token kept rotating into fresh access tokens for the full `JWT_REFRESH_TOKEN_TTL`. The correct primitive (`revokeUserSessions` in `sessionRevocation.ts`, which revokes both tables and whose own comments describe exactly this failure mode) existed and was used by password reset - but not by the route.
+2. The "except current session" carve-out read the **access** cookie (`config.COOKIE_NAME`) and hashed it against `refresh_tokens`, where only refresh-cookie values ever appear. The lookup could never match, so the except-branch was permanently dead, and the audit row reported a refresh-token id while labelling it `exceptSessionId`.
+3. The repository's except-filter used `lt(userSessions.refreshTokenId, exceptId)` - a lexicographic `<` on UUID text where "not equal" was meant - so even a fixed cookie read would have deleted only the sessions whose token ids sorted below the kept one.
+
+Introduced alongside the fix: revoking tokens made admin-revocations indistinguishable from rotation-consumed ones (both just `revokedAt`), and replay detection treats any revoked-token presentation as a leak, revoking **all** credentials. A stale tab - or an ex-holder of an already-revoked token - could then repeatedly kill the caller's fresh session, giving the very token the control just mooted a session-DoS against the account.
+
+**Fix.** `src/routes/sessions.ts` - reads `${COOKIE_NAME}-refresh`, resolves the caller's own session id via `findByRefreshTokenId`, and calls `revokeUserSessions(userId, { exceptSessionId, exceptRefreshTokenId })`; the audit row now carries a real session id plus both revocation counts.
+
+`src/repositories/session.ts` - `deleteAllForUser` (the `lt` bug) removed; `listByUser` filters `revokedAt` since revocation now marks rows instead of deleting them.
+
+`src/db/schema.ts` + migration `0019_refresh_token_consumed_at` - new `refresh_tokens.consumedAt`, set only by the rotation claim in `tokens.ts`. `refreshTokenState.ts` keys replay detection on `consumedAt`, so re-presenting a consumed token (two parties hold it) still revokes everything while an administratively revoked token gets a plain 401.
+
+`src/tests/security/sessions/route-revoke-all.test.ts` - route-level coverage: revoked tokens cannot rotate, the caller's own token survives, the audit payload is truthful, revoked sessions disappear from the list, and `DELETE /auth/sessions/:id` actually kills that token (also previously untested).
+
+**Test.** `src/tests/security/sessions/route-revoke-all.test.ts`
+
+**Documentation.** [docs/security/tokens.md](tokens.md)
+
+**Attack classes.** `session-persistence`
 
 ## High
 
@@ -597,6 +623,120 @@ Restructuring to inline the limiter twice was rejected on purpose: two copies of
 
 **Documentation.** [docs/API.md](../API.md)
 
+### SEC-075 — Webhook delivery fetched an administrator-supplied URL with no SSRF validation
+
+*Fixed in v3.6.0. Component: `webhooks`.*
+
+**Issue.** `src/services/webhooks.ts` performed `fetch(endpoint.url, …)` against a URL taken straight from an API caller, with no validation of any kind. `createEndpoint` stored whatever string it was given and `deliverNow` requested it, on a queue worker, from inside the network, with the server's own identity and egress.
+
+**The repository already contained a complete SSRF guard and it was not applied here.** `src/services/ssoEndpointPolicy.ts` classifies private and reserved addresses, resolves DNS and inspects *every* answer, pins the connection to the address it validated so a rebind cannot change the destination between check and connect, and refuses redirects. It was wired to SSO and OIDC endpoints — configured by a **platform owner** — and not to webhooks, which are configured by **any organization admin** and are therefore the lower-trust of the two. That is the inversion that made the gap survive: the stronger control was on the more privileged route.
+
+What the missing validation permitted:
+
+- **Cloud metadata.** A webhook aimed at `169.254.169.254` reads instance credentials. It is link-local, which the existing classifier already treats as private.
+- **Lateral reach.** `127.0.0.1:6379`, `postgres.internal`, or any RFC1918 address is reachable from the worker, and none of it should be reachable from a tenant-controlled URL.
+- **The response came back to the operator.** `deliverNow` persists the response body on the delivery row and `GET /platform/webhook-deliveries/:id` returns it. So a *successful* request hands the contents of whatever it reached to the org admin through the API — the SSRF is not blind.
+- **Plain HTTP in production** carried the `X-Keystone-Signature` header, so a signing secret in a cleartext request that any intermediary proxy logs.
+
+Severity **high**, and not overstated as a remote unauthenticated compromise: creating a webhook endpoint requires an authenticated organization-owner or platform-owner token. The privilege required is real, but it is an ordinary tenant-admin capability, and the primitive it buys is reaching networks the tenant could not otherwise address — including cloud instance credentials, which is a step up from "an admin can already do a lot".
+
+One correction to an assumption worth recording: the endpoint routes are **owner-only** (`requirePlatformRole("owner")`), not organization-scoped as the first draft of this entry assumed. It is still a distinct, lower-trust role than the one that configures SSO, and the primitive does not change.
+
+**Fix.** `src/services/outboundPolicy.ts` (new) — the policy for administrator-supplied URLs. It **delegates** the private-address classification and the DNS resolution to `ssoEndpointPolicy` rather than carrying a second copy of the ranges, because two implementations of the same rule drift apart silently and a check that covers less than it appears to is the failure this entry exists to remove. What is new here is the flag, the error type, and the plan's §1.2 HTTPS rule.
+
+`src/services/webhooks.ts` — `createEndpoint` and `updateEndpoint` validate before storing (`updateEndpoint` only when `url` actually changes, so an unrelated `isActive` toggle does not fail for an endpoint created before the policy existed), and `deliverNow` re-validates immediately before the request. The delivery-time check is not redundant: DNS rebinding means a name that resolved publicly at creation can resolve to `127.0.0.1` at delivery, rows predating this policy were never validated, and the URL is tenant-controlled so the trust decision belongs next to the request.
+
+`OutboundUrlRejected` is a named type, not a bare `Error`, because the two call sites need different outcomes from the same rejection: the admin API answers **400** (the operator supplied a URL Keystone will not use — a 500 would tell them to retry something that can never succeed), while the worker records the delivery **failed and does not retry it**. The retry ladder exists for transient network faults; a policy rejection is permanent, so five attempts against `169.254.169.254` would be five requests the operator should never have received. Separating the two by error type rather than by message is what keeps a reworded error string from silently changing which branch runs.
+
+`config.ALLOW_PRIVATE_WEBHOOK_TARGETS` — a development and test affordance, defaulting to the existing `ALLOW_PRIVATE_SSO_ENDPOINTS` so there is one decision rather than two. It is a *narrower* flag on purpose: the SSO flag also disables DNS resolution and address pinning, which a developer's `http://localhost:3000` does not need switched off and which `169.254.169.254` absolutely does.
+
+**The suite that already used a loopback webhook now says so.** `src/tests/observability/chokepoints.test.ts` delivers to a collector it starts on `127.0.0.1`, because asserting a span exists for a webhook delivery needs a real HTTP exchange. It set the flag explicitly rather than having the refusal appear as an unexplained throw from `createEndpoint`.
+
+**Test.** `src/tests/security/webhooks/outboundUrlPolicy.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+### SEC-080 — The release path published a container image with no vulnerability check on it
+
+*Fixed in v3.7.2. Component: `ci`.*
+
+**Issue.** `release.yml` ran `npm audit --omit=dev --audit-level=high`, which sees **JavaScript advisories only**, and then built and pushed the image with no check on it. The `docker` job ended at `cache-to: type=gha,mode=max`; `publish` depended on `[verify, npm]`, not on `docker` at all.
+
+So the OS packages in the runtime base — glibc, pcre2, openssl and the rest of Debian's security surface, which is most of what an attacker touches — were **invisible to the release path entirely**. A HIGH advisory there could reach a published release with every existing gate green.
+
+A Trivy scan did exist, in `supply-chain.yml`, with `exit-code: "1"`. It did not close the gap, for two reasons:
+
+1. It is not a required check on `main` and not a dependency of the release workflow, so a release proceeds regardless of its result.
+2. **It scanned a different artifact than the one that ships.** It runs `docker build -t hilbras-keystone:scan .` in its own job; the release builds and pushes separately. Two builds of the same Dockerfile can resolve different base digests minutes apart, so the scan was evidence about an image nobody installed.
+
+This is what actually happened. The 3.7.1 release was held because `Container scan` found **CVE-2026-103111** (HIGH, pcre2 out-of-bounds write) in `node:26-slim`. Measured, not assumed: a freshly pulled `node:26-slim` still carries `libpcre2-8-0 10.46-1~deb13u2`, and Debian has not published the fixing `deb13u3` for that tag — so no rebuild clears it.
+
+**High**, and it is a control that reports success for something other than what it protects: the release gate reported a verdict about the package and read as a verdict about the release. The artefact it did not examine is the one most deployments actually run — the published image, not the npm tarball.
+
+Not overstated: no vulnerability was exploitable *through* Keystone, and the base is a widely-used, actively-patched image rather than something neglected. The severity is the size of the unexamined surface, not a live compromise.
+
+**Fix.** `scripts/verify-image-vulnerabilities.mjs` (new) — the gate. CRITICAL and HIGH only, `--ignore-unfixed`, and it reads `docs/security/registry-exceptions.md` for accepted advisories, so the escape hatch is the same one `npm audit` already has in `release.yml` and carries the same contract: a reason, a mitigation, an expiry, an owner.
+
+`.github/workflows/release.yml` — the gate runs in the `docker` job **on the image just pushed**, using `steps.meta.outputs.tags`, and `publish` now declares `needs: [verify, npm, docker]`. That second change is the load-bearing one: a gate nothing waits on is not a gate, and it is the same mistake as the `--strict` pass in 3.5.12 and the `publicReason` inert lookup before that.
+
+**Exits 2 when the scan cannot run** — missing binary, failed scan, or output it cannot parse — and never 0. A gate that cannot distinguish "the scan found nothing" from "the scan did not run" reports success on an empty result, which is the defect class this project has now found roughly fifty times and the reason this exit code exists at all.
+
+Scanned after the push rather than before it. The alternative is a second full build, and the push is not the irreversible step — `publish` creates the release, and that is gated.
+
+**One bug found by the regression, and it is the instructive one.** The first version destructured the exceptions table by index and read **Owner** as the expiry, because the schema has seven columns and the code assumed six. Every exception therefore failed the expiry check and was rejected — a recorded, reasoned, dated exception was treated as no exception. The failure direction is safe (it blocks), which is exactly why nothing would have noticed until the first person tried to use the mechanism mid-release. The columns are now read by position from the documented schema, and the suite covers unexpired, expired, no-expiry, wrong-advisory, wrong-severity, and a historical entry that must not authorise a live finding.
+
+**Test.** `src/tests/security/supplyChain/imageVulnerabilityGate.test.ts`
+
+**Documentation.** [docs/security/RELEASE-HOLD-3.7.1.md](RELEASE-HOLD-3.7.1.md)
+
+### SEC-087 — Per-application IP lists vanished when client_id was omitted from the login body
+
+*Fixed in v3.9.3. Component: `anomaly-detection`.*
+
+**Issue.** `checkIpAllowed(clientId, ip)` returned `{ allowed: true }` whenever `clientId` was falsy, and the value came straight from an optional body field on `POST /auth/login`, `/auth/register` and token-login. Omitting — or inventing — that one field walked past `allowedIps` and `blockedIps` entirely, so a deployment using them as a network control (the only way they are documented to be usable) enforced nothing against anyone who chose not to identify an application. The check also ran before the account was known, so no property of the *account's* applications could ever be consulted for a bare login.
+
+Promoted from a deep-scan finding: the bypass was structural, not an edge case — the control's entire input was attacker-controlled and optional.
+
+**Fix.** `src/services/domain/authentication.ts` — after the lockout guard and before the password verify, every login whose caller address is known consults the applications of each organization the account belongs to: a `blockedIps` match or a miss against a non-empty `allowedIps` refuses with `IP_NOT_ALLOWED` regardless of what `client_id` the body claims. Placing it before the password check keeps the refusal from proving which secret was correct, matching how the pre-existing up-front check behaves.
+
+`src/routes/auth.ts` + `src/sdk/index.ts` — login and token-login now forward `ipAddress`/`userAgent` into the application service; before this, `LoginRequest.ipAddress` existed on the interface but nothing in the HTTP path ever populated it, so every downstream consumer (this check, session rows, MFA challenge context) saw `undefined`.
+
+The up-front route check (`services/ipControls.ts`) stays: a submitted `client_id` for a real application is still verified directly, so a restricted app is refused before the account lookup even runs.
+
+**Test.** `src/tests/security/authentication/ip-allowlist.test.ts`
+
+**Documentation.** [docs/security/trust-boundaries.md](trust-boundaries.md)
+
+**Attack classes.** `session-persistence`
+
+### SEC-089 — Concurrent setup bootstrap created two platform owners
+
+*Fixed in v3.5.1. Component: `setup`.*
+
+**Issue.** `POST /setup/init` read `hasNoOwners()` and then, in separate statements, registered or promoted a user and set its role. Two callers issued close enough together both read "no owners" and both wrote, so a fresh deployment answered its first simultaneous requests with more than one platform owner. No database invariant prevented it: `updateRole` protects the last owner from demotion, and nothing says there may be only one.
+
+**Fix.** src/routes/setup.ts — the bootstrap runs inside `withAdvisoryLock("keystone:setup:bootstrap")`, taken on a reserved connection so the session lock is released by the session that took it; the owner check is repeated under the lock and a loser is answered 409 (in progress) or 403 (already complete) instead of racing
+
+**Test.** `src/tests/security/setup/bootstrap-race.test.ts`
+
+**Documentation.** [docs/DEPLOYMENT.md](../DEPLOYMENT.md)
+
+**Attack classes.** `privilege-escalation`
+
+### SEC-090 — Webhook delivery followed redirects, bypassing the outbound URL policy
+
+*Fixed in v3.5.1. Component: `webhooks`.*
+
+**Issue.** `deliverNow` validated the stored webhook URL with `assertSafeWebhookUrl` and then called `fetch` with the default `redirect: "follow"`. A consumer answering `302 Location: http://169.254.169.254/latest/meta-data/` had that request performed for it — payload and HMAC signature attached — while the private-address check, which exists for exactly that destination, never saw it. The guard was one response header away from being bypassed.
+
+**Fix.** src/services/webhooks.ts — the delivery request uses `redirect: "manual"` and a 3xx is thrown as `OutboundUrlRejected`, so a redirect is recorded as a terminal refusal rather than retried
+
+**Test.** `src/tests/security/webhooks/ssrf-redirect-and-schemes.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+**Attack classes.** `secret-disclosure`
+
 ## Medium
 
 ### SEC-013 — A used credential was not distinguishable from an unknown one
@@ -890,6 +1030,244 @@ Narrowing the walker has a consequence worth stating: `--strict`'s "unplaced rou
 
 **Documentation.** [docs/security/registry.md](registry.md)
 
+### SEC-073 — The shipped Ingress published the unauthenticated /metrics endpoint, and the manifest gate could not see it
+
+*Fixed in v3.5.12. Component: `infrastructure`.*
+
+**Issue.** Three layers of one defect, each of which reported success for something other than what it measured.
+
+**1. The manifests contradicted the documentation.** `docs/security/monitoring.md` recorded that `/metrics` is unauthenticated *by decision* and then stated that `k8s/base/service.yaml` is a ClusterIP, *"so in the shipped manifests /metrics is reachable from inside the cluster and not from outside it."* That is false for the configuration this repository ships. `k8s/base/ingress.yaml` declared an Ingress with `path: /` and `pathType: Prefix` — which matches `/metrics` like any other path — and `k8s/base/kustomization.yaml` listed it as a base resource, so `overlays/dev` and `overlays/production` both inherited it. A ClusterIP keeps a Service internal *from the Service*; the Ingress was in front of the Service. The paragraph was written on 3.5.10, the same release that first asked why this route was public, and it was checked against the Service and never against the Ingress.
+
+**2. The gate could not see it.** `scripts/verify-k8s-manifests.mjs` rendered every resource in `k8s/` and then branched on `doc.kind === "Deployment"` for every check. An Ingress was in the rendered set — counted in the `base: 9 resources` line, on screen — and never examined. The script printed `Kubernetes manifests OK. / version: 3.5.11 (manifest image tag matches package.json) / probes: liveness /health, readiness /ready` while the repository published its route table. This is the same defect as the `containersOf` bug in §5.4 of the same file, reached by a different route: that one read `spec.containers` where a Deployment has `spec.template.spec.containers`; this one never matched on `kind` at all. Both are a check that cannot fail, and both are visible only by reading the file the check is about rather than the check's own output.
+
+**3. The remedy the documentation prescribed is itself inert on a current cluster.** The 3.5.10 text told an operator to exclude the path with `nginx.ingress.kubernetes.io/server-snippet`. **That annotation is ignored unless the cluster sets `allow-snippet-annotations: "true"` on the ingress-nginx ConfigMap, and `false` is the default** — it became the default in the fix for CVE-2021-25742, where a user with permission to create an Ingress could read every Secret in the cluster via a snippet. So on a current cluster the annotation is dropped *silently*: the Ingress applies cleanly, `kubectl apply` succeeds, and `/metrics` is still public. An operator following the documented remedy to the letter would have believed they were protected and been wrong. The documented way to make the annotation work is to set the flag that re-opens the CVE.
+
+Not a live exploit of the server: `/metrics` is unauthenticated on purpose, it exposes no tenant data, and nothing about it was broken. The exposure is of the route table and traffic shape, through a path the repository did not intend to publish, and the two controls that stood between it and the internet were a sentence in a document and a gate that could not see the file.
+
+**Fix.** `scripts/verify-k8s-manifests.mjs` — the check that could not see an Ingress now reads Ingress rules. A path that is exactly `/metrics`, or a `Prefix` path that is `/` or starts with `/metrics`, is a publication; an annotation whose key matches /snippet/i and whose value names the path is an exclusion. A published path with no exclusion fails, naming the file, deduplicated per file so one bad manifest is one line rather than one per overlay that inherits it. `overlays/ingress` is rendered too, so its exclusion is verified rather than trusted.
+`k8s/base/kustomization.yaml` — the Ingress resource is removed from the base's resource list, so the base is ClusterIP-only, which is what made the safety claim true. The Ingress moves to an opt-in overlay at `k8s/overlays/ingress/`, which builds on `overlays/production` and carries the host, the TLS secret and the exclusion together; the Ingress patches that used to sit in the two overlays are gone, since they patched a resource that is no longer in the base. A deployment that wants a public hostname applies that overlay; one that does not is internal by default, which is the usual case for a scrape endpoint.
+`docs/security/monitoring.md` — the false paragraph is replaced, the `server-snippet` caveat is stated with the CVE and the `false` default, and the two approaches that need nothing from the controller are given instead. The `curl` verification and the 3.5.10 provenance are kept.
+`k8s/README.md` — documents the third overlay and which command to apply.
+`scripts/review-api-surface.mjs` — the `/metrics` `PUBLIC_BY_DESIGN` reason repeated the same false claim (*"k8s/base/service.yaml is a ClusterIP so it is cluster-internal by default"*), and that text is what a reader of the API review would have believed. It now states the exposure and points at the overlay.
+
+**The exclusion is kept in the overlay with its caveat rather than removed**, because a cluster that has already made its own decision about snippets is entitled to use one, and deleting a working option to make a point is its own kind of inaccuracy. The gate passes it either way, and the gate's own output repeats the `allow-snippet-annotations` warning, so the caveat travels with the verdict.
+
+**Test.** `src/tests/security/infrastructure/ingressDoesNotPublishMetrics.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
+
+### SEC-077 — The token endpoint consumed the authorization code before verifying the PKCE verifier, so a failed proof destroyed it
+
+*Fixed in v3.6.1. Component: `oauth2`.*
+
+**Issue.** The `authorization_code` grant at `/oauth2/token` ran `consumeAuthorizationCode` and only then called `verifyPKCE`. The order in the shipped code:
+
+```ts
+const record = await consumeAuthorizationCode(body.code, application.id, body.redirect_uri);
+if (!record) return reply.status(400).send({ error: "invalid_grant" });
+
+const pkceRequired = requiresPkce(application.clientSecretHash);
+if (!body.code_verifier && pkceRequired) { /* reject */ }
+if (!verifyPKCE(record.challenge, …)) { /* reject */ }
+```
+
+So **any** pre-PKCE rejection marked the code used. A request carrying a wrong or missing `code_verifier` burned a perfectly good authorization code: the legitimate client, holding the correct verifier, then found it spent and received `invalid_grant` — the same answer it would get for an expired or already-redeemed code, with nothing in the response or the audit trail to distinguish the three.
+
+Two consequences, and they are different in kind:
+
+- **Availability and diagnosability.** A single malformed request from a buggy or hostile client destroys a user's authorization grant. The user retries, gets a new code, and usually never learns why the first one died. For a confidential client that also failed the same way, a mistyped `client_secret` had the identical effect.
+- **A denial-of-service primitive.** Anyone who can obtain a code — by intercepting a redirect, or by being the user — can invalidate it for the legitimate holder by presenting a wrong verifier. The code is single-use, so one bad request is permanently enough.
+
+**Not an authentication bypass.** An attacker without the verifier still gets nothing: PKCE verification fails. The severity reflects the availability and diagnostic loss, not a token being issued to the wrong party.
+
+What the plan also asked for, and what was **already true**: the consume is atomic. `consumeAuthorizationCode` is a single `UPDATE … WHERE used_at IS NULL … RETURNING`, so two parallel redemptions cannot both win. That part of the plan's §4.1 needed no work, and saying otherwise would have credited a fix that did not happen.
+
+**Fix.** `src/services/oauth2.ts` — `peekAuthorizationCode` (new), a **read-only** lookup under the same conditions as the consume: code hash, application, unexpired, `usedAt IS NULL`, and exact `redirect_uri`.
+
+`src/routes/oauth2.ts` — the token endpoint now peeks, verifies the client, the redirect URI and the PKCE verifier, and **only then consumes**. The consume is unchanged and is still the only thing that marks the row used, which is what keeps a single use a single use: two parallel redemptions may both read the row, and the `usedAt IS NULL` predicate lets exactly one consume match. That is why the peek is a read and not a replacement.
+
+A `consume` that returns nothing after a successful peek is the parallel-redemption case, and answers `invalid_grant` rather than 500 — the code genuinely was already spent, which is a client error.
+
+Both PKCE rejection paths now **audit** with a distinct outcome (`pkce_verifier_missing`, `pkce_failed`), which they previously did not. That is what makes the next occurrence diagnosable, and it is the part of the fix that would otherwise have been invisible.
+
+Deliberately **not** done: consuming on a *successful* PKCE check but failing later (user deactivated, membership removed). Those checks sit between the peek and the consume and are unchanged in their ordering relative to it, so a code that passes PKCE and then fails an authorization check is still consumed, exactly as before. Narrowing that further is a behaviour change beyond this finding.
+
+**Test.** `src/tests/security/oauth2/pkceBeforeConsume.test.ts`
+
+**Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-078 — Webhook delivery had no atomic claim, so two workers could send the same event twice
+
+*Fixed in v3.7.0. Component: `webhooks`.*
+
+**Issue.** `deliverNow` selected the row, sent the HTTP request, and wrote the result back:
+
+```ts
+const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, deliveryId)).limit(1);
+if (!delivery) return;
+const [endpoint] = await db.select().from(webhookEndpoints)...;
+// ... fetch, with nothing in between that says this worker owns it
+```
+
+`status` had only three values — `pending | success | failed` — and **no `processing`**, so there was no state a worker could move a delivery into to take ownership of it. Nothing in the read or the write was conditional on the delivery still being claimable.
+
+**Two workers holding the same `deliveryId` both sent the payload.** Nothing reported it: each worker's own final write succeeded, and the last one won. The consumer received the same event twice, and the delivery record showed a single `success` with a single attempt count — the evidence of the double-send was overwritten by the thing that hid it.
+
+The trigger is ordinary rather than exotic. `retryLater` re-enqueues by `deliveryId` after a 30-second delay; a delivery that is slow rather than failed — a consumer that takes 40 seconds — is re-enqueued while the first attempt is still in flight, and the queue driver's own redelivery on an unacknowledged job does the same. `MAX_ATTEMPTS = 5` bounds the damage per row rather than preventing it.
+
+Why medium and not high: it requires the job to be delivered twice, it is an availability-of-correctness fault rather than a confidentiality or privilege fault, and a consumer that dedupes on `X-Keystone-Delivery` (which Keystone has always sent) is unaffected. Why not low: a consumer that credits an account per delivery is corrupted by it, silently, with the audit trail asserting the opposite.
+
+**Fix.** `src/services/webhooks.ts` — the claim is one conditional `UPDATE`:
+
+```sql
+UPDATE webhook_deliveries SET status = 'processing', locked_at = now, locked_by = ?
+WHERE id = ? AND (status = 'pending' OR (status = 'processing' AND locked_at < ?))
+```
+
+Exactly one caller gets a row back; every other returns having sent nothing. The decision is made by the database, which is what makes it hold across processes and machines — a `SELECT` cannot. And no lock is held across the HTTP request, which would be worse: the request can take ten seconds and a lock held that long blocks the database rather than just the row.
+
+**The claim is only half of it.** Without a lease, a worker that dies mid-delivery strands the row in `processing` forever — not pending, so nothing retries it; not failed, so nothing reports it. That is a delivery lost silently, which is the outcome the claim was introduced to prevent. So `locked_at` and `locked_by` were added (migration `0018`, two nullable columns, no backfill) and `reclaimStaleDeliveries()` returns expired claims to `pending`. It runs at worker startup — the case that matters is a **restart** — and every 60s thereafter.
+
+The lease is 10 minutes against a 10-second request timeout: a live worker is never reclaimed, and a short lease would risk double-sending the slow-but-healthy delivery, reintroducing the original defect through the recovery path. A test asserts a fresh claim is not stolen.
+
+Every terminal write drops the claim. That is not tidiness — a `success` row whose lock was left set would be returned to `pending` by the sweep and **re-sent**, so a completed delivery could be delivered twice. Asserted.
+
+`startWebhookWorker`'s sweep catches and logs its errors rather than letting them become an unhandled rejection, which terminates a Node process. That is the SEC-053 defect in a new place: a throw nobody awaits in a background timer is exactly how a service becomes inexplicably gone.
+
+**Also found while doing this, and fixed in the same release:** a second, separate webhook path. `AUDIT_WEBHOOK_URL` (the audit export) is enqueued as `type: "webhook"` and handled at `src/index.ts` with a bare `fetch(url)` — no outbound policy at all, having been missed by SEC-075, which covered only `deliverNow`. It is a much lower trust boundary (operator environment configuration, not an API caller) but it is a standing automated request on every event, so a misconfigured value ships audit records anywhere without anyone noticing. It now goes through the same `assertSafeWebhookUrl`.
+
+**Test.** `src/tests/security/webhooks/atomicDeliveryClaim.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+### SEC-079 — The webhook delivery row stored 2000 bytes of the consumer's response, and served it back through the admin API
+
+*Fixed in v3.7.1. Component: `webhooks`.*
+
+**Issue.** `deliverNow` persisted the consumer's response body verbatim, truncated to the column:
+
+```ts
+const responseBody = (await response.text()).slice(0, 2000);
+```
+
+and `GET /platform/webhooks/:id/deliveries` returns the row to any caller holding the platform-owner role.
+
+**The consumer is a third party, and this is its data.** A webhook pointed at a service that echoes its request — which is what most do while someone is debugging — caused the signed payload and the signature header to be written into a table this project backs up, replicates, and serves.
+
+Two exposures, and the second is the one that is easy to miss:
+
+1. **Cross-tenant.** A delivery is made *to* an organization's endpoint, but the row is read by whoever holds the platform role. Content the consumer returned therefore crosses a boundary the endpoint's owner did not choose and cannot see.
+2. **A durable copy of transient data.** The data was not transient after this: two kilobytes per attempt, up to `MAX_ATTEMPTS = 5`, in a database that is backed up and replicated. A stack trace or a debug dump from a consumer became permanent, queryable, exportable state. Nothing in the retention or the schema said it was there.
+
+The plan lists this as §3.5, "do not blindly persist arbitrary response bodies", which is the right summary of it.
+
+Medium rather than high: the content is whatever the *consumer* chose to return about a request Keystone made, so it is not Keystone leaking its own secrets on its own initiative — but a reflecting endpoint makes the request itself the content, and a request body can contain tenant data this project handles under its own confidentiality obligations.
+
+**Fix.** `src/services/webhooks.ts` — `summariseWebhookResponse` replaces the slice. By default it stores only the **shape**: `HTTP <status> · <content-type> · <bytes> bytes`. That is what an operator actually needs to answer "is the consumer rejecting us", and the answer to a 500 is almost never in the body — it is in the consumer's own logs, which is where the body belongs.
+
+`WEBHOOK_DEBUG_CAPTURE_BODY=true` (new, **off by default**) keeps a 512-byte redacted prefix, and the stored value says so in itself (`body(captured): …`) so a captured row cannot be mistaken for a default summary. For debugging a consumer you control, and only then.
+
+**The error paths were leaking the same way and were fixed too.** `releaseClaim` and the two `catch` blocks each wrote `.slice(0, 2000)` of a message, and an undici fetch error can carry text influenced by the remote peer. Those now go through `sanitiseDiagnostic`, which bounds the length and strips control characters. It is not redaction — those strings describe *our* request failing, which is exactly the distinction an operator needs and which they cannot get from the consumer. The third-party **body** is the thing that must not be kept.
+
+Control characters are stripped in both helpers, deliberately: a stored value a remote party can shape is a log-injection vector for anyone tailing the delivery row.
+
+**No migration.** The column already exists and is nullable; this changes what is written into it. Rows written by earlier versions still contain captured bodies, and are not rewritten — purging them is a separate operator decision, since some may be the only record of why a consumer rejected a delivery.
+
+**Test.** `src/tests/security/webhooks/responsePrivacy.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+### SEC-081 — Every webhook retry used one fixed 30-second delay, so a consumer outage became a synchronised wave
+
+*Fixed in v3.8.0. Component: `webhooks`.*
+
+**Issue.** Webhook delivery retried on a single constant:
+
+```ts
+const RETRY_DELAY_MS = 30_000;
+
+async function retryLater(deliveryId: string): Promise<void> {
+  setTimeout(() => { queue.enqueue(/* … */); }, RETRY_DELAY_MS).unref();
+}
+```
+
+Every retry of every delivery therefore fired at exactly t+30s, t+60s, t+90s. `retryLater` had no knowledge of how many attempts had already been made, so the delay could not depend on them even if someone had wanted it to.
+
+**The shape is worst exactly when it matters.** During a consumer outage every delivery held for that consumer comes back in one synchronised wave, is refused again in one wave, and the cycle repeats five times. The service being hammered is the one already struggling, and it is hit by precisely the deliveries it has been storing. A consumer that is down for a minute receives a spike proportional to its own backlog rather than a trickle.
+
+It is a **self-inflicted thundering herd**, and it is also a partial availability defect for the consumer: the retries compete with the consumer's real traffic for its connection pool, so recovering from the outage is slower than it should be.
+
+Medium: it needs a consumer outage to trigger, it corrupts nothing, and no delivery is lost — every one is still attempted `MAX_ATTEMPTS` times. The cost is load concentration against a recovering service, and slower recovery for both sides. Plan §3.4 asks for "exponential backoff, jitter, maximum attempts, maximum delay", and neither of the first two existed.
+
+**Fix.** `src/services/webhooks.ts` — `retryDelayMs(attempts, random)` replaces the constant: `RETRY_BASE_DELAY_MS * 2^(attempts-1)`, capped at `RETRY_MAX_DELAY_MS` (15 minutes), multiplied by a uniform draw from `[0, 1)`.
+
+**The jitter is the part that does the work, and it is why full jitter rather than a ±percentage spread.** Backoff without jitter is only a *slower* thundering herd: the wave is still a wave, just a longer-period one. What has to be avoided is simultaneous arrival, and a narrow spread still produces near-simultaneous arrivals — a ±20% band around 30 seconds is four seconds wide, which is the same wave for practical purposes.
+
+The cap is not cosmetic. Unbounded, attempt 12 would wait over eight hours, and a delivery refused for a transient blip could outlive the window in which the consumer cares about receiving it. The ceiling is asserted directly: `retryDelayMs(20, () => 1) === 15 * 60_000`.
+
+`retryLater` now takes the attempt count rather than looking it up, because the caller already holds the delivery row and a second read could disagree with the write about to happen. Both call sites — the non-2xx path and the network-failure path — pass it through, and the compile-time signature change is what forced both to be updated rather than one being missed.
+
+`SEC-078`'s claim interaction is unchanged and still holds: a policy rejection is permanent and does not retry at all, so this only governs genuinely transient failures.
+
+**Test.** `src/tests/security/webhooks/retryBackoff.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+### SEC-082 — The webhook signature verifier threw on malformed input, turning a signature check into a crash
+
+*Fixed in v3.8.1. Component: `webhooks`.*
+
+**Issue.** `verifyWebhookPayload` — exported so a webhook consumer can verify deliveries — ended in:
+
+```ts
+return crypto.timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(expected, "hex"));
+```
+
+and `crypto.timingSafeEqual` **throws `RangeError` when the two buffers differ in length**. Every malformed signature a peer can send is a different length, so calling the documented verifier on untrusted input crashed instead of reporting an invalid signature.
+
+Two routes to that call, and the second is the one worth naming:
+
+1. a truncated or padded hex digest, which is simply a different length;
+2. **`Buffer.from(x, "hex")` silently drops invalid characters** — `"zz"` decodes to an *empty buffer*, not an error. A header can therefore be malformed in a way that survives parsing entirely, and only a length check catches it.
+
+So the failure mode was: a consumer calls the verifier on a `X-Keystone-Signature` header an attacker influenced, the verifier throws, and the consumer's webhook endpoint returns 500 instead of ignoring the delivery. An unauthenticated caller who can reach that endpoint can crash its request handler at will — a small denial-of-service obtained by sending a 3-byte header.
+
+There were **no tests for this function at all**. It is the code a webhook integrator depends on most directly, and it was the only exported helper in the webhook surface with no coverage.
+
+Medium: it affects the consumer's code rather than the server's, and it requires the consumer to expose the verifier on a reachable path. It is not remotely exploitable against Keystone itself, and the server signs rather than verifies.
+
+A smaller correctness bug fixed alongside: the guard was `if (!timestamp)`, so a legitimate `t=0` was rejected as though the header carried no timestamp. Rare in practice, and harmless — but it was a falsy-check where a presence-check belonged, which is the same shape of mistake this project keeps finding.
+
+**Fix.** `src/lib/webhookSignature.ts` — **the function no longer throws.** Three guards, in order:
+
+- `Number.isFinite(timestamp)` instead of `!timestamp`, so `t=0` is a valid timestamp rather than a missing one, and `t=NaN`/`t=Infinity` are rejected rather than silently compared.
+- **The hex is validated before decoding**: `/^[0-9a-f]{64}$/i`. A SHA-256 digest is 32 bytes, so 64 hex characters, and anything else is refused before `Buffer.from` can turn it into a shorter buffer. This is what closes the silent-decode path.
+- The lengths are compared before `timingSafeEqual`, so a mismatch returns `false` rather than raising.
+
+**The constant-time comparison is kept.** That is the property worth having; rejecting on length is not a timing leak, because a wrong length is not a secret.
+
+The header split is also wrapped, so a header that cannot be parsed is rejected rather than propagated as an exception.
+
+No change to `signWebhookPayload`, so signatures this server produces are byte-identical to before — a consumer upgrading does not see a wave of verification failures.
+
+**Test.** `src/tests/security/webhooks/signatureVerification.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+### SEC-091 — Plain HTTP webhook destinations were permitted in every non-production environment
+
+*Fixed in v3.5.1. Component: `webhooks`.*
+
+**Issue.** The transport rule was "HTTPS in production, anything anywhere else". A webhook body carries an HMAC signature over the payload — a credential — so a staging deployment, which traverses public hops, was indistinguishable from a developer's laptop from the config's point of view, and the signature travelled in the clear. The old refusal message already said "http to a loopback address", so the code was looser than the story it told.
+
+**Fix.** src/services/outboundPolicy.ts — plain HTTP requires `KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost`, is never allowed in production, and is restricted to a loopback destination
+
+**Test.** `src/tests/security/webhooks/https-transport.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+**Attack classes.** `secret-disclosure`
+
 ## Low
 
 ### SEC-041 — A test fixture path was correct at only one directory depth
@@ -1025,3 +1403,161 @@ CHANGELOG.md — the superseded section is deleted for each version. Verified be
 **Test.** `scripts/verify-changelog.mjs`
 
 **Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-074 — Sixteen gate steps reported success or failure, and nothing had established that any of them could fail
+
+*Fixed in v3.5.13. Component: `tooling`.*
+
+**Issue.** The `gates` job runs 16 mechanical checks, all of which print a verdict and exit with a code. **Nothing in the repository had ever asked whether any of those verdicts could be wrong.**
+
+This is the session's dominant defect class applied to the apparatus that hunts for it: ~45 instances so far, every one a control reporting success for something other than what it measures. The obvious next question is whether the controls themselves are measurable, and the honest answer was that nobody knew. The most recent instance, SEC-073, was a gate that could not see a whole Kubernetes resource kind — found by reading the file, not by any signal the tooling produced.
+
+The gates are not broken. Probing twelve of them against defects each is *named* for shows all twelve fail correctly, which is a real result and worth having. The defect is that this was unknowable without writing the probe, and the probe is a single file that runs in 35 seconds.
+
+Not overstated: this is a low-severity gap in assurance, not a live defect. No gate is passing on something it should catch today, and no vulnerability follows from the gap. What follows is that a gate could stop working — be rewritten to check the wrong key, lose a branch, match on a path that no longer exists — and **the build would stay green**, which is precisely the SEC-073 failure arriving by a different route.
+
+**Fix.** `scripts/probe-gates.mjs` (new, and wired into `ci.yml` as a 17th gate step) — for each of twelve named gates, a mutation that the gate is documented to catch is applied to a **scratch copy** of the tree, and the gate is required to exit non-zero. Nothing is written to the working directory, and no database, Redis or network is needed, so it runs in the `gates` job alongside the checks it audits.
+
+The twelve mutations are the defects this project has actually hit: the Dockerfile drifting from `.nvmrc`, a readinessProbe at `/health`, a container with no memory limit, the SEC-073 base Ingress, a missing changelog entry, the 3.5.11 duplicate-heading defect, `engines.node` disagreeing with `.nvmrc`, a registry entry naming a test that does not exist, a withdrawn id with no reason, documentation naming an npm script that does not exist, an SDK package version drifting from the server, and an action pinned to a tag rather than a SHA.
+
+**Verified by breaking the thing it audits.** Deleting the `readinessProbe !== "/ready"` branch from `verify-k8s-manifests.mjs` — the check that script exists for — drops the probe to 11/12 and names the right gate. Restored: 12/12.
+
+The step is in `ci.yml` rather than in a document because a probe nobody runs rots, and a rotting probe is the same failure at a third level: it would keep reporting 12/12 about gates that had moved on. Every pull request now re-establishes the property.
+
+Twelve of the sixteen steps are probed. The four not yet covered are the two build-dependent ones (`generate-auth-dashboard.mjs`, `verify-doc-samples.mjs`, which need `dist/`), lint, and `review-api-surface.mjs --strict`; they are listed in the file's own `PROBES` table as the next four rather than left as a silent omission.
+
+**Test.** `scripts/probe-gates.mjs`
+
+**Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-076 — An access token naming an unknown `kid` was verified against the active signing key
+
+*Fixed in v3.6.1. Component: `tokens`.*
+
+**Issue.** `verifyAccessToken` resolved its verification key like this:
+
+```ts
+const keyPair = header.kid ? validKeys.get(header.kid) : undefined;
+const publicKey = keyPair?.publicKey ?? activeKey?.publicKey;
+```
+
+So an unrecognised `kid` fell through to the active key and the token was verified against it. No test covered the case at all.
+
+**It was never a bypass, and the entry says so rather than implying otherwise.** A token signed by *any* other key still fails signature verification, so an attacker naming a `kid` this server does not hold gains nothing: they cannot produce a signature that verifies under the active key. The plan describes this as validation to add, and at the severity a validation gap would normally carry it would be wrong.
+
+What it actually was is a **diagnostic lie**, and that is worth more than the false positive would have been. Four materially different situations all produced the identical `signature verification failed`:
+
+1. a token signed by a key retired past its grace period — a rotation that went wrong;
+2. a token from a different issuer;
+3. a forged token with an invented `kid` — an attack;
+4. an ordinary expired or tampered token — routine.
+
+An operator mid-rotation could not distinguish 1 from 3, because the server refused to say which key it tried. Every one of those logs reads the same in an incident.
+
+Severity **low**, deliberately. The fix improves diagnosability and removes a silent fallback; it closes no exploit path.
+
+**Fix.** `src/services/tokens.ts` — the fallback is gone. A token with a `kid` resolves only through `validKeys`, and an unrecognised one is rejected with `unknown key id: <kid>` **before** any signature work, so the two situations produce different errors. A token with **no** `kid` keeps the documented legacy behaviour and is verified against the active key.
+
+The two cases are treated differently on purpose rather than by accident. A token with no `kid` makes *no claim* about which key signed it, so falling back is a compatibility allowance for tokens issued before `kid` existed. A token with an unrecognised `kid` makes a claim this server cannot honour, and honouring it by guessing is what the old line did.
+
+**Rotation is unaffected**, which is the thing to check before making this change. `listValidSigningKeys()` returns the active key plus every key still inside its grace period, and `validKeys` is populated from exactly that set, so a token signed by a key rotated out minutes ago still resolves. The old fallback actually *undermined* the grace period: it would verify such a token against the wrong key and report a signature failure, which is indistinguishable from a forgery.
+
+The `env` key id is the regression this could plausibly cause — `loadSigningKeys` registers the environment-provided key under the literal id `env`, so strict resolution consulting only the database key table would break every token in an env-configured deployment. Asserted explicitly, because that is the loudest possible way to get this wrong.
+
+**Test.** `src/tests/security/tokens/strictKid.test.ts`
+
+**Documentation.** [docs/security/registry.md](registry.md)
+
+### SEC-083 — Webhook deliveries carried no header a consumer could deduplicate on
+
+*Fixed in v3.8.1. Component: `webhooks`.*
+
+**Issue.** A delivery sent three headers: `X-Keystone-Signature`, `X-Keystone-Event` (the type) and `X-Keystone-Delivery` (this endpoint's copy of the event).
+
+The identifier a consumer actually needs for deduplication — the **event** id, stable across every attempt at the same logical event — existed, but only **inside the JSON body** as `payload.id`. So:
+
+- deduplication required parsing Keystone's payload shape, which a consumer that routes on headers, or that discards the body before storing anything, cannot do;
+- **the attempt number was not sent at all**, so a consumer could not distinguish attempt 1 from attempt 3, nor accept the first and drop later ones without counting them as distinct.
+
+This is not a correctness bug in the server — a consumer *can* read `id` out of the body, and SEC-078's claim already ensures a delivery is not sent twice concurrently. It is a missing affordance with a real cost: every consumer that wants idempotent handling either parses a payload it does not otherwise understand, or does not deduplicate at all and has to be idempotent some other way.
+
+Low, and deliberately: no data is lost, nothing is mis-delivered, and the body already carries the information. The severity is the friction imposed on integrators, not a defect in Keystone's behaviour. Plan §3.3 asks for exactly these three headers.
+
+Worth recording alongside: this release also found SEC-082 in the same subsystem, in the function a consumer calls to verify what these headers arrived with. `verifyWebhookPayload` had **no tests at all** — it was the only exported helper in the webhook surface with no coverage.
+
+**Fix.** `src/services/webhooks.ts` — two additive headers:
+
+- `X-Keystone-Event-ID` — the body's `id`, stable across every attempt at the same event, so a consumer receiving a retry can tell it already has this one.
+- `X-Keystone-Attempt` — which try this is. The alternative, a counter that grows per delivery, would make the header useless for identifying a retry, and a case asserts exactly that two first-attempt deliveries both report `1`.
+
+`eventIdOf` reads the id and **falls back to the delivery id** when the payload has none. The fallback is deliberate rather than omitting the header: rows written before 3.8.0 may carry no `id`, and an absent header is worse than an approximate one, because a consumer written to dedupe on it treats the absence as its own parsing having failed and skips dedup entirely. The fallback is also *conservative in the right direction* — treating a delivery id as an event id can only cause a consumer to fail to recognise a duplicate, never to drop a distinct event.
+
+Additive only. No existing header changes value or meaning, a consumer that ignores them is unaffected, and `X-Keystone-Signature` covers timestamp and body only, so no signature change was needed and signatures are byte-identical to before.
+
+**Test.** `src/tests/security/webhooks/deliveryHeaders.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+### SEC-084 — No distributed lock existed, so no cross-instance invariant could be enforced
+
+*Fixed in v3.9.1. Component: `queue`.*
+
+**Issue.** Every cross-instance invariant this project needs — one worker per job, one bootstrap per setup, one key rotation at a time — reduces to "at most one holder of X, and only while it is alive". BullMQ solves that for its own jobs. **Nothing solved it for Keystone own work.**
+
+There was one hand-rolled instance of the pattern: `routes/saml.ts` uses `SET … EX … NX` to make a SAML transaction single-use, which is correct for what it does. So the primitive was understood and available; there was simply no reusable lock, no ownership verification, and no lease renewal.
+
+**Low, and the severity is the point rather than a hedge.** Nothing was broken: a missing abstraction is a missing affordance, not a fault. It is recorded because the plan (§2.4) asks for it and because §2.5, §6.4 and §7.4 all depend on it — a lock implemented ad hoc per call site would be one that is subtly wrong somewhere, and §2.4 explicitly names acquire/renew/release/expire/owner as the contract.
+
+The interesting part is what a naive lock gets wrong, because the wrong version is the obvious one and the failure is invisible in normal operation. `SET key token NX PX ttl` then a plain `DEL` on release is **not safe**: a holder that pauses longer than its TTL (a GC pause, a slow downstream) has its lease stolen, and then its own release **deletes the new holder lock**. Two callers then believe they hold it, and nothing reports it. That is not a race a test suite trips over; it is an intermittent double-execution discovered in production, under load, unreproducible.
+
+**Fix.** `src/services/lock.ts` (new) — `acquireLock`, `releaseLock`, `renewLock`, `inspectLock`, `withLock`.
+
+**Ownership verification is the design, not a nicety.** Release and renew are single-round-trip Lua compare-and-delete / compare-and-expire scripts, so two callers cannot interleave between a read and a write, and a holder whose lease expired is refused rather than permitted to delete the new holder lock. A blind `DEL` guarded by a `GET` has a window; a blind `PEXPIRE` has the same bug as a blind `DEL`.
+
+**The token is a fresh random value per acquisition, never the worker id.** Reusing `WORKER_ID` would be a subtle trap: two *different* acquisitions by the same worker would share a token, so the first release would be permitted while the second still held it — the exact bug the design removes. `WORKER_ID` goes in the log line, which is what makes an expiry diagnosable. Asserted directly.
+
+`PX` rather than `EX`, because the lease is in milliseconds and `EX` takes seconds — an `EX` lock silently rounds a 250ms TTL up to a full second, which is a correctness bug in a lock that looks like it works.
+
+`withLock` releases in a `finally`. The common bug is a thrown error leaving the lock held for the whole lease, turning one failure into a stall for every other caller.
+
+**Not yet used.** No call site adopts this yet; `routes/saml.ts` keeps its own correct `SET NX` because converting it is a separate, separately-tested change. A lock nothing depends on is infrastructure, and the honest claim is that the primitive exists and is tested — not that anything is protected by it.
+
+**Test.** `src/tests/security/queue/distributedLock.test.ts`
+
+**Documentation.** [docs/ARCHITECTURE.md](../ARCHITECTURE.md)
+
+### SEC-085 — The release workflow had no manual path, so a missed dispatch was unrecoverable
+
+*Fixed in v3.9.2. Component: `supply-chain`.*
+
+**Issue.** release.yml triggered only on `push` to a `v*` tag. There was no `workflow_dispatch`, so a tag push that failed to dispatch had no recovery path at all: an unchanged tag cannot be re-pushed, and there was nothing to re-run.
+
+This was found the hard way. On 2026-10-06 six annotated tags (`v3.7.1` … `v3.9.1` — all merged, all verified, all reachable on the remote per `git ls-remote`) were pushed in one command and produced **zero** workflow runs: not queued, not in progress, not waiting, and no failure record either.
+
+The absence of a failure record is the part that matters. A failed run is visible. A run that never exists is not — the release was neither happening nor reported as not happening, and the only symptom was an absence. Six releases were merged, gated green and stuck with no lever to pull.
+
+**Low**, and deliberately: the trigger itself was correct (`push: tags: [`v*`]`) and the workflow was active and healthy. Nothing in the repository was wrong. What was missing was a way to recover from a platform-side dispatch failure, which is a gap in the release contract rather than a defect in the release.
+
+**Fix.** .github/workflows/release.yml — `workflow_dispatch` added with a required `version` input, plus the three silent failures a naive manual path introduces, each of which was wrong in a way that reports success:
+
+- **`type=semver` reads the git tag.** On a dispatch there is no tag, so it resolves to nothing and the image is built and pushed **with no tag at all**, while the step succeeds. Fixed by passing the resolved version explicitly via `type=raw` and keeping `semver` only for the tag-push route.
+- **`if: startsWith(github.ref, 'refs/tags/v')` is false on a branch**, so the npm job **silently skips** instead of failing. Replaced with `always() && needs.verify.result == 'success'` — which keeps verification as a hard prerequisite, so the manual path is a recovery route and not a bypass.
+- **`${GITHUB_REF_NAME#v}` on `main` expands to `main`**, so the version gate would compare `package.json` against the literal string `main`. All four inline reads now use one top-level `RELEASE_VERSION`, resolved once, with the dispatch input taking precedence.
+
+**Test.** `src/tests/security/supplyChain/releaseDispatchRecovery.test.ts`
+
+**Documentation.** [docs/security/RELEASE-HOLD-3.7.1.md](RELEASE-HOLD-3.7.1.md)
+
+### SEC-088 — Setup status disclosed whether a bootstrap token was configured
+
+*Fixed in v3.5.1. Component: `setup`.*
+
+**Issue.** `GET /setup/status` returned `setupToken: Boolean(...)` alongside `needsSetup`. The endpoint cannot require a credential — the wizard calls it before one exists — so the field was readable by anyone who could reach the port, and it answered a one-bit question about unclaimed instances: is there a token standing between me and owning this deployment.
+
+**Fix.** src/routes/setup.ts — `/setup/status` returns `{ needsSetup }` and nothing else; the boolean is not weakened, it is removed, because the wizard only ever branches on `needsSetup`
+
+**Test.** `src/tests/security/setup/status-response.test.ts`
+
+**Documentation.** [docs/DEPLOYMENT.md](../DEPLOYMENT.md)
+
+**Attack classes.** `secret-disclosure`

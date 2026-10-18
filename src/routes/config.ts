@@ -48,6 +48,9 @@ export default async function configRoutes(app: FastifyInstance) {
         return reply.status(500).send({ error: writeResult.error.message, code: writeResult.error.code });
       }
 
+      // Audit key names only — values hold secrets.
+      const changedKeys = Object.keys(values).filter((key) => existing[key] !== values[key]);
+      await request.audit("config_updated", { changedKeys });
       return reply.send({ ok: true, backupPath: backup.data || undefined });
     } catch (err) {
       request.log.error({ err }, "Failed to update configuration");
@@ -56,7 +59,9 @@ export default async function configRoutes(app: FastifyInstance) {
   });
 
   // Restart the server so new configuration is loaded.
-  app.post("/restart", { preHandler: [requirePlatformRole("owner")] }, async (_request: FastifyRequest, reply: FastifyReply) => {
+  app.post("/restart", { preHandler: [requirePlatformRole("owner")] }, async (request: FastifyRequest, reply: FastifyReply) => {
+    // Audit before the exit below — there is no afterwards.
+    await request.audit("config_restart_requested", {});
     reply.status(202).send({ ok: true, message: "Server is restarting" });
     try {
       await queue.close?.();

@@ -124,7 +124,7 @@ It handles JWT signing keys, encryption keys, password hashes, API keys, and cli
 
 ## Rate limiting
 
-A Redis-backed sliding-window rate limiter protects public endpoints. It uses an atomic Lua script and returns `429 Too Many Requests` with a `Retry-After` header. If Redis is unavailable it fails open so the service remains functional.
+A Redis-backed sliding-window rate limiter protects public endpoints. It uses an atomic Lua script and returns `429 Too Many Requests` with a `Retry-After` header. If Redis is unavailable it does **not** fail fully open: authenticating endpoints carry an `emergencyLocalLimit` — a bounded in-process budget — so a Redis outage downgrades shared limiting to per-instance limiting instead of removing it (see `src/plugins/rateLimit.ts`).
 
 ## Plugins
 

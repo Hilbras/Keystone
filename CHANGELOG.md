@@ -5,6 +5,158 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.4] - 2026-10-18
+
+### Security — setup bootstrap (SEC-088, SEC-089)
+
+`GET /setup/status` no longer reports whether a setup token is configured. The
+endpoint is unauthenticated by necessity — the wizard calls it before any
+credential exists — so the boolean was readable by anyone who could reach the
+port, and it answered "is this instance unclaimed, and is there a token between me
+and owning it". Only `needsSetup` is returned (SEC-088).
+
+`POST /setup/init` is serialized behind a Postgres advisory lock
+(`keystone:setup:bootstrap`), taken on a reserved connection and repeated as an
+owner check *inside* the lock. Previously two callers arriving together both read
+"no owners" and both wrote, so a fresh deployment answered its first simultaneous
+requests with more than one platform owner. Losers now receive `409` (in progress)
+or `403` (already complete) (SEC-089).
+
+### Security — webhooks (SEC-090, SEC-091)
+
+Webhook delivery no longer follows redirects. The request used `fetch`'s default
+`redirect: "follow"` after validating only the *stored* URL, so a consumer
+answering `302 Location: http://169.254.169.254/latest/meta-data/` had that
+request made for it — payload and HMAC signature attached — while the
+private-address policy never saw the destination. A `3xx` is now a terminal
+refusal (SEC-090).
+
+Plain-HTTP webhook destinations now require `KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost`,
+are never permitted in production, and are restricted to a loopback host. The
+rule was "HTTPS in production, anything anywhere else", which made a shared
+staging deployment indistinguishable from a developer's laptop while the signing
+secret travelled in the clear (SEC-091).
+
+### New tests
+
+42 cases across six suites, all registered: `setup/status-response`,
+`setup/bootstrap-race` (20 concurrent `/setup/init` → exactly one owner),
+`webhooks/ssrf-redirect-and-schemes`, `webhooks/https-transport` (each
+environment asserted in a child process, because `config` is frozen at import),
+`rate-limiting/failure-mode`, and `tokens/strict-kid-extended` (`alg: none` and
+HS256 key-confusion are refused, and the algorithm allowlist comes from the held
+key). The security registry is at 89 entries.
+
+### Fixed — CLI hung under the recommended production queue provider
+
+`keystone user:create` and `keystone org:create` printed their success line and
+then never exited when `KEYSTONE_QUEUE_PROVIDER=bullmq` — the setting the roadmap
+itself recommends for production in §2.1. `withReleasedConnections` released the
+database pool, the cache client and the shared Redis, and a BullMQ queue owns a
+**fourth** set of Redis connections that nothing closed, so the process never
+reached an empty event loop.
+
+It stayed invisible because the default provider is `in-process`, which holds no
+handles, and that is what CI runs. A regression case now forces `bullmq` on the
+subprocess rather than inheriting the environment, because inheriting it is how
+the defect hid.
+
+### Fixed — release gates
+
+`CHANGELOG.md` had `[3.9.2]` above `[3.9.3]`, so `npm run verify:changelog`
+failed on the released tree; the entries are now in descending order.
+
+## [3.9.3] - 2026-10-18
+
+### P0 — Critical security (SEC-086)
+
+`revoke-all` now actually revokes: every refresh token and session for the target user is invalidated, not only the newest one. Owner mutations (platform-role changes, deactivation) are audited with actor and target metadata. TOTP keys are guarded at generation and read time — plaintext never persists beyond creation.
+
+### P1 — Deployment criticality
+
+The Docker image ships the setup wizard (`/setup`) and runs non-root; placeholder/default secrets are refused at startup in production. Compose and k8s manifests corrected so setup and the secrets path work on first boot.
+
+### P2 — Security hardening (SEC-087)
+
+Login no longer short-circuits on unknown users: an identical dummy argon2 hash removes the timing oracle between existing and missing accounts. IP allow/block (SEC-087) is enforced in the domain login before the password check; new `src/tests/security/authentication/ip-allowlist.test.ts` covers 5 cases; the security registry now has 85 entries.
+
+Rate limits added to `/auth/refresh`, email verification, password reset, service-account writes, and workflow POST/DELETE. The JWT signing keypair is wrapped with `KEYSTONE_ENCRYPTION_KEY` at rest. Production boot warns without an encryption key and fatal-exits when `COOKIE_SECURE=false` without `ALLOW_DEV_DEFAULTS`. Logout audit fixed via the `refreshTokenUserId` lookup.
+
+### P3 — Conventions
+
+~47 new config keys in `src/config.ts` (connectors, Vault/KMS secrets, setup, billing, feature flags, client URLs); routes read `config.*`, never `process.env`. DI wiring: `sessionRepository` and `passwordResetTokenRepository`; `UserRepository.updatePasswordHash` added. Domain auth no longer imports `db` directly. Zod casts in admin routes and `saml.ts` reduced 91 → 38; `ListQuerySchema`, `OrganizationParamsSchema`, uuid gates, and a SAML ACS body schema added. `trustedProxies` restored to dual-read (`process.env ?? config`) for call-time reload.
+
+### P4 — Database performance
+
+Migration `0020_perf_indexes_and_dead_dups.sql`: composite indexes on `api_keys`, `audit_log`, `refresh_tokens`, `user_sessions`, and `workflows`; five redundant indexes covered by unique constraints dropped. Dead `UserRepository.listAll` removed; platform list queries capped at 1,000 rows. SCIM group operations made atomic (`createWithMembers`, `applyMemberDelta`). `scripts/record-query-plans.mjs` fixed (missing import, `$1::uuid[]` ordering).
+
+### P6 — Frontend & packages
+
+Frontend authentication is cookie-only: all `keystone-access-token` reads removed, new `frontend/src/lib/apiBase.ts`, centralized logout helper, and the sessions endpoint reports the current session. Packages (`keystone-cli`, `keystone-node`, `keystone-react`, `keystone-sdk`, `keystone-vue`): types entry fix, version sync, exports hygiene, `engines: node>=26`.
+
+### The hold is cleared
+
+`CVE-2026-103111` is gone from `node:26-slim`. `libpcre2-8-0` is now `10.46-1~deb13u3`,
+which is exactly the condition the hold named — so `v3.7.1` through `v3.9.1` were tagged
+and pushed.
+
+Worth keeping, because it is the second way to get this answer wrong. Scanning
+`node:26-slim` directly reports **3 blocking advisories** and looks like the hold still
+applies. Scanning the **built image** reports **0**, because the runtime stage has npm
+deleted from it — and `brace-expansion` and `undici` are both in the base image's
+bundled npm 11.19.1, not in ours. Our lockfile carries `brace-expansion 5.0.12` and no
+`undici` at all. The release gate scans the built image, so the built image is the only
+thing worth measuring.
+
+Also worth stating plainly: a fresh base still carries **46 HIGH advisories with no fix
+available**. Those do not block, because the gate passes `--ignore-unfixed` — and that
+is the correct policy, since an unfixable advisory cannot be remediated by holding a
+release.
+
+### SEC-085, low — no manual path, and a dispatch that never came
+
+Pushing the six tags produced **zero** workflow runs. Not queued, not in progress, not
+waiting, and no failure record either.
+
+The absence of a failure record is what makes this worth fixing rather than retrying. A
+failed run is visible. A run that never exists is not — the release was neither
+happening nor reported as not happening, and the only symptom was an absence.
+
+And there was no way out. You cannot re-push an unchanged tag, and `release.yml` had no
+`workflow_dispatch`. Six releases were merged, gated green, and stuck with no lever.
+
+Low, and deliberately: the trigger was correct, the workflow active and healthy, and
+nothing in the repository was wrong. What was missing was recovery from a platform-side
+dispatch failure — a gap in the release contract, not a defect in the release.
+
+### Three silent failures in the obvious manual path
+
+Each is wrong in a way that reports **success**:
+
+- **`type=semver` reads the git tag.** A dispatch has no tag, so it resolves to nothing
+  and the image is built and pushed **with no tag at all**.
+- **`if: startsWith(github.ref, 'refs/tags/v')` is false on a branch**, so the npm job
+  **silently skips** rather than failing.
+- **`${GITHUB_REF_NAME#v}` on `main` expands to `main`**, so the version gate would
+  compare `package.json` against the literal string `main`.
+
+All three fixed: one top-level `RELEASE_VERSION` resolved once, the version passed
+explicitly to the image tagger, and the publish guard now
+`always() && needs.verify.result == 'success'` — which keeps verification mandatory, so
+the manual path is a recovery route and **not a bypass**.
+
+### Regression
+
+6 cases. Restoring the pre-fix workflow fails 5 of 6; the sixth is the version gate
+against `package.json`, which was never broken and must stay intact — a manual path
+that could publish a version the tree does not claim would be a hole, not a hatch.
+
+## [3.9.2] - 2026-10-06
+
+*SEC-085: the release hold cleared itself, and then six releases turned out to have no way to publish.*
+
+... (unchanged)
+
 ## [3.9.1] - 2026-09-30
 
 *Plan §2.4: nothing solved "at most one holder of X" for Keystone's own work. BullMQ solves it for its jobs.*

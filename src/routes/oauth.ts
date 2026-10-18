@@ -234,5 +234,5 @@ function redirectTargetUrl(clientId?: string, app?: Application): string {
   if (app?.redirectUris?.length) {
     return app.redirectUris[0];
   }
-  return process.env.CLIENT_APP_URL || "http://localhost:5173";
+  return config.CLIENT_APP_URL;
 }

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ok, err, type Result } from "../../lib/result.js";
+import { config } from "../../config.js";
 import type { ConfigWriter } from "./types.js";
 import {
   NotAFileError,
@@ -275,7 +276,7 @@ function parseJson(content: string): Record<string, string | undefined> {
 }
 
 export function createConfigWriter(): ConfigWriter {
-  const mode = process.env.KEYSTONE_CONFIG_MODE?.toLowerCase();
+  const mode = config.CONFIG_MODE?.toLowerCase();
   if (mode === "json" || isRunningInDocker()) {
     return new JsonConfigWriter();
   }

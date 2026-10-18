@@ -4,6 +4,7 @@ import { registerWorkflow, listWorkflowRuns } from "../services/workflows/engine
 import { isBlockedWorkflowStep } from "../services/workflows/steps.js";
 import { getSdk } from "../sdk/index.js";
 import { sendResultError } from "./admin/helpers.js";
+import { rateLimit } from "../plugins/rateLimit.js";
 import type { Workflow } from "../db/schema.js";
 
 /**
@@ -216,6 +217,9 @@ export default async function workflowRoutes(app: FastifyInstance) {
           permission: () => UPDATE_PERMISSION,
           auditAction: "workflow_create",
         }),
+        // Writes are unbounded work without this: schema load, engine
+        // validation, a repository write, and an audit row per request.
+        rateLimit({ keyPrefix: "workflow-write", maxAttempts: 60, windowSeconds: 60, emergencyLocalLimit: true }),
       ],
     },
     async (request, reply) => {
@@ -258,6 +262,7 @@ export default async function workflowRoutes(app: FastifyInstance) {
     "/workflows/:id",
     {
       preHandler: [
+        rateLimit({ keyPrefix: "workflow-write", maxAttempts: 60, windowSeconds: 60, emergencyLocalLimit: true }),
         app.authenticate,
         loadWorkflow,
         requireWorkflowAccess({

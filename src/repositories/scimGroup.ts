@@ -8,6 +8,16 @@ import {
   type ScimGroup,
 } from "../db/schema.js";
 import type { CreateScimGroupInput, ScimGroupRepository } from "./types.js";
+import type { ExtractTablesWithRelations } from "drizzle-orm";
+import type { PgTransaction } from "drizzle-orm/pg-core";
+import type { PostgresJsQueryResultHKT } from "drizzle-orm/postgres-js";
+
+/** The transaction handle both group writers share their eligibility check across. */
+type DbTx = PgTransaction<
+  PostgresJsQueryResultHKT,
+  typeof import("../db/schema.js"),
+  ExtractTablesWithRelations<typeof import("../db/schema.js")>
+>;
 
 /**
  * Organization-scoped SCIM groups.
@@ -296,5 +306,111 @@ export class DrizzleScimGroupRepository implements ScimGroupRepository {
 
       return { added: toAdd.length, removed: toRemove.length, rejected: [] };
     });
+  }
+
+  /**
+   * Create the group and its members in one transaction, submitting nothing
+   * unless every member is eligible.
+   *
+   * The per-member loop used to `assertMemberOfOrg` *after* the group row had
+   * committed, so a 404 mid-list left an orphaned group behind while the caller
+   * saw only a failure — the state no single request describes, one level up
+   * from what `reconcileMembers`' docblock describes for updates.
+   */
+  async createWithMembers(
+    orgId: string,
+    input: { displayName: string; description?: string | null; externalId?: string | null },
+    submittedUserIds: string[]
+  ): Promise<{ group: { id: string; displayName: string } | undefined; rejected: string[] }> {
+    const submitted = [...new Set(submittedUserIds)];
+    return db.transaction(async (tx) => {
+      const rejected = await this.eligibleInOrg(tx, orgId, submitted);
+      if (rejected.length > 0) return { group: undefined, rejected };
+
+      const [group] = await tx
+        .insert(scimGroups)
+        .values({
+          orgId,
+          displayName: input.displayName,
+          description: input.description ?? null,
+          externalId: input.externalId ?? null,
+        })
+        .returning({ id: scimGroups.id, displayName: scimGroups.displayName });
+
+      if (submitted.length > 0) {
+        await tx
+          .insert(scimGroupMembers)
+          .values(submitted.map((userId) => ({ groupId: group.id, userId })));
+      }
+      return { group, rejected: [] };
+    });
+  }
+
+  /**
+   * Apply an add/remove delta to the group's membership in one transaction —
+   * the PATCH shape, where `reconcileMembers`' exact-set semantics would
+   * delete members the patch never mentioned. Eligibility of the added set is
+   * enforced inside the transaction, so a rejected patch applies nothing at
+   * all instead of the adds before the bad one.
+   */
+  async applyMemberDelta(
+    orgId: string,
+    groupId: string,
+    delta: { add?: string[]; remove?: string[] }
+  ): Promise<{ added: number; removed: number; rejected: string[] }> {
+    const add = [...new Set(delta.add ?? [])];
+    const remove = [...new Set(delta.remove ?? [])];
+    return db.transaction(async (tx) => {
+      const [group] = await tx
+        .select({ id: scimGroups.id })
+        .from(scimGroups)
+        .where(and(eq(scimGroups.id, groupId), eq(scimGroups.orgId, orgId)))
+        .limit(1);
+      if (!group) return { added: 0, removed: 0, rejected: add };
+
+      const rejected = await this.eligibleInOrg(tx, orgId, add);
+      if (rejected.length > 0) return { added: 0, removed: 0, rejected };
+
+      let added = 0;
+      if (add.length > 0) {
+        const rows = await tx
+          .insert(scimGroupMembers)
+          .values(add.map((userId) => ({ groupId, userId })))
+          .onConflictDoNothing({
+            target: [scimGroupMembers.groupId, scimGroupMembers.userId],
+          })
+          .returning({ id: scimGroupMembers.id });
+        added = rows.length;
+      }
+      let removed = 0;
+      if (remove.length > 0) {
+        const rows = await tx
+          .delete(scimGroupMembers)
+          .where(
+            and(
+              eq(scimGroupMembers.groupId, groupId),
+              inArray(scimGroupMembers.userId, remove)
+            )
+          )
+          .returning({ id: scimGroupMembers.id });
+        removed = rows.length;
+      }
+      return { added, removed, rejected: [] };
+    });
+  }
+
+  /** Submitted ids that are not members of `orgId`. Shared by both writers. */
+  private async eligibleInOrg(
+    tx: DbTx,
+    orgId: string,
+    submitted: string[]
+  ): Promise<string[]> {
+    if (submitted.length === 0) return [];
+    const rows = await tx
+      .select({ userId: orgMemberships.userId })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), inArray(orgMemberships.userId, submitted)));
+    const eligible = new Set(rows.map((r) => r.userId));
+    return submitted.filter((id) => !eligible.has(id));
   }
 }

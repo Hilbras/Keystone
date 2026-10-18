@@ -7,7 +7,7 @@ import { serviceLogger } from "../../../lib/logger.js";
 const moduleLog = serviceLogger("events");
 
 function shouldEmit(): boolean {
-  return Boolean(config.AUDIT_WEBHOOK_URL || process.env.AUDIT_WEBHOOK_URL || config.AUDIT_CONSOLE_EXPORT === "true");
+  return Boolean(config.AUDIT_WEBHOOK_URL || config.AUDIT_CONSOLE_EXPORT === "true");
 }
 
 export async function webhookSubscriber(event: KeystoneEvent): Promise<void> {
@@ -31,7 +31,7 @@ export async function webhookSubscriber(event: KeystoneEvent): Promise<void> {
     moduleLog.info({ record }, "audit console export");
   }
 
-  const webhookUrl = config.AUDIT_WEBHOOK_URL || process.env.AUDIT_WEBHOOK_URL;
+  const webhookUrl = config.AUDIT_WEBHOOK_URL;
   if (webhookUrl) {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (config.WEBHOOK_SIGNING_SECRET) {

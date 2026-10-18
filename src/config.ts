@@ -78,9 +78,20 @@ export const config = {
   LOG_LEVEL: optionalString("KEYSTONE_LOG_LEVEL"),
   PORT: Number(getEnv("PORT", "4001")),
   HOST: getEnv("HOST", "0.0.0.0"),
+  // Kernel/container hostname set by the runtime, used for worker identity in
+  // log lines — not the bind address above.
+  HOSTNAME: getEnv("HOSTNAME", "local"),
 
   DATABASE_URL: requireEnvUnlessSetup("DATABASE_URL"),
   REDIS_URL: getEnv("REDIS_URL", "redis://localhost:6379"),
+
+  // Public application URLs. Registered here so routes and services read
+  // `config.*` once instead of re-reading `process.env` per request — six route
+  // files previously carried their own `process.env.CLIENT_APP_URL ||
+  // "http://localhost:5173"` fallbacks, which drift from each other and from
+  // whatever config is told at boot.
+  CLIENT_APP_URL: getEnv("CLIENT_APP_URL", "http://localhost:5173"),
+  RESET_PASSWORD_URL: getEnv("RESET_PASSWORD_URL"),
 
   // Zitadel is now an optional identity connector, not a hard dependency.
   ZITADEL_DOMAIN: getEnv("ZITADEL_DOMAIN"),
@@ -99,6 +110,47 @@ export const config = {
   // Optional IdP IDs to skip the Zitadel login selector and go straight to Google/GitHub.
   ZITADEL_GOOGLE_IDP_ID: getEnv("ZITADEL_GOOGLE_IDP_ID"),
   ZITADEL_GITHUB_IDP_ID: getEnv("ZITADEL_GITHUB_IDP_ID"),
+
+  // OIDC connector credentials and endpoint overrides, grouped by the provider
+  // prefix `services/connectors/registry.ts` derives from the connector type
+  // (e.g. `GOOGLE_CLIENT_ID` for type "google"). AZURE_CLIENT_ID and
+  // AZURE_CLIENT_SECRET double as the Azure Key Vault credentials further down —
+  // the env names are one Azure identity, not two settings.
+  GOOGLE_CLIENT_ID: getEnv("GOOGLE_CLIENT_ID"),
+  GOOGLE_CLIENT_SECRET: getEnv("GOOGLE_CLIENT_SECRET"),
+  GOOGLE_ISSUER: getEnv("GOOGLE_ISSUER"),
+  GOOGLE_AUTHORIZATION_ENDPOINT: getEnv("GOOGLE_AUTHORIZATION_ENDPOINT"),
+  GOOGLE_TOKEN_ENDPOINT: getEnv("GOOGLE_TOKEN_ENDPOINT"),
+  GOOGLE_USERINFO_ENDPOINT: getEnv("GOOGLE_USERINFO_ENDPOINT"),
+  GOOGLE_JWKS_URI: getEnv("GOOGLE_JWKS_URI"),
+  GITHUB_CLIENT_ID: getEnv("GITHUB_CLIENT_ID"),
+  GITHUB_CLIENT_SECRET: getEnv("GITHUB_CLIENT_SECRET"),
+  GITHUB_ISSUER: getEnv("GITHUB_ISSUER"),
+  GITHUB_AUTHORIZATION_ENDPOINT: getEnv("GITHUB_AUTHORIZATION_ENDPOINT"),
+  GITHUB_TOKEN_ENDPOINT: getEnv("GITHUB_TOKEN_ENDPOINT"),
+  GITHUB_USERINFO_ENDPOINT: getEnv("GITHUB_USERINFO_ENDPOINT"),
+  GITHUB_JWKS_URI: getEnv("GITHUB_JWKS_URI"),
+  AZURE_CLIENT_ID: getEnv("AZURE_CLIENT_ID"),
+  AZURE_CLIENT_SECRET: getEnv("AZURE_CLIENT_SECRET"),
+  AZURE_ISSUER: getEnv("AZURE_ISSUER"),
+  AZURE_AUTHORIZATION_ENDPOINT: getEnv("AZURE_AUTHORIZATION_ENDPOINT"),
+  AZURE_TOKEN_ENDPOINT: getEnv("AZURE_TOKEN_ENDPOINT"),
+  AZURE_USERINFO_ENDPOINT: getEnv("AZURE_USERINFO_ENDPOINT"),
+  AZURE_JWKS_URI: getEnv("AZURE_JWKS_URI"),
+  OKTA_CLIENT_ID: getEnv("OKTA_CLIENT_ID"),
+  OKTA_CLIENT_SECRET: getEnv("OKTA_CLIENT_SECRET"),
+  OKTA_ISSUER: getEnv("OKTA_ISSUER"),
+  OKTA_AUTHORIZATION_ENDPOINT: getEnv("OKTA_AUTHORIZATION_ENDPOINT"),
+  OKTA_TOKEN_ENDPOINT: getEnv("OKTA_TOKEN_ENDPOINT"),
+  OKTA_USERINFO_ENDPOINT: getEnv("OKTA_USERINFO_ENDPOINT"),
+  OKTA_JWKS_URI: getEnv("OKTA_JWKS_URI"),
+  KEYCLOAK_CLIENT_ID: getEnv("KEYCLOAK_CLIENT_ID"),
+  KEYCLOAK_CLIENT_SECRET: getEnv("KEYCLOAK_CLIENT_SECRET"),
+  KEYCLOAK_ISSUER: getEnv("KEYCLOAK_ISSUER"),
+  KEYCLOAK_AUTHORIZATION_ENDPOINT: getEnv("KEYCLOAK_AUTHORIZATION_ENDPOINT"),
+  KEYCLOAK_TOKEN_ENDPOINT: getEnv("KEYCLOAK_TOKEN_ENDPOINT"),
+  KEYCLOAK_USERINFO_ENDPOINT: getEnv("KEYCLOAK_USERINFO_ENDPOINT"),
+  KEYCLOAK_JWKS_URI: getEnv("KEYCLOAK_JWKS_URI"),
 
   COOKIE_NAME: cookieName,
   COOKIE_DOMAIN: isHostCookie ? undefined : getEnv("COOKIE_DOMAIN", ".local.hilbras.ai"),
@@ -127,6 +179,18 @@ export const config = {
     "ALLOW_PRIVATE_WEBHOOK_TARGETS",
     getEnv("ALLOW_PRIVATE_SSO_ENDPOINTS", "false")
   ) === "true",
+  /**
+   * Permit a webhook to be delivered over plain HTTP (plan §1.2).
+   *
+   * Only the literal value `localhost` enables it, and only outside production,
+   * and only to a loopback host. A webhook body carries an HMAC signature over
+   * the payload — a credential — so sending it over plaintext puts that
+   * credential into every proxy log and every hop between Keystone and the
+   * consumer. A developer pointing a webhook at their own machine needs it;
+   * nothing else does. Not a boolean, because "true" would read as "HTTP is
+   * fine everywhere".
+   */
+  ALLOW_INSECURE_WEBHOOK: getEnv("KEYSTONE_ALLOW_INSECURE_WEBHOOK"),
 
   AUTH_API_PUBLIC_URL: getEnv("AUTH_API_PUBLIC_URL"),
   ACCESS_TOKEN_TTL_SECONDS: Number(getEnv("JWT_ACCESS_TOKEN_TTL", "900")),
@@ -141,6 +205,15 @@ export const config = {
 
   // Secrets provider: "database" (default) or "environment".
   KEYSTONE_SECRETS_PROVIDER: getEnv("KEYSTONE_SECRETS_PROVIDER", "database"),
+  // External secrets backends, consumed by `services/secrets/*`. The Azure
+  // client id/secret arrive with the connector keys above — one Azure identity
+  // shared by both.
+  VAULT_ADDR: getEnv("VAULT_ADDR"),
+  VAULT_TOKEN: getEnv("VAULT_TOKEN"),
+  VAULT_MOUNT_PATH: getEnv("VAULT_MOUNT_PATH") || "secret",
+  AZURE_KEY_VAULT_URL: getEnv("AZURE_KEY_VAULT_URL"),
+  AZURE_TENANT_ID: getEnv("AZURE_TENANT_ID"),
+  KMS_KEY_ID: optionalString("KMS_KEY_ID"),
 
   // Queue provider: "in-process" (default/fallback), "bullmq", or "" to auto-select bullmq when REDIS_URL is set.
   KEYSTONE_QUEUE_PROVIDER: getEnv("KEYSTONE_QUEUE_PROVIDER", "in-process"),
@@ -163,6 +236,8 @@ export const config = {
 
   // Comma-separated list of plugin module paths to load at startup.
   KEYSTONE_PLUGINS: getEnv("KEYSTONE_PLUGINS"),
+  // Comma-separated `flag=value` pairs consumed by ConfigurationService.
+  FEATURE_FLAGS: getEnv("KEYSTONE_FEATURE_FLAGS"),
 
   INTERNAL_API_KEY: getEnv("KEYSTONE_INTERNAL_API_KEY") || getEnv("HILBRAS_INTERNAL_API_KEY", ""),
 
@@ -193,6 +268,13 @@ export const config = {
   LOGIN_WINDOW_SECONDS: positiveInt("LOGIN_WINDOW_SECONDS", "900"),
   GLOBAL_RATE_LIMIT_MAX: Number(getEnv("GLOBAL_RATE_LIMIT_MAX", "100")),
   GLOBAL_RATE_LIMIT_WINDOW: Number(getEnv("GLOBAL_RATE_LIMIT_WINDOW", "60")),
+  /**
+   * Per-prefix budget for `POST /auth/refresh`. The route writes on every
+   * attempt, so it gets its own named limiter instead of relying purely on the
+   * global one — and a Redis outage must not unbound that write.
+   */
+  REFRESH_RATE_MAX: positiveInt("REFRESH_RATE_MAX", "120"),
+  REFRESH_RATE_WINDOW: positiveInt("REFRESH_RATE_WINDOW", "60"),
 
   ACCOUNT_LOCKOUT_THRESHOLD: Number(getEnv("ACCOUNT_LOCKOUT_THRESHOLD", "5")),
   ACCOUNT_LOCKOUT_DURATION_SECONDS: Number(getEnv("ACCOUNT_LOCKOUT_DURATION_SECONDS", "1800")),
@@ -206,6 +288,25 @@ export const config = {
   OAUTH_CODE_TTL_SECONDS: Number(getEnv("OAUTH_CODE_TTL_SECONDS", "60")),
   TOTP_ISSUER: getEnv("TOTP_ISSUER", "Hilbras"),
   TOTP_ENCRYPTION_KEY: getEnv("KEYSTONE_TOTP_ENCRYPTION_KEY"),
+  /**
+   * Setup-wizard entrypoint: `index.ts` delegates to the standalone setup
+   * server instead of booting the main application, which is what makes
+   * `KEYSTONE_SETUP_MODE=true node dist/index.js` (the container entrypoint)
+   * actually serve `/setup`.
+   */
+  SETUP_MODE: getEnv("KEYSTONE_SETUP_MODE", "false") === "true",
+  /**
+   * Escape hatch for a production boot with deliberately weak defaults — the
+   * TOTP key guard in index.ts refuses to start without this set to true.
+   */
+  ALLOW_DEV_DEFAULTS: getEnv("KEYSTONE_ALLOW_DEV_DEFAULTS", "false") === "true",
+  // Static setup token supplied through the environment; a token is generated
+  // in-process when this is unset.
+  SETUP_TOKEN: getEnv("KEYSTONE_SETUP_TOKEN"),
+  /** Operator opt-in to print the setup token once; never honoured in production. */
+  PRINT_SETUP_TOKEN: getEnv("KEYSTONE_PRINT_SETUP_TOKEN", "false") === "true",
+  /** Where configuration is persisted: "json" or, when unset, the env file. */
+  CONFIG_MODE: optionalString("KEYSTONE_CONFIG_MODE"),
   // SCIM. `SCIM_BEARER_TOKEN` / `SCIM_ORG_ID` are legacy: they are read once at
   // startup to create a per-organization connection, then superseded by the
   // connection API. New deployments should use the connection API only.
@@ -247,6 +348,8 @@ export const config = {
   TWILIO_AUTH_TOKEN: getEnv("TWILIO_AUTH_TOKEN"),
   TWILIO_FROM_NUMBER: getEnv("TWILIO_FROM_NUMBER"),
   TWILIO_MESSAGING_SERVICE_SID: getEnv("TWILIO_MESSAGING_SERVICE_SID"),
+  // Billing integration: "none" (default) registers no provider factory.
+  BILLING_PROVIDER: getEnv("KEYSTONE_BILLING_PROVIDER") || "none",
   OTEL_EXPORTER_OTLP_ENDPOINT: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT"),
   AUDIT_WEBHOOK_URL: getEnv("AUDIT_WEBHOOK_URL"),
   AUDIT_CONSOLE_EXPORT: getEnv("AUDIT_CONSOLE_EXPORT", "false"),

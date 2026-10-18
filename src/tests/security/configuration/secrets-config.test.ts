@@ -28,6 +28,7 @@ const { readWebhookSecret, rotateEndpointSecret } = await import(
 const { signWebhookPayload } = await import("../../../lib/webhookSignature.js");
 const { isOriginAllowed } = await import("../../../services/trustedProxies.js");
 const { webhookEndpoints } = await import("../../../db/schema.js");
+const { config } = await import("../../../config.js");
 
 before(async () => {
   await migrate(db, { migrationsFolder: path.resolve(__dirname, "../../../db/migrations") });
@@ -162,16 +163,22 @@ describe("Admin configuration redaction", () => {
 // Plan item 2 — setup token logging
 // ---------------------------------------------------------------------------
 describe("Setup token is never logged", () => {
-  const originalNodeEnv = process.env.NODE_ENV;
-  const originalPrint = process.env.KEYSTONE_PRINT_SETUP_TOKEN;
-  const originalToken = process.env.KEYSTONE_SETUP_TOKEN;
+  // `token.js` reads these through `config` now, so the tests mutate the config
+  // object the code consumes rather than the environment it no longer consults
+  // at call time, and restore the original values afterwards.
+  const mutableConfig = config as {
+    NODE_ENV: string;
+    PRINT_SETUP_TOKEN: boolean;
+    SETUP_TOKEN: string;
+  };
+  const originalNodeEnv = mutableConfig.NODE_ENV;
+  const originalPrint = mutableConfig.PRINT_SETUP_TOKEN;
+  const originalToken = mutableConfig.SETUP_TOKEN;
 
   function restore() {
-    process.env.NODE_ENV = originalNodeEnv;
-    if (originalPrint === undefined) delete process.env.KEYSTONE_PRINT_SETUP_TOKEN;
-    else process.env.KEYSTONE_PRINT_SETUP_TOKEN = originalPrint;
-    if (originalToken === undefined) delete process.env.KEYSTONE_SETUP_TOKEN;
-    else process.env.KEYSTONE_SETUP_TOKEN = originalToken;
+    mutableConfig.NODE_ENV = originalNodeEnv;
+    mutableConfig.PRINT_SETUP_TOKEN = originalPrint;
+    mutableConfig.SETUP_TOKEN = originalToken;
   }
 
   async function capture(fn: () => void): Promise<string> {
@@ -189,9 +196,9 @@ describe("Setup token is never logged", () => {
   }
 
   it("does not print the token by default", async () => {
-    process.env.NODE_ENV = "production";
-    delete process.env.KEYSTONE_PRINT_SETUP_TOKEN;
-    process.env.KEYSTONE_SETUP_TOKEN = "deadbeef-secret-token";
+    mutableConfig.NODE_ENV = "production";
+    mutableConfig.PRINT_SETUP_TOKEN = false;
+    mutableConfig.SETUP_TOKEN = "deadbeef-secret-token";
     try {
       const { printSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => printSetupToken());
@@ -203,9 +210,9 @@ describe("Setup token is never logged", () => {
   });
 
   it("refuses to print it even when explicitly requested in production", async () => {
-    process.env.NODE_ENV = "production";
-    process.env.KEYSTONE_PRINT_SETUP_TOKEN = "true";
-    process.env.KEYSTONE_SETUP_TOKEN = "deadbeef-secret-token";
+    mutableConfig.NODE_ENV = "production";
+    mutableConfig.PRINT_SETUP_TOKEN = true;
+    mutableConfig.SETUP_TOKEN = "deadbeef-secret-token";
     try {
       const { printSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => printSetupToken());
@@ -216,9 +223,9 @@ describe("Setup token is never logged", () => {
   });
 
   it("prints it outside production when explicitly asked", async () => {
-    process.env.NODE_ENV = "development";
-    process.env.KEYSTONE_PRINT_SETUP_TOKEN = "true";
-    process.env.KEYSTONE_SETUP_TOKEN = "deadbeef-secret-token";
+    mutableConfig.NODE_ENV = "development";
+    mutableConfig.PRINT_SETUP_TOKEN = true;
+    mutableConfig.SETUP_TOKEN = "deadbeef-secret-token";
     try {
       const { printSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => printSetupToken());
@@ -232,9 +239,9 @@ describe("Setup token is never logged", () => {
     // The old code logged the presented and expected lengths on a mismatch,
     // disclosing the expected token's length to anyone who could read the output.
     // Asserted behaviourally: a rejected token produces no output at all.
-    process.env.NODE_ENV = "production";
-    process.env.KEYSTONE_SETUP_TOKEN = "expected-token-value";
-    delete process.env.KEYSTONE_PRINT_SETUP_TOKEN;
+    mutableConfig.NODE_ENV = "production";
+    mutableConfig.SETUP_TOKEN = "expected-token-value";
+    mutableConfig.PRINT_SETUP_TOKEN = false;
     try {
       const { validateSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => {
@@ -250,9 +257,9 @@ describe("Setup token is never logged", () => {
   });
 
   it("accepts a correct token without logging it", async () => {
-    process.env.NODE_ENV = "production";
+    mutableConfig.NODE_ENV = "production";
     const secret = "correct-token-value";
-    process.env.KEYSTONE_SETUP_TOKEN = secret;
+    mutableConfig.SETUP_TOKEN = secret;
     try {
       const { validateSetupToken } = await import("../../../services/setup/token.js");
       const output = await capture(() => {

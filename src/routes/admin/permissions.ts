@@ -12,6 +12,10 @@ const RolePermissionSchema = z.object({
   permissionId: z.string().uuid(),
 });
 
+const PermissionParamsSchema = z.object({ id: z.string().uuid() });
+
+const RolePermissionParamsSchema = z.object({ permissionId: z.string().uuid() });
+
 const OrganizationRoleSchema = z.enum(["owner", "admin", "member"]);
 
 export default async function permissionsRoutes(app: FastifyInstance) {
@@ -35,7 +39,7 @@ export default async function permissionsRoutes(app: FastifyInstance) {
   });
 
   app.delete("/permissions/:id", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const { id } = PermissionParamsSchema.parse(request.params);
     const removed = await app.container.permissionRepository.remove(id);
     if (!removed) {
       return reply.status(404).send({ error: "Permission not found" });
@@ -90,7 +94,7 @@ export default async function permissionsRoutes(app: FastifyInstance) {
       if (!parsedRole.success) return reply.status(400).send({ error: "Invalid organization role" });
       if (parsedRole.data === "owner") return reply.status(400).send({ error: "Organization owner permissions are protected" });
       const role = parsedRole.data;
-      const { permissionId } = request.params as { permissionId: string };
+      const { permissionId } = RolePermissionParamsSchema.parse(request.params);
       const existing = await app.container.permissionRepository.listForRole(role);
       const wasAssigned = existing.some((permission) => permission.id === permissionId);
       if (!wasAssigned) {

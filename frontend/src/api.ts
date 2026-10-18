@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_KEYSTONE_API_URL || "http://localhost:4001";
+import { API_BASE } from "./lib/apiBase.ts";
 
 export interface SetupStatus {
   needsSetup: boolean;
@@ -141,11 +141,7 @@ export interface BrandingInput {
   loginSubtitle?: string;
 }
 
-export function getKeystoneAccessToken(): string | null {
-  return localStorage.getItem("keystone-access-token")?.trim() || null;
-}
-
-let authReloadInProgress = false;
+export const SESSION_EXPIRED_EVENT = "keystone:session-expired";
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
@@ -155,10 +151,6 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (setupToken) {
     headers["X-Setup-Token"] = setupToken;
   }
-  const accessToken = getKeystoneAccessToken();
-  if (accessToken) {
-    headers["Authorization"] = `Bearer ${accessToken}`;
-  }
 
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { ...headers, ...init?.headers },
@@ -166,21 +158,17 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!response.ok) {
-    // If the server rejects the token (401), clear it and reload so the user
-    // sees the login screen again. We do not reload on 403 (forbidden) because
-    // that means the user is authenticated but lacks permission for one action.
-    if (response.status === 401 && accessToken && !authReloadInProgress) {
-      authReloadInProgress = true;
-      localStorage.removeItem("keystone-access-token");
-      window.location.reload();
-      return new Promise(() => {});
-    }
     const body = await response.json().catch(() => ({}));
     // A 401 carrying an MFA challenge is a normal continuation of the login
     // flow, not an expired session: surface it so the caller can render the
     // second-factor step instead of bouncing to the login screen.
     if (response.status === 401 && body.code === "MFA_REQUIRED" && body.challenge) {
       throw new MfaRequiredError(body.challenge, body.expiresAt);
+    }
+    // Cookies are the only credential now, so a bare 401 means the session
+    // really is gone; let subscribers drop the UI instead of reloading here.
+    if (response.status === 401) {
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     }
     throw new Error(body.error || `Request failed: ${response.status}`);
   }
@@ -263,9 +251,7 @@ export const api = {
   deleteSamlConnection: (orgId: string, connectionId: string) =>
     fetchJson<{ success: boolean }>(`/v1/admin/organizations/${orgId}/saml-connections/${connectionId}`, { method: "DELETE" }),
   getSamlMetadata: async (orgId: string, connectionId: string) => {
-    const accessToken = getKeystoneAccessToken();
     const response = await fetch(`${API_BASE}/v1/admin/organizations/${orgId}/saml-connections/${connectionId}/metadata`, {
-      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
       credentials: "include",
     });
     if (!response.ok) throw new Error(`Failed to fetch SAML metadata: ${response.status}`);
@@ -385,8 +371,9 @@ export const api = {
   // Usage analytics
   getUsageMetrics: (days = 30) =>
     fetchJson<{ days: number; series: Array<{ date: string; logins: number; failedLogins: number; signups: number; dau: number }> }>(`/v1/admin/platform/metrics/usage?days=${days}`),
+  logout: () => fetchJson<{ success: boolean }>("/auth/logout", { method: "POST", body: "{}" }),
   getSessions: () =>
-    fetchJson<{ sessions: Array<{ id: string; deviceFingerprint: string | null; ipAddress: string | null; userAgent: string | null; lastSeenAt: string; expiresAt: string; createdAt: string }> }>("/auth/sessions"),
+    fetchJson<{ sessions: Array<{ id: string; deviceFingerprint: string | null; ipAddress: string | null; userAgent: string | null; lastSeenAt: string; expiresAt: string; createdAt: string; current?: boolean }> }>("/auth/sessions"),
   revokeSession: (id: string) =>
     fetchJson<{ success: boolean }>(`/auth/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   revokeAllSessions: () =>
@@ -436,11 +423,9 @@ export const api = {
 
   // Audit log export (returns a downloadable blob)
   downloadAuditExport: async (event?: string, format: "csv" | "json" = "csv"): Promise<void> => {
-    const token = getKeystoneAccessToken();
     const params = new URLSearchParams({ format, limit: "10000" });
     if (event) params.set("event", event);
     const response = await fetch(`${API_BASE}/v1/admin/platform/audit-logs/export?${params}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
       credentials: "include",
     });
     if (!response.ok) throw new Error(`Export failed: ${response.status}`);

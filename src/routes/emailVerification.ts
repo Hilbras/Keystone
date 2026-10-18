@@ -6,6 +6,7 @@ import {
   consumeVerificationToken,
 } from "../services/emailVerification.js";
 import { rateLimit } from "../plugins/rateLimit.js";
+import { config } from "../config.js";
 
 const SendSchema = z.object({
   email: z.string().email(),
@@ -58,7 +59,19 @@ export default async function emailVerificationRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.get("/email-verification/verify", async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get("/email-verification/verify", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "email-verification-verify",
+        maxAttempts: config.LOGIN_MAX_ATTEMPTS,
+        windowSeconds: config.LOGIN_WINDOW_SECONDS,
+        // Identically shaped to GET /auth/magic-link/verify, which carries this
+        // limit: an unauthenticated token in the query string, brute-forceable
+        // without one, and bounding the work it costs the server anyway.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const query = request.query as { token?: string };
     if (!query.token) {
       return reply.status(400).send({ error: "Missing token" });

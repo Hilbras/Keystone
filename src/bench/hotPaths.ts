@@ -48,6 +48,8 @@ import { ScimConnectionService } from "../services/scimCredentials.js";
 import { refreshCookieName } from "../plugins/auth.js";
 import { compare, type BenchRun, type ScenarioReading } from "./compare.js";
 
+// Allowed bootstrap write: the benchmark injects its log silence into the environment at process entry rather than through `config`; documented bootstrap site.
+//
 // Read by buildApp() when it builds the logger, which happens after this module is
 // evaluated. Without it every injected request writes a JSON log line, and the
 // benchmark spends more time on logging than on the path it is measuring — a

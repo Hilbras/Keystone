@@ -134,6 +134,20 @@
       "when": 1790803223002,
       "tag": "0018_cute_rage",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792263069065,
+      "tag": "0019_refresh_token_consumed_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1792271683064,
+      "tag": "0020_perf_indexes_and_dead_dups",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { applications, type Application } from "../db/schema.js";
 import { generateClientSecret, hashClientSecret } from "./secrets.js";
 import { cache } from "./cache.js";
+import { emit } from "./events/bus.js";
 
 function appCacheKey(clientId: string): string {
   return `app:clientId:${clientId}`;
@@ -36,6 +37,7 @@ export async function createApplication(input: {
       allowedOrigins: input.allowedOrigins ?? [],
     })
     .returning();
+  await emit({ type: "application_created", payload: { orgId: input.orgId, appId: app.id } });
   return { ...app, clientSecret };
 }
 

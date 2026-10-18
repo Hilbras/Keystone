@@ -16,6 +16,8 @@ import {
   DrizzleScimGroupRepository,
   DrizzleWorkflowRepository,
   DrizzlePlatformRepository,
+  SessionRepository,
+  DrizzlePasswordResetTokenRepository,
 } from "./repositories/index.js";
 import { secretsProvider } from "./services/secrets/index.js";
 import { queue } from "./services/queue/index.js";
@@ -50,6 +52,8 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
   const scimGroupRepository = new DrizzleScimGroupRepository();
   const workflowRepository = new DrizzleWorkflowRepository();
   const platformRepository = new DrizzlePlatformRepository();
+  const passwordResetTokenRepository = new DrizzlePasswordResetTokenRepository();
+  const sessionRepository = new SessionRepository();
 
   const container: Container = {
     config,
@@ -65,9 +69,11 @@ export function buildContainer(overrides: Partial<Container> = {}): Container {
     scimGroupRepository,
     workflowRepository,
     platformRepository,
+    passwordResetTokenRepository,
     apiKeyRepository,
     samlConnectionRepository,
     oidcConnectionRepository,
+    sessionRepository,
     secretsProvider,
     queue,
     ...overrides,
@@ -89,7 +95,8 @@ export function buildApplicationServices(container: Container) {
     container.userRepository,
     container.applicationRepository,
     container.organizationRepository,
-    mfaService
+    mfaService,
+    container.passwordResetTokenRepository
   );
   const identityDomain = new IdentityDomainService(container.userRepository, container.identityRepository);
   const organizationDomain = new OrganizationDomainService(container.organizationRepository, container.applicationRepository);

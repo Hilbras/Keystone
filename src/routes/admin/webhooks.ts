@@ -33,9 +33,13 @@ const UpdateWebhookSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+const WebhookQuerySchema = z.object({ appId: z.string().uuid().optional() });
+
+const WebhookParamsSchema = z.object({ id: z.string().uuid() });
+
 export default async function webhooksRoutes(app: FastifyInstance) {
   app.get("/platform/webhooks", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
-    const query = request.query as { appId?: string };
+    const query = WebhookQuerySchema.parse(request.query);
     const endpoints = await listEndpoints(query.appId);
     return { endpoints: endpoints.map(({ secret: _secret, ...rest }) => rest) };
   });
@@ -55,7 +59,7 @@ export default async function webhooksRoutes(app: FastifyInstance) {
   });
 
   app.patch("/platform/webhooks/:id", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const { id } = WebhookParamsSchema.parse(request.params);
     const body = UpdateWebhookSchema.parse(request.body);
     let updated;
     try {
@@ -71,7 +75,7 @@ export default async function webhooksRoutes(app: FastifyInstance) {
   });
 
   app.delete("/platform/webhooks/:id", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const { id } = WebhookParamsSchema.parse(request.params);
     const deleted = await deleteEndpoint(id);
     if (!deleted) return reply.status(404).send({ error: "Webhook not found" });
     await request.audit("platform_webhook_deleted", { endpointId: id });
@@ -79,7 +83,7 @@ export default async function webhooksRoutes(app: FastifyInstance) {
   });
 
   app.post("/platform/webhooks/:id/rotate-secret", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const { id } = WebhookParamsSchema.parse(request.params);
     const result = await rotateEndpointSecret(id);
     if (!result) return reply.status(404).send({ error: "Webhook not found" });
     await request.audit("platform_webhook_secret_rotated", { endpointId: id });
@@ -87,13 +91,13 @@ export default async function webhooksRoutes(app: FastifyInstance) {
   });
 
   app.get("/platform/webhooks/:id/deliveries", { preHandler: [requirePlatformRole("owner")] }, async (request) => {
-    const { id } = request.params as { id: string };
+    const { id } = WebhookParamsSchema.parse(request.params);
     const deliveries = await listDeliveries(id);
     return { deliveries };
   });
 
   app.post("/platform/webhook-deliveries/:id/retry", { preHandler: [requirePlatformRole("owner")] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const { id } = WebhookParamsSchema.parse(request.params);
     const ok = await retryDelivery(id);
     if (!ok) return reply.status(400).send({ error: "Delivery is not in a failed state" });
     return { success: true };

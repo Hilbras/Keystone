@@ -15,7 +15,7 @@
  *
  * `initDb` is re-exported from `./index.js` so nothing else has to change.
  */
-export { initDb, closeDb, getDb } from "./index.js";
+export { initDb, closeDb, getDb, withAdvisoryLock } from "./index.js";
 
 import { db } from "./index.js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";

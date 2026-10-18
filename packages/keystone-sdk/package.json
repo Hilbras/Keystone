@@ -1,7 +1,14 @@
 {
   "name": "@hilbras/keystone-sdk",
-  "version": "3.9.1",
+  "version": "3.9.4",
+  "license": "MIT",
   "description": "Drop-in JavaScript SDK for Hilbras Keystone identity platform",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hilbras/Keystone.git",
+    "directory": "packages/keystone-sdk"
+  },
+  "homepage": "https://github.com/Hilbras/Keystone/tree/main/packages/keystone-sdk",
   "type": "module",
   "main": "dist/keystone-sdk.cjs",
   "module": "dist/keystone-sdk.mjs",
@@ -11,7 +18,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsx build.ts",
+    "build": "tsx build.ts && tsc -p tsconfig.json --emitDeclarationOnly",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

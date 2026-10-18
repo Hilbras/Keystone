@@ -31,6 +31,13 @@ function getEncryptionKey(): Buffer {
   if (raw && raw.length >= 32) {
     return Buffer.from(raw.slice(0, 32));
   }
+  // The startup guard in index.ts refuses production boot without a real key;
+  // this is the last line of defense for paths do not run that guard.
+  if (config.NODE_ENV === "production") {
+    throw new Error(
+      "TOTP encryption key is not configured: set KEYSTONE_TOTP_ENCRYPTION_KEY (or a 32+ character KEYSTONE_INTERNAL_API_KEY)"
+    );
+  }
   return crypto.createHash("sha256").update(raw || "keystone-totp-default").digest();
 }
 

@@ -13,6 +13,7 @@
  *
  * Usage: node scripts/record-query-plans.mjs [--table <name>]
  */
+import { createRequire } from "node:module";
 
 
 const require = createRequire(import.meta.url);
@@ -88,8 +89,11 @@ try {
     // development database, not queries that will ever run.
     const params = [];
     const inlined = q.sql
-      .replace(/\$1::uuid/g, "'00000000-0000-0000-0000-000000000000'::uuid")
+      // `$1::uuid[]` before `$1::uuid`: the shorter pattern matches inside the
+      // longer one, and replacing it first leaves `'…'::uuid[]` — a scalar
+      // cast to an array, which Postgres rejects as a malformed array literal.
       .replace(/\$1::uuid\[\]/g, "ARRAY[]::uuid[]")
+      .replace(/\$1::uuid/g, "'00000000-0000-0000-0000-000000000000'::uuid")
       .replace(/\$1/g, "'admin'")
       .replace(/\$2/g, "'create'");
     let plan;

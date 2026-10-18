@@ -47,7 +47,7 @@ export class ConfigurationService {
   }
 
   private load(overrides: Partial<RuntimeConfiguration>): RuntimeConfiguration {
-    const featureFlags = this.parseFeatureFlags(process.env.KEYSTONE_FEATURE_FLAGS);
+    const featureFlags = this.parseFeatureFlags(rawConfig.FEATURE_FLAGS);
 
     return {
       nodeEnv: rawConfig.NODE_ENV,

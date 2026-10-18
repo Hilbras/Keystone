@@ -2,7 +2,7 @@ import type { OrganizationDomainService } from "../domain/organization.js";
 import { canManageOrganizationRole, isOrganizationRole, type AuthorizationDomainService, type OrgRole } from "../domain/authorization.js";
 import type { IdentityDomainService } from "../domain/identity.js";
 import type { Organization, Application, OrgMembership, User } from "../../db/schema.js";
-import { err, type Result } from "../../lib/result.js";
+import { err, ok, type Result } from "../../lib/result.js";
 import { emit } from "../events/bus.js";
 import type { EventContext } from "../events/types.js";
 
@@ -69,8 +69,8 @@ export class OrganizationApplicationService {
     return this.domain.getOrganization(orgId);
   }
 
-  async listUserOrganizations(userId: string): Promise<Organization[]> {
-    return this.domain.listUserOrganizations(userId);
+  async listUserOrganizations(userId: string): Promise<Result<Organization[]>> {
+    return ok(await this.domain.listUserOrganizations(userId));
   }
 
   async inviteMember(

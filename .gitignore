@@ -48,3 +48,8 @@ Thumbs.db
 test-results/
 playwright-report/
 playwright/.cache/
+
+# Operator-provided k8s credentials — copied from secret.example.yaml and
+# never committed (the base kustomization does not reference it either;
+# k8s/README.md Quick start covers the apply order).
+k8s/base/secret.yaml

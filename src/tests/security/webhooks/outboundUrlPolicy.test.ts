@@ -55,7 +55,6 @@ describe("outbound URL policy — webhooks (SEC-075 §1.1, §1.2)", () => {
       "https://LOCALHOST:8443/hook",
       "https://app.localhost/hook",
       "https://ip6-localhost/hook",
-      "http://localhost:3000/hook",
     ]) {
       it(`refuses ${url}`, () => refuses(url, /private or local/i));
     }
@@ -115,29 +114,26 @@ describe("outbound URL policy — webhooks (SEC-075 §1.1, §1.2)", () => {
 
   describe("plaintext transport (§1.2)", () => {
     /**
-     * The policy is environment-dependent, so this case is asserted against the
-     * environment rather than assumed.
+     * This policy used to be environment-dependent: production required HTTPS,
+     * and every other environment permitted plain HTTP to any host. That made a
+     * shared staging deployment identical to a developer's laptop from the
+     * config's point of view, and put the webhook signing secret in the clear on
+     * whatever public hop staging happened to traverse.
      *
-     * `config.NODE_ENV === "production"` requires HTTPS outright. Anywhere else,
-     * plain HTTP is permitted so a developer's `http://localhost:3000` works —
-     * which means the *public-host* form is only refused in production, and a
-     * test that asserts it unconditionally passes in production and fails in
-     * CI, which ran it under NODE_ENV=test and reported the test as wrong when
-     * the test was.
-     *
-     * The production behaviour is covered structurally below, by asserting the
-     * rule the code implements rather than by mutating the environment at
-     * runtime — `config` is frozen at import, so a test that flipped it would be
-     * testing a different module instance than the one under test.
+     * It now takes an explicit opt-in — `KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost`
+     * — and, even then, only outside production and only to a loopback host. The
+     * whole rule is asserted here rather than conditionally, because the test
+     * environment (NODE_ENV=test, no opt-in) is exactly the case that used to
+     * permit everything and no longer does.
      */
-    it("permits http to a public host outside production, and says so", () => {
-      const production = process.env.NODE_ENV === "production";
-      if (production) {
-        refuses("http://hooks.example.com/hook", /HTTPS/i);
-      } else {
-        const url = validate("http://hooks.example.com/hook");
-        assert.equal(url.protocol, "http:");
-      }
+    it("refuses plain HTTP to a public host in every environment", () => {
+      refuses("http://hooks.example.com/hook", /HTTPS/i);
+    });
+
+    it("refuses plain HTTP to loopback without the explicit opt-in", () => {
+      // The opt-in is unset in this process, so even the one address the
+      // exception exists for is refused — the exception is opt-in, not default.
+      refuses("http://localhost:3000/hook", /KEYSTONE_ALLOW_INSECURE_WEBHOOK|HTTPS/i);
     });
 
     it("refuses a non-HTTP(S) scheme outright", () => {
@@ -145,6 +141,12 @@ describe("outbound URL policy — webhooks (SEC-075 §1.1, §1.2)", () => {
       // friends are the classic SSRF protocol-smuggling primitives. These are
       // refused in every environment, unlike plain http.
       refuses("file:///etc/passwd", /HTTPS/i);
+    });
+
+    it("still accepts HTTPS unconditionally", () => {
+      // The positive control: the tightening above must not have closed the
+      // ordinary path.
+      assert.equal(validate("https://hooks.example.com/hook").protocol, "https:");
     });
   });
 

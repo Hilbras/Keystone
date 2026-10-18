@@ -1,19 +1,25 @@
 import crypto from "node:crypto";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { config } from "../config.js";
-import { SessionRepository } from "../repositories/session.js";
-
-const sessions = new SessionRepository();
+import { revokeUserSessions } from "../services/sessionRevocation.js";
 
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
 export default async function sessionRoutes(app: FastifyInstance) {
+  const sessions = app.container.sessionRepository;
   app.get("/sessions", { preHandler: [app.authenticate, app.requireScopes("sessions:read")] }, async (request: FastifyRequest) => {
     const userId = request.user?.id;
     if (!userId) return { sessions: [] };
     const list = await sessions.listByUser(userId);
+    // Only the refresh cookie names a row in refresh_tokens (the access cookie
+    // never hashes to one), so it is the credential that identifies this
+    // browser's own session. No cookie / no row → nothing is "current".
+    const currentRefreshToken = request.cookies?.[`${config.COOKIE_NAME}-refresh`];
+    const currentRefreshRow = currentRefreshToken
+      ? await sessions.findRefreshTokenByHash(hashToken(currentRefreshToken))
+      : undefined;
     return {
       sessions: list.map((s) => ({
         id: s.id,
@@ -23,6 +29,7 @@ export default async function sessionRoutes(app: FastifyInstance) {
         lastSeenAt: s.lastSeenAt,
         expiresAt: s.expiresAt,
         createdAt: s.createdAt,
+        current: !!currentRefreshRow && currentRefreshRow.id === s.refreshTokenId,
       })),
     };
   });
@@ -48,15 +55,28 @@ export default async function sessionRoutes(app: FastifyInstance) {
     const userId = request.user?.id;
     if (!userId) return reply.status(401).send({ error: "Unauthorized" });
 
-    const currentRefreshToken = request.cookies?.[config.COOKIE_NAME];
-    let currentRefreshTokenId: string | undefined;
+    // The refresh cookie carries the credential that must survive "log out
+    // everywhere else"; the access cookie (`config.COOKIE_NAME`) never matches
+    // a row in refresh_tokens, so reading it here left the except-branch dead.
+    const currentRefreshToken = request.cookies?.[`${config.COOKIE_NAME}-refresh`];
+    let exceptSessionId: string | undefined;
+    let exceptRefreshTokenId: string | undefined;
     if (currentRefreshToken) {
       const row = await sessions.findRefreshTokenByHash(hashToken(currentRefreshToken));
-      currentRefreshTokenId = row?.id;
+      if (row) {
+        exceptRefreshTokenId = row.id;
+        exceptSessionId = (await sessions.findByRefreshTokenId(row.id))?.id;
+      }
     }
 
-    await sessions.deleteAllForUser(userId, currentRefreshTokenId);
-    await request.audit("sessions_revoked_all", { exceptSessionId: currentRefreshTokenId });
+    // Deleting session rows alone never revoked refresh_tokens, so every
+    // outstanding refresh token kept minting access tokens after a revoke-all.
+    const counts = await revokeUserSessions(userId, { exceptSessionId, exceptRefreshTokenId });
+    await request.audit("sessions_revoked_all", {
+      exceptSessionId,
+      sessions: counts.sessions,
+      refreshTokens: counts.refreshTokens,
+    });
     return { success: true };
   });
 }

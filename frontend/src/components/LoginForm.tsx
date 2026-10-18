@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Mail, Lock, Fingerprint, Link2, ShieldCheck, ArrowLeft } from "lucide-react";
 import { startAuthentication } from "@simplewebauthn/browser";
 import { api, MfaRequiredError } from "../api.ts";
+import { API_BASE } from "../lib/apiBase.ts";
 import { Card } from "./ui/Card.tsx";
 import { Input } from "./ui/Input.tsx";
 import { Label } from "./ui/Label.tsx";
@@ -11,8 +12,6 @@ import { Alert } from "./ui/Alert.tsx";
 interface LoginFormProps {
   onLogin: () => void;
 }
-
-const API_BASE = import.meta.env.VITE_KEYSTONE_API_URL || "http://localhost:4001";
 
 function GoogleIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -55,8 +54,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     setIsLoading(true);
 
     try {
-      const result = await api.loginToken({ email, password });
-      localStorage.setItem("keystone-access-token", result.accessToken);
+      await api.loginToken({ email, password });
       onLogin();
     } catch (err) {
       if (err instanceof MfaRequiredError) {
@@ -80,12 +78,11 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     setIsLoading(true);
 
     try {
-      const result = await api.completeMfa({
+      await api.completeMfa({
         challenge: mfaChallenge,
         code: mfaCode.trim(),
         factor: useBackupCode ? "backup_code" : "totp",
       });
-      localStorage.setItem("keystone-access-token", result.accessToken);
       onLogin();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
@@ -123,8 +120,7 @@ export function LoginForm({ onLogin }: LoginFormProps) {
     try {
       const options = await api.webauthnAuthOptions(email || undefined);
       const assertion = await startAuthentication({ optionsJSON: options as never });
-      const result = await api.webauthnAuthVerify(assertion);
-      localStorage.setItem("keystone-access-token", result.accessToken);
+      await api.webauthnAuthVerify(assertion);
       onLogin();
     } catch (err) {
       if (err instanceof Error && err.name === "NotAllowedError") {

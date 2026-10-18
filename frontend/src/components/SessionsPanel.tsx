@@ -16,6 +16,7 @@ interface Session {
   lastSeenAt: string;
   expiresAt: string;
   createdAt: string;
+  current?: boolean;
 }
 
 function parseDevice(ua: string | null): { icon: React.ReactNode; label: string } {
@@ -104,7 +105,7 @@ export function SessionsPanel() {
         <div className="space-y-3">
           {sessions.map((session) => {
             const device = parseDevice(session.userAgent);
-            const isCurrent = false; // TODO: detect current session by refresh token
+            const isCurrent = session.current ?? false;
             return (
               <Card key={session.id} variant="glass" className="p-4 border border-theme/20">
                 <div className="flex items-start justify-between gap-3">

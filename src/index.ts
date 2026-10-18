@@ -428,6 +428,51 @@ async function start() {
     await stopTracing();
   });
 
+  // TOTP secrets (and backup-code peppers) are encrypted with a key derived
+  // from TOTP_ENCRYPTION_KEY, falling back to INTERNAL_API_KEY. Without a real
+  // key, production would encrypt every enrolled authenticator with a fallback
+  // any reader of the source can reconstruct from an empty database dump.
+  {
+    // Long enough to pass a length check but public: the value shipped in
+    // .env.example and k8s examples.
+    const PLACEHOLDER_SECRET = "change-me-to-a-random-32-char-secret";
+    const totpKey = config.TOTP_ENCRYPTION_KEY || config.INTERNAL_API_KEY;
+    const weakKey = !totpKey || totpKey.length < 32 || totpKey === PLACEHOLDER_SECRET;
+    if (config.NODE_ENV === "production" && weakKey) {
+      app.log.fatal(
+        "KEYSTONE_TOTP_ENCRYPTION_KEY (or KEYSTONE_INTERNAL_API_KEY) must be a real 32+ character secret — placeholder and default values are refused so TOTP secrets are not encrypted with a publicly known key. Set KEYSTONE_ALLOW_DEV_DEFAULTS=true to override."
+      );
+      if (!config.ALLOW_DEV_DEFAULTS) {
+        process.exit(1);
+      }
+      app.log.warn("Continuing with a weak TOTP key because KEYSTONE_ALLOW_DEV_DEFAULTS=true");
+    } else if (weakKey) {
+      app.log.warn(
+        "TOTP secrets are encrypted with the development default key — set KEYSTONE_TOTP_ENCRYPTION_KEY (or a 32+ char KEYSTONE_INTERNAL_API_KEY) before deploying this database."
+      );
+    }
+  }
+
+  // The JWT signing keypair is stored in `secrets`; without an environment
+  // wrap key its protection degrades to "whoever can read the database in
+  // plaintext" — the same trust the database connection already implies, but
+  // stated once so an operator knows a table dump is a token-forging dump.
+  if (config.NODE_ENV === "production" && !config.KEYSTONE_ENCRYPTION_KEY) {
+    app.log.warn(
+      "KEYSTONE_ENCRYPTION_KEY is not set: the JWT signing keypair in the secrets table is stored unwrapped. Set it so a database dump alone cannot mint tokens."
+    );
+  }
+
+  // A production boot carrying development cookie posture would send session
+  // cookies over plaintext. config already defaults COOKIE_SECURE to true when
+  // NODE_ENV=production, so reaching here means somebody set it to false.
+  if (config.NODE_ENV === "production" && !config.COOKIE_SECURE && !config.ALLOW_DEV_DEFAULTS) {
+    app.log.fatal(
+      "COOKIE_SECURE is false in production — sessions would travel in plaintext. Refusing to start: set COOKIE_SECURE=true, or KEYSTONE_ALLOW_DEV_DEFAULTS=true if this really is a development deployment."
+    );
+    process.exit(1);
+  }
+
   try {
     await app.listen({ port: config.PORT, host: config.HOST });
     app.log.info(`Hilbras Keystone running on http://${config.HOST}:${config.PORT}`);
@@ -438,5 +483,14 @@ async function start() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  start();
+  if (config.SETUP_MODE) {
+    // The container entrypoint is always `dist/index.js`; setup mode must pick
+    // the standalone setup server here or `KEYSTONE_SETUP_MODE=true` silently
+    // boots the main application — which needs a database that does not exist
+    // yet, which is the entire point of setup mode.
+    const { startSetupServer } = await import("./setup-server.js");
+    void startSetupServer();
+  } else {
+    start();
+  }
 }

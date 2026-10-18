@@ -1,17 +1,17 @@
 import crypto from "node:crypto";
-import { eq } from "drizzle-orm";
 import { config, isZitadelConfigured } from "../../config.js";
-import { db } from "../../db/index.js";
-import { users, passwordResetTokens, type User } from "../../db/schema.js";
+import { resolve } from "../../container.js";
+import type { User } from "../../db/schema.js";
 import { consumePasswordResetTokenRow } from "../singleUse.js";
 import { revokeAllUserCredentials } from "../sessionRevocation.js";
 import { createHumanUser, verifyPassword as verifyZitadelPassword } from "../zitadel.js";
 import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
 import { isPasswordBreached } from "../hibp.js";
+import { ipMatchesEntry } from "../ipControls.js";
 import { isFailedLoginAnomaly } from "../anomalyDetection.js";
 import { recordAuthentication } from "../../plugins/operationalMetrics.js";
 import { emit } from "../events/bus.js";
-import type { UserRepository, ApplicationRepository, OrganizationRepository, MfaFlow } from "../../repositories/types.js";
+import type { UserRepository, ApplicationRepository, OrganizationRepository, MfaFlow, PasswordResetTokenRepository } from "../../repositories/types.js";
 import type { IssuedMfaChallenge, MfaFactor, MfaService } from "../mfa.js";
 import { ok, err, type Result } from "../../lib/result.js";
 import { hashPassword, verifyPassword } from "../secrets/index.js";
@@ -73,7 +73,11 @@ export class AuthenticationDomainService {
     private readonly users: UserRepository,
     private readonly applications: ApplicationRepository,
     private readonly organizations: OrganizationRepository,
-    private readonly mfa: MfaService
+    private readonly mfa: MfaService,
+    // Optional only because routes/setup.ts (off-limits to this change) still
+    // constructs the service with four arguments; call sites fall back to the
+    // container instance.
+    private readonly passwordResetTokens?: PasswordResetTokenRepository
   ) {}
 
   private async loadAppContext(userId: string, clientId?: string): Promise<AuthContext> {
@@ -200,6 +204,24 @@ export class AuthenticationDomainService {
     return result;
   }
 
+  /**
+   * Burn the same argon2 work a real login does when the account does not
+   * exist. Without this, an unknown address returns in ~0ms and a known one
+   * costs a 24ms+ verify — a reliable existence oracle no rate limit short of
+   * brute screening removes. The computed hash is of random bytes: its answer
+   * is never used, only the time taken to get there.
+   */
+  private dummyHashPromise: Promise<string> | undefined;
+
+  private async equalizeUnknownUserTiming(candidate: string): Promise<void> {
+    this.dummyHashPromise ??= hashPassword(crypto.randomBytes(16).toString("hex"));
+    try {
+      await verifyPassword(candidate, await this.dummyHashPromise);
+    } catch {
+      // The result is irrelevant; presence of the work is the entire point.
+    }
+  }
+
   private async loginInternal(input: LoginInput): Promise<Result<LoginResult>> {
     const user = await this.users.findByEmail(input.email);
 
@@ -207,6 +229,7 @@ export class AuthenticationDomainService {
       if (isZitadelConfigured()) {
         await verifyZitadelPassword(input.email, input.password).catch(() => {});
       }
+      await this.equalizeUnknownUserTiming(input.password);
       // The emit is the record. `anomalySubscriber` counts every
       // `user_login_failed` it sees, so an explicit `recordFailedLogin` here as
       // well would count one failure twice — which is what pushed the spray
@@ -234,6 +257,30 @@ export class AuthenticationDomainService {
     if (user.lockedUntil && user.lockedUntil > new Date()) {
       await emit({ type: "user_login_failed", payload: { reason: "account_locked", userId: user.id, email: input.email, ip: input.ipAddress } });
       return err({ code: "ACCOUNT_LOCKED", message: "Account is temporarily locked due to too many failed attempts. Try again later.", statusCode: 403 });
+    }
+
+    // The per-application IP lists were enforced only when the caller
+    // volunteered `client_id` in the body, so omitting it — or supplying an
+    // invented one — walked straight past them. Every application the account's
+    // memberships reach that carries a list now speaks for this login regardless
+    // of what the body claims; the route still consults the submitted client_id
+    // first for real applications. Runs before the password check so a refusal
+    // proves nothing about which secret was submitted, matching how the
+    // up-front client_id check already behaves.
+    if (input.ipAddress) {
+      const orgs = await this.organizations.listByUserId(user.id);
+      for (const org of orgs) {
+        for (const app of await this.applications.listByOrgId(org.id)) {
+          const blocked = app.blockedIps ?? [];
+          if (blocked.some((entry) => ipMatchesEntry(input.ipAddress!, entry))) {
+            return err({ code: "IP_NOT_ALLOWED", message: "Your IP address is blocked for this application.", statusCode: 403 });
+          }
+          const allowed = app.allowedIps ?? [];
+          if (allowed.length > 0 && !allowed.some((entry) => ipMatchesEntry(input.ipAddress!, entry))) {
+            return err({ code: "IP_NOT_ALLOWED", message: "Your IP address is not allowed for this application.", statusCode: 403 });
+          }
+        }
+      }
     }
 
     let valid = false;
@@ -387,11 +434,8 @@ export class AuthenticationDomainService {
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    await db.insert(passwordResetTokens).values({
-      userId: user.id,
-      tokenHash,
-      expiresAt,
-    });
+    const tokenRepo = this.passwordResetTokens ?? resolve("passwordResetTokenRepository");
+    await tokenRepo.create({ userId: user.id, tokenHash, expiresAt });
 
     await emit({ type: "password_reset_requested", payload: { userId: user.id } });
     return ok({ token, user });
@@ -430,10 +474,7 @@ export class AuthenticationDomainService {
     }
 
     const passwordHash = await hashPassword(newPassword);
-    await db
-      .update(users)
-      .set({ passwordHash, updatedAt: now })
-      .where(eq(users.id, user.id));
+    await this.users.updatePasswordHash(user.id, passwordHash);
 
     // A reset is the standard response to a suspected compromise, so it has to
     // actually remove the intruder. Changing the password while leaving live

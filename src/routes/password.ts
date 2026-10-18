@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import { getSdk } from "../sdk/index.js";
-import { isZitadelConfigured } from "../config.js";
+import { config, isZitadelConfigured } from "../config.js";
 import { requestPasswordReset } from "../services/zitadel.js";
 import { findUserByEmail } from "../services/users.js";
 import { emailProvider } from "../services/email.js";
@@ -18,7 +18,7 @@ const ResetSchema = z.object({
 });
 
 function resetUrl(token: string): string {
-  const base = process.env.RESET_PASSWORD_URL || `${process.env.CLIENT_APP_URL || "http://localhost:5173"}/reset-password`;
+  const base = config.RESET_PASSWORD_URL || `${config.CLIENT_APP_URL}/reset-password`;
   const separator = base.includes("?") ? "&" : "?";
   return `${base}${separator}token=${encodeURIComponent(token)}`;
 }
@@ -49,7 +49,7 @@ export default async function passwordRoutes(app: FastifyInstance) {
     // If Zitadel is configured and the user has a Zitadel mirror, prefer Zitadel's flow.
     if (isZitadelConfigured() && user.zitadelUserId) {
       try {
-        const redirectUrl = process.env.RESET_PASSWORD_URL || `${process.env.CLIENT_APP_URL || "http://localhost:5173"}/reset-password`;
+        const redirectUrl = config.RESET_PASSWORD_URL || `${config.CLIENT_APP_URL}/reset-password`;
         await requestPasswordReset(user.zitadelUserId, redirectUrl);
         await request.audit("password_reset_requested", {
           found: true,
@@ -82,7 +82,19 @@ export default async function passwordRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.post("/reset-password", async (request, reply) => {
+  app.post("/reset-password", {
+    preHandler: [
+      rateLimit({
+        keyPrefix: "reset-password",
+        maxAttempts: 10,
+        windowSeconds: 900,
+        // The token is 48 random bytes, so guessing is infeasible — this
+        // exists to bound the DB writes a flood of guesses costs, the same
+        // reason /auth/refresh has its own budget.
+        emergencyLocalLimit: true,
+      }),
+    ],
+  }, async (request, reply) => {
     const body = ResetSchema.parse(request.body);
     const result = await sdk.authentication.resetPasswordWithToken(body.token, body.newPassword);
     if (!result.success) return sendResultError(reply, result);

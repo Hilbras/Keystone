@@ -131,6 +131,9 @@ let cachedConfig: { raw: string; entries: string[] } | null = null;
  * still picking up a reload.
  */
 function trustedEntries(): string[] {
+  // Allowed call-time read: `config` snapshots the environment at import, but
+  // this setting must be re-read on reload — the cache below is what keeps it
+  // cheap, and the tests reset it via this same env var.
   const raw = (process.env.KEYSTONE_TRUSTED_PROXIES ?? config.TRUSTED_PROXIES ?? "").trim();
   if (cachedConfig?.raw === raw) return cachedConfig.entries;
   const entries = raw

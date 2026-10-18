@@ -20,9 +20,16 @@ process.env.KEYSTONE_ENCRYPTION_KEY ||= "0123456789abcdef0123456789abcdef";
 // which is correct, and is why this suite has to opt out explicitly rather than
 // discover the refusal as an unexplained throw from `createEndpoint`.
 //
+// Two flags, because the collector is reached over `http://127.0.0.1`. The
+// transport rule is separate from the destination rule — §1.2 requires the
+// explicit `localhost` opt-in for plain HTTP, and it is the same opt-in a
+// developer pointing a webhook at their own machine has to set. Neither flag is
+// discovered by trial: both are refused loudly and deliberately.
+//
 // Set before any import of the server, because `config` reads the environment
 // once at module load.
 process.env.ALLOW_PRIVATE_WEBHOOK_TARGETS = "true";
+process.env.KEYSTONE_ALLOW_INSECURE_WEBHOOK = "localhost";
 
 if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
   const { generateKeyPair, exportPKCS8, exportSPKI } = await import("jose");

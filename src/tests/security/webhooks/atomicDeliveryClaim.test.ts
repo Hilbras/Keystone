@@ -16,7 +16,10 @@ process.env.KEYSTONE_ENCRYPTION_KEY ||= "0123456789abcdef0123456789abcdef";
 // A local collector, so the delivery really performs an HTTP request. The
 // outbound policy refuses loopback by design, so this suite opts out — which is
 // also what makes the *claim* the thing under test rather than the policy.
+// The collector is reached over `http://127.0.0.1`. The transport rule has its
+// own opt-in (§1.2), separate from permitting a private destination.
 process.env.ALLOW_PRIVATE_WEBHOOK_TARGETS = "true";
+process.env.KEYSTONE_ALLOW_INSECURE_WEBHOOK = "localhost";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");

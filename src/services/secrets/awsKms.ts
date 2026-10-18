@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { generateKeyPair } from "jose";
+import { config } from "../../config.js";
 import type { SecretsProvider, SigningKeyPair } from "./provider.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { serviceLogger } from "../../lib/logger.js";
@@ -27,7 +28,7 @@ export class AwsKmsSecretsProvider implements SecretsProvider {
   private keyPair: SigningKeyPair | null = null;
 
   constructor() {
-    this.kmsKeyId = process.env.KMS_KEY_ID;
+    this.kmsKeyId = config.KMS_KEY_ID;
     if (!this.kmsKeyId) {
       throw new Error("AwsKmsSecretsProvider requires KMS_KEY_ID");
     }

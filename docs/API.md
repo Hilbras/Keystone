@@ -1,6 +1,9 @@
 # Hilbras Keystone — HTTP API Reference
 
-Version 1.7.0
+Version discipline: this document intentionally carries **no version header** —
+the API it describes tracks the repository, and `CHANGELOG.md` is the record of
+what changed. See `GET /documentation` for the live OpenAPI description of the
+instance you are talking to.
 
 Every route also ships an interactive OpenAPI description served by the API itself:
 
@@ -385,6 +388,7 @@ are available to any authenticated member.
 | DELETE | `/v1/admin/platform/plugins/:name` | owner | Uninstall plugin |
 | GET | `/v1/admin/platform/feature-flags` | owner | Feature flags |
 | GET | `/v1/admin/platform/feature-flags/:key` | owner | Single flag |
+| PUT | `/v1/admin/platform/feature-flags/:key` | owner | Create or update a flag |
 | DELETE | `/v1/admin/platform/feature-flags/:key` | owner | Delete flag |
 | GET | `/v1/admin/platform/configuration-profiles` | owner | Saved configuration profiles |
 | GET | `/v1/admin/platform/configuration-profiles/:id` | owner | Profile detail |

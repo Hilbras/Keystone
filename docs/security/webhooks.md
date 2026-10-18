@@ -31,7 +31,27 @@ where an operator can read it back and believe it works.
   misses it
 - **Internal DNS names** — `*.internal`, `*.local`, `metadata.google.internal`
 - **Embedded credentials** — `https://user:pass@host/`
-- **Non-HTTPS schemes** — always; `file://` would read the server's filesystem
+- **Non-HTTP schemes** — always; `file://` would read the server's filesystem, and
+  `gopher://` and `dict://` are protocol-smuggling primitives
+- **Plain HTTP** — in production, always. Outside production it needs an explicit
+  opt-in; see [Development and test](#development-and-test)
+- **Redirects** — not followed; see below
+
+### Redirects are not followed
+
+The delivery request sets `redirect: "manual"`, and a `3xx` is refused as
+terminally as a private address.
+
+This closes a hole rather than adding a preference. The policy validates the URL
+that was **stored**, and `fetch` follows redirects by default — so a consumer
+answering `302 Location: http://169.254.169.254/latest/meta-data/` had that
+request performed for it, with the payload and its signature attached, while the
+private-address check that exists for exactly that destination never saw it. The
+guard was one response header away from being bypassed.
+
+A redirect is a destination chosen by the consumer, so retrying cannot change the
+outcome; the delivery is recorded `failed` on the first attempt and no retry is
+scheduled, on the same reasoning as any other policy refusal.
 
 ## Why a refused delivery is not retried
 
@@ -49,7 +69,23 @@ the error type, not by the message.
 
 ## Development and test
 
-`ALLOW_PRIVATE_WEBHOOK_TARGETS=true` permits a loopback or private destination.
+Two flags, for two different decisions. Both default to `false` and neither
+belongs in production.
+
+`KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost` permits a **plain-HTTP** destination.
+Only that literal value enables it — `=true` reads as "HTTP is fine everywhere",
+which is not what is being permitted — and even then only outside production and
+only to a loopback host. A webhook body carries an HMAC signature over the
+payload, which is a credential, so sending it in the clear puts that credential
+into every proxy log and every hop between Keystone and the consumer.
+
+Before this there was no opt-in, because there was no rule to opt into: the
+transport check was "HTTPS in production, anything anywhere else". That made a
+shared staging deployment — which traverses public hops — indistinguishable from a
+developer's laptop from the config's point of view. The refusal message already
+said "http to a loopback address", so the code was looser than the story it told.
+
+`ALLOW_PRIVATE_WEBHOOK_TARGETS=true` permits a loopback or private **destination**.
 
 It defaults to `ALLOW_PRIVATE_SSO_ENDPOINTS` so an existing development setup
 that already opted out keeps working, and it is a *narrower* flag on purpose: the
