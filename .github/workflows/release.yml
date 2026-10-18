@@ -376,4 +376,9 @@ jobs:
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Gate — the published image carries no unexcepted CRITICAL/HIGH advisory
-        run: node scripts/verify-image-vulnerabilities.mjs "${{ steps.meta.outputs.tags }}"
+        # `steps.meta.outputs.tags` is every tag the image was pushed under, newline
+        # separated. Passing the whole blob as one image reference makes trivy fail
+        # with "could not parse reference" — the scan never runs and the gate fails
+        # on exit code 2 (scan could not be trusted). Scan a single, concrete,
+        # pushed reference instead; every tag points at the same image.
+        run: node scripts/verify-image-vulnerabilities.mjs "ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
