@@ -371,5 +371,9 @@ jobs:
       # Exits 2 when the scan cannot run, and a gate that cannot distinguish "the
       # scan found nothing" from "the scan did not run" reports success on an
       # empty result.
+      - name: Install trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
       - name: Gate — the published image carries no unexcepted CRITICAL/HIGH advisory
         run: node scripts/verify-image-vulnerabilities.mjs "${{ steps.meta.outputs.tags }}"
