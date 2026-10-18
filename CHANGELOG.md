@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 *SEC-085: the release hold cleared itself, and then six releases turned out to have no way to publish.*
 
+... (unchanged)
+
+## [3.9.3] - 2026-10-18
+
+### P0 — Critical security (SEC-086)
+
+`revoke-all` now actually revokes: every refresh token and session for the target user is invalidated, not only the newest one. Owner mutations (platform-role changes, deactivation) are audited with actor and target metadata. TOTP keys are guarded at generation and read time — plaintext never persists beyond creation.
+
+### P1 — Deployment criticality
+
+The Docker image ships the setup wizard (`/setup`) and runs non-root; placeholder/default secrets are refused at startup in production. Compose and k8s manifests corrected so setup and the secrets path work on first boot.
+
+### P2 — Security hardening (SEC-087)
+
+Login no longer short-circuits on unknown users: an identical dummy argon2 hash removes the timing oracle between existing and missing accounts. IP allow/block (SEC-087) is enforced in the domain login before the password check; new `src/tests/security/authentication/ip-allowlist.test.ts` covers 5 cases; the security registry now has 85 entries.
+
+Rate limits added to `/auth/refresh`, email verification, password reset, service-account writes, and workflow POST/DELETE. The JWT signing keypair is wrapped with `KEYSTONE_ENCRYPTION_KEY` at rest. Production boot warns without an encryption key and fatal-exits when `COOKIE_SECURE=false` without `ALLOW_DEV_DEFAULTS`. Logout audit fixed via the `refreshTokenUserId` lookup.
+
+### P3 — Conventions
+
+~47 new config keys in `src/config.ts` (connectors, Vault/KMS secrets, setup, billing, feature flags, client URLs); routes read `config.*`, never `process.env`. DI wiring: `sessionRepository` and `passwordResetTokenRepository`; `UserRepository.updatePasswordHash` added. Domain auth no longer imports `db` directly. Zod casts in admin routes and `saml.ts` reduced 91 → 38; `ListQuerySchema`, `OrganizationParamsSchema`, uuid gates, and a SAML ACS body schema added. `trustedProxies` restored to dual-read (`process.env ?? config`) for call-time reload.
+
+### P4 — Database performance
+
+Migration `0020_perf_indexes_and_dead_dups.sql`: composite indexes on `api_keys`, `audit_log`, `refresh_tokens`, `user_sessions`, and `workflows`; five redundant indexes covered by unique constraints dropped. Dead `UserRepository.listAll` removed; platform list queries capped at 1,000 rows. SCIM group operations made atomic (`createWithMembers`, `applyMemberDelta`). `scripts/record-query-plans.mjs` fixed (missing import, `$1::uuid[]` ordering).
+
+### P6 — Frontend & packages
+
+Frontend authentication is cookie-only: all `keystone-access-token` reads removed, new `frontend/src/lib/apiBase.ts`, centralized logout helper, and the sessions endpoint reports the current session. Packages (`keystone-cli`, `keystone-node`, `keystone-react`, `keystone-sdk`, `keystone-vue`): types entry fix, version sync, exports hygiene, `engines: node>=26`.
+
 ### The hold is cleared
 
 `CVE-2026-103111` is gone from `node:26-slim`. `libpcre2-8-0` is now `10.46-1~deb13u3`,
