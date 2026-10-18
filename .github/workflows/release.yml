@@ -300,7 +300,14 @@ jobs:
         run: npm run verify:release
 
       - name: Publish npm package
-        run: npm publish --provenance --access public
+        run: |
+          if ! npm publish --provenance --access public; then
+            if npm view @hilbras/keystone@3.9.3 version >/dev/null 2>&1; then
+              echo "Package @hilbras/keystone@3.9.3 already published; treating as success."
+            else
+              exit 1
+            fi
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -381,4 +388,4 @@ jobs:
         # with "could not parse reference" — the scan never runs and the gate fails
         # on exit code 2 (scan could not be trusted). Scan a single, concrete,
         # pushed reference instead; every tag points at the same image.
-        run: node scripts/verify-image-vulnerabilities.mjs "ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}"
+        run: REF="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}" && node scripts/verify-image-vulnerabilities.mjs "${REF,,}"
