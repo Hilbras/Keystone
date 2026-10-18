@@ -12,7 +12,10 @@ process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbra
 process.env.REDIS_URL ||= "redis://localhost:6379";
 process.env.KEYSTONE_INTERNAL_API_KEY ||= "webhook-headers-test";
 process.env.KEYSTONE_ENCRYPTION_KEY ||= "0123456789abcdef0123456789abcdef";
+// The collector is reached over `http://127.0.0.1`. The transport rule has its
+// own opt-in (§1.2), separate from permitting a private destination.
 process.env.ALLOW_PRIVATE_WEBHOOK_TARGETS = "true";
+process.env.KEYSTONE_ALLOW_INSECURE_WEBHOOK = "localhost";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { migrate } = await import("drizzle-orm/postgres-js/migrator");

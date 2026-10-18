@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone-vue",
-  "version": "3.9.3",
+  "version": "3.9.4",
   "license": "MIT",
   "description": "Vue composables for the Hilbras Keystone identity platform",
   "repository": {

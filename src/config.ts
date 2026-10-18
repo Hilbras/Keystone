@@ -179,6 +179,18 @@ export const config = {
     "ALLOW_PRIVATE_WEBHOOK_TARGETS",
     getEnv("ALLOW_PRIVATE_SSO_ENDPOINTS", "false")
   ) === "true",
+  /**
+   * Permit a webhook to be delivered over plain HTTP (plan §1.2).
+   *
+   * Only the literal value `localhost` enables it, and only outside production,
+   * and only to a loopback host. A webhook body carries an HMAC signature over
+   * the payload — a credential — so sending it over plaintext puts that
+   * credential into every proxy log and every hop between Keystone and the
+   * consumer. A developer pointing a webhook at their own machine needs it;
+   * nothing else does. Not a boolean, because "true" would read as "HTTP is
+   * fine everywhere".
+   */
+  ALLOW_INSECURE_WEBHOOK: getEnv("KEYSTONE_ALLOW_INSECURE_WEBHOOK"),
 
   AUTH_API_PUBLIC_URL: getEnv("AUTH_API_PUBLIC_URL"),
   ACCESS_TOKEN_TTL_SECONDS: Number(getEnv("JWT_ACCESS_TOKEN_TTL", "900")),

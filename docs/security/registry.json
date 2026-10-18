@@ -1140,6 +1140,62 @@
       "covers": [
         "session-persistence"
       ]
+    },
+    {
+      "id": "SEC-088",
+      "title": "Setup status disclosed whether a bootstrap token was configured",
+      "severity": "low",
+      "component": "setup",
+      "release": "3.5.1",
+      "issue": "`GET /setup/status` returned `setupToken: Boolean(...)` alongside `needsSetup`. The endpoint cannot require a credential — the wizard calls it before one exists — so the field was readable by anyone who could reach the port, and it answered a one-bit question about unclaimed instances: is there a token standing between me and owning this deployment.",
+      "fix": "src/routes/setup.ts — `/setup/status` returns `{ needsSetup }` and nothing else; the boolean is not weakened, it is removed, because the wizard only ever branches on `needsSetup`",
+      "test": "src/tests/security/setup/status-response.test.ts",
+      "documentation": "docs/DEPLOYMENT.md",
+      "covers": [
+        "secret-disclosure"
+      ]
+    },
+    {
+      "id": "SEC-089",
+      "title": "Concurrent setup bootstrap created two platform owners",
+      "severity": "high",
+      "component": "setup",
+      "release": "3.5.1",
+      "issue": "`POST /setup/init` read `hasNoOwners()` and then, in separate statements, registered or promoted a user and set its role. Two callers issued close enough together both read \"no owners\" and both wrote, so a fresh deployment answered its first simultaneous requests with more than one platform owner. No database invariant prevented it: `updateRole` protects the last owner from demotion, and nothing says there may be only one.",
+      "fix": "src/routes/setup.ts — the bootstrap runs inside `withAdvisoryLock(\"keystone:setup:bootstrap\")`, taken on a reserved connection so the session lock is released by the session that took it; the owner check is repeated under the lock and a loser is answered 409 (in progress) or 403 (already complete) instead of racing",
+      "test": "src/tests/security/setup/bootstrap-race.test.ts",
+      "documentation": "docs/DEPLOYMENT.md",
+      "covers": [
+        "privilege-escalation"
+      ]
+    },
+    {
+      "id": "SEC-090",
+      "title": "Webhook delivery followed redirects, bypassing the outbound URL policy",
+      "severity": "high",
+      "component": "webhooks",
+      "release": "3.5.1",
+      "issue": "`deliverNow` validated the stored webhook URL with `assertSafeWebhookUrl` and then called `fetch` with the default `redirect: \"follow\"`. A consumer answering `302 Location: http://169.254.169.254/latest/meta-data/` had that request performed for it — payload and HMAC signature attached — while the private-address check, which exists for exactly that destination, never saw it. The guard was one response header away from being bypassed.",
+      "fix": "src/services/webhooks.ts — the delivery request uses `redirect: \"manual\"` and a 3xx is thrown as `OutboundUrlRejected`, so a redirect is recorded as a terminal refusal rather than retried",
+      "test": "src/tests/security/webhooks/ssrf-redirect-and-schemes.test.ts",
+      "documentation": "docs/security/webhooks.md",
+      "covers": [
+        "secret-disclosure"
+      ]
+    },
+    {
+      "id": "SEC-091",
+      "title": "Plain HTTP webhook destinations were permitted in every non-production environment",
+      "severity": "medium",
+      "component": "webhooks",
+      "release": "3.5.1",
+      "issue": "The transport rule was \"HTTPS in production, anything anywhere else\". A webhook body carries an HMAC signature over the payload — a credential — so a staging deployment, which traverses public hops, was indistinguishable from a developer's laptop from the config's point of view, and the signature travelled in the clear. The old refusal message already said \"http to a loopback address\", so the code was looser than the story it told.",
+      "fix": "src/services/outboundPolicy.ts — plain HTTP requires `KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost`, is never allowed in production, and is restricted to a loopback destination",
+      "test": "src/tests/security/webhooks/https-transport.test.ts",
+      "documentation": "docs/security/webhooks.md",
+      "covers": [
+        "secret-disclosure"
+      ]
     }
   ],
   "withdrawn": [
@@ -1196,6 +1252,16 @@
       "test": "src/tests/security/queue/workerIdentity.test.ts",
       "covers": "That a queue worker presents an identity unique per process, and that `Job` carries `workerId`/`workerHeartbeatAt` on both drivers so a handler can name a lock owner without knowing which driver it runs under.",
       "why": "Not a finding: the roadmap \u00a72.5 item is additive, and nothing was broken. `Job` had no owner field at all, which is a missing affordance rather than a defect \u2014 the absence of a worker id cannot itself cause a fault. It becomes load-bearing the moment \u00a72.4 distributed locks or \u00a76.4 startup recovery land, both of which must name an owner; a lock implemented against an absent or colliding id would give the wrong guarantee silently. Uniqueness is asserted by spawning real processes rather than calling the function twice, because the pid and the random suffix exist precisely for the case two calls in one process cannot represent."
+    },
+    {
+      "test": "src/tests/security/rate-limiting/failure-mode.test.ts",
+      "covers": "What a sensitive endpoint does when Redis is unreachable: the preHandler still refuses past its budget from the bounded in-process fallback, ten further failed checks do not widen that budget, and both `keystone_rate_limit_redis_errors_total` and `keystone_emergency_local_limiter_total` move. The fallback store itself is asserted capped and never to grant more than its window allows.",
+      "why": "Not a numbered finding: the degraded mode is the fix for SEC-047's neighbourhood and already existed, so there is no new defect behind these assertions. They are registered because the plugin's behaviour under an unreachable Redis is the property the fallback exists for, and `backend-choice.test.ts` covers the *selection* of the backend rather than the refusal that follows from it. The distinction matters: a suite that only proves the local counter works would stay green if the plugin stopped consulting it, which is the same shape as SEC-047 itself."
+    },
+    {
+      "test": "src/tests/security/tokens/strict-kid-extended.test.ts",
+      "covers": "That a token cannot choose its own algorithm: `alg: none` carrying a known `kid` is refused, an HS256 token keyed with the server's public key is refused, and the allowlist is derived from the held RSA key rather than from the header. Includes the positive control that an honest RS256 token still verifies.",
+      "why": "Not a numbered finding. Verification already behaves this way \u2014 the key handed to `jwtVerify` is an RSA `CryptoKey`, and jose declines a header that key cannot satisfy \u2014 so there was no defect to fix and none was evidenced. It is registered because the property is one refactor away from being lost: handing the key over as raw bytes, or populating `algorithms` from `decodeProtectedHeader(token).alg`, would silently restore the confusion family these cases reject. SEC-076 covers the strict-`kid` resolution that sits in front of it."
     }
   ]
 }

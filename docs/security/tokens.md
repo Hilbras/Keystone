@@ -83,3 +83,32 @@ is stored, and only the digest is persisted. A database dump is therefore useles
 for verifying an account, resetting a password or signing in. The lifecycle suite
 asserts this rather than assuming it: the stored column is 64 hex characters and
 is the SHA-256 of the value that was returned, checked by re-deriving it.
+
+## Which key verifies a token (the `kid` policy)
+
+An access token's header may name a key id (`kid`). The policy is strict, and the
+three cases are deliberately different:
+
+| header | policy |
+|---|---|
+| `kid` names a key the server holds | verify against that key |
+| `kid` names a key the server does not hold | **refuse**, with `unknown key id: …` |
+| no `kid` at all | verify against the active key (legacy) |
+
+The middle case is not a bypass — a token signed by another key still fails
+signature verification — but it used to be indistinguishable from an ordinary
+tampered token, so an operator rotating keys could not tell a rotation problem
+from an attack. It is now refused for the reason it actually failed (SEC-076).
+
+The last case is the documented compatibility allowance for tokens issued before
+`kid` existed. It is about the **absence of a claim**, not about accepting any
+signature: a no-`kid` token is still verified against the active key, so a foreign
+signature fails there too.
+
+The algorithm is never taken from the token header. Verification is handed the
+RSA public key it holds and jose derives what that key can do, so `alg: none` and
+an HS256 token keyed with that public key are both refused. That property is
+pinned by `src/tests/security/tokens/strict-kid-extended.test.ts`, because it is
+one refactor away from being lost — handing the key over as raw bytes, or
+populating `algorithms` from the token's own header, would silently restore the
+algorithm-confusion family.

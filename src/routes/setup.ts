@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 // Connection lifecycle, not the client. This route establishes the pool against a
 // configuration file the operator has just written, which is why it needs
 // `initDb` — and it is the only route that does. See src/db/lifecycle.ts.
-import { initDb, isDatabaseInitialized, runMigrations } from "../db/lifecycle.js";
+import { initDb, isDatabaseInitialized, runMigrations, withAdvisoryLock } from "../db/lifecycle.js";
 import { AuthenticationDomainService } from "../services/domain/authentication.js";
 import {
   DrizzleUserRepository,
@@ -141,10 +141,15 @@ function assertSetupToken(request: FastifyRequest, reply: FastifyReply): boolean
 
 export default async function setupRoutes(app: FastifyInstance) {
   app.get("/status", async () => {
-    return {
-      needsSetup: await hasNoOwners(),
-      setupToken: Boolean(getSetupToken()),
-    };
+    // `needsSetup` and nothing else (plan §1.5).
+    //
+    // This endpoint is unauthenticated — it has to be, because the wizard calls it
+    // before any credential exists — so whatever it returns is readable by anyone
+    // who can reach the port. It used to also return `setupToken: Boolean(...)`,
+    // which told an unauthenticated caller whether a token is configured: a
+    // one-bit oracle answering "is this instance still unclaimed, and can I try
+    // to claim it". The wizard only ever branches on `needsSetup`.
+    return { needsSetup: await hasNoOwners() };
   });
 
   app.get("/diagnostics", async (request: FastifyRequest, reply: FastifyReply) => {
@@ -277,50 +282,86 @@ export default async function setupRoutes(app: FastifyInstance) {
     const body = parseBody(SetupInitSchema, request.body, reply);
     if (!body) return;
 
-    // If a user with this email already exists (e.g. from an interrupted setup),
-    // promote them to owner instead of failing with a duplicate-key error.
     const userRepository = new DrizzleUserRepository();
-    const existing = await userRepository.findByEmail(body.email);
 
-    let ownerUser;
-    let previousRole: string;
-    if (existing) {
-      previousRole = existing.role;
-      ownerUser = (await userRepository.updateRole(existing.id, "owner")) ?? existing;
-    } else {
-      const authService = new AuthenticationDomainService(
-        new DrizzleUserRepository(),
-        new DrizzleApplicationRepository(),
-        new DrizzleOrganizationRepository(),
-        new MfaService(new DrizzleMfaChallengeRepository(), new DrizzleUserRepository())
-      );
-      const result = await authService.register({
-        email: body.email,
-        password: body.password,
-        name: body.name,
-        username:
-          body.username ||
-          body.email
-            .split("@")[0]
-            .toLowerCase()
-            .replace(/[^a-z0-9_-]/g, "-")
-            .slice(0, 32),
-      });
-
-      if (!result.success) {
-        return reply.status(400).send({ error: result.error.message });
+    // Plan §1.6 — the bootstrap is serialized behind an advisory lock.
+    //
+    // The read above (`hasNoOwners`) decides whether to bother taking the lock.
+    // It cannot *decide the outcome*, because it and the write it guards are two
+    // separate statements: two instances can both read "no owners" and both go on
+    // to create one. The lock closes that window — the loser never runs the
+    // bootstrap at all and is told so, rather than racing to write a second owner.
+    //
+    // The check is repeated inside the lock, and that inner read is the one that
+    // counts: between the outer read and acquiring the lock, the instance that
+    // held it may have finished the bootstrap and released it.
+    const lock = await withAdvisoryLock("keystone:setup:bootstrap", async () => {
+      if (!(await hasNoOwners())) {
+        return { outcome: "already_complete" as const };
       }
 
-      previousRole = result.data.user.role;
-      ownerUser = (await userRepository.updateRole(result.data.user.id, "owner")) ?? result.data.user;
-    }
+      // If a user with this email already exists (e.g. from an interrupted setup),
+      // promote them to owner instead of failing with a duplicate-key error.
+      const existing = await userRepository.findByEmail(body.email);
 
-    await request.audit("platform_role_changed", {
-      targetUserId: ownerUser.id,
-      previousRole,
-      newRole: "owner",
-      action: "setup_bootstrap",
+      let ownerUser;
+      let previousRole: string;
+      if (existing) {
+        previousRole = existing.role;
+        ownerUser = (await userRepository.updateRole(existing.id, "owner")) ?? existing;
+      } else {
+        const authService = new AuthenticationDomainService(
+          new DrizzleUserRepository(),
+          new DrizzleApplicationRepository(),
+          new DrizzleOrganizationRepository(),
+          new MfaService(new DrizzleMfaChallengeRepository(), new DrizzleUserRepository())
+        );
+        const result = await authService.register({
+          email: body.email,
+          password: body.password,
+          name: body.name,
+          username:
+            body.username ||
+            body.email
+              .split("@")[0]
+              .toLowerCase()
+              .replace(/[^a-z0-9_-]/g, "-")
+              .slice(0, 32),
+        });
+
+        if (!result.success) {
+          return { outcome: "register_failed" as const, message: result.error.message };
+        }
+
+        previousRole = result.data.user.role;
+        ownerUser = (await userRepository.updateRole(result.data.user.id, "owner")) ?? result.data.user;
+      }
+
+      await request.audit("platform_role_changed", {
+        targetUserId: ownerUser.id,
+        previousRole,
+        newRole: "owner",
+        action: "setup_bootstrap",
+      });
+
+      return { outcome: "ok" as const, ownerUser };
     });
+
+    if (!lock.acquired) {
+      // Another instance holds the lock and is bootstrapping right now. 409 rather
+      // than 403: "someone else is doing it" and "it is already done" are
+      // different answers, and the wizard can retry the first.
+      return reply
+        .status(409)
+        .send({ error: "Setup already in progress or complete", code: "SETUP_IN_PROGRESS" });
+    }
+    if (lock.value.outcome === "already_complete") {
+      return reply.status(403).send({ error: "Setup has already been completed" });
+    }
+    if (lock.value.outcome === "register_failed") {
+      return reply.status(400).send({ error: lock.value.message });
+    }
+    const ownerUser = lock.value.ownerUser;
 
     // Through a descriptor, like every other write in the setup flow (SEC-065). This file
     // was simply outside `keystone-config-writes-by-descriptor`'s scope until 3.5.9, which

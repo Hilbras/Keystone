@@ -516,7 +516,28 @@ export async function deliverNow(deliveryId: string): Promise<void> {
       },
       body: JSON.stringify(delivery.payload),
       signal: AbortSignal.timeout(10_000),
+      // Plan §1.1 — redirects are not followed.
+      //
+      // `fetch` follows them by default, and `assertSafeWebhookUrl` above validated
+      // only the URL that was *stored*. So a consumer that answered `302 Location:
+      // http://169.254.169.254/latest/meta-data/` had that hop performed for it,
+      // with the payload and the signature attached, and the private-address check
+      // never saw the destination — the whole guard was one response header away
+      // from being bypassed. `manual` returns the 3xx instead of chasing it; the
+      // refusal below then treats it as terminal.
+      redirect: "manual",
     });
+
+    if (response.status >= 300 && response.status < 400) {
+      // Thrown as `OutboundUrlRejected` (the branch in the `catch` below) so a
+      // redirect is recorded as a permanent refusal rather than as a transient
+      // network fault: the destination is the consumer's choice, so a retry
+      // re-attempts the same hop and cannot succeed.
+      throw new OutboundUrlRejected(
+        `webhook URL answered with a redirect (${response.status}); redirects are not followed`,
+        endpoint.url
+      );
+    }
 
     // The span covers the attempt and its outcome, which is what an operator
     // needs when a consumer starts rejecting: which endpoint, which attempt

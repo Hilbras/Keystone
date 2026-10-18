@@ -244,6 +244,47 @@ And connect the project:
 - [ ] Database and Redis are not exposed to the internet
 - [ ] Regular backups of PostgreSQL data
 - [ ] Server firewall allows only ports 80, 443, and SSH
+- [ ] `KEYSTONE_ALLOW_INSECURE_WEBHOOK` and `ALLOW_PRIVATE_WEBHOOK_TARGETS` are
+      **unset** — both are development affordances, and neither is checked by a
+      gate (plan §6.1 will validate unsafe production settings as a class)
+
+---
+
+## First-run setup
+
+Before the platform has an owner, `POST /setup/init` creates one. Two properties
+of that endpoint are worth knowing when you deploy several instances at once.
+
+### `GET /setup/status` returns `needsSetup` and nothing else
+
+The wizard calls it before any credential exists, so it is unauthenticated and
+everything it returns is readable by anyone who can reach the port. It used to
+also return a boolean saying whether a setup token was configured — a one-bit
+answer to "is this instance unclaimed, and is there a token between me and owning
+it". Only `needsSetup` is returned now.
+
+### The bootstrap is serialized
+
+`/setup/init` runs behind a Postgres advisory lock (`keystone:setup:bootstrap`,
+session-scoped and taken on a reserved connection). The owner check is repeated
+*inside* the lock, and that inner check is the one that decides.
+
+Without it, two instances receiving the first requests at the same time both read
+"no owners" and both wrote, so a fresh deployment answered its first simultaneous
+callers with more than one platform owner. Nothing in the database prevented it:
+keystone protects the *last* owner from being demoted, and says nothing about how
+many may exist.
+
+The outcomes a caller can see:
+
+| status | meaning |
+|---|---|
+| `200` | this caller bootstrapped the platform |
+| `409` | another instance holds the lock and is bootstrapping now — retry |
+| `403` | setup has already completed |
+
+Because the lock is a database lock, it works across containers and across hosts
+that share one PostgreSQL. There is no configuration for it.
 
 ---
 

@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**85 findings.**
+**89 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 7 |
-| high | 37 |
-| medium | 27 |
-| low | 14 |
+| high | 39 |
+| medium | 28 |
+| low | 15 |
 
 ## Scope
 
@@ -39,7 +39,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 
 | Attack class | Findings |
 | --- | --- |
-| `privilege-escalation` | SEC-001, SEC-002, SEC-003, SEC-007, SEC-023, SEC-025, SEC-028, SEC-032 |
+| `privilege-escalation` | SEC-001, SEC-002, SEC-003, SEC-007, SEC-023, SEC-025, SEC-028, SEC-032, SEC-089 |
 | `mfa-bypass` | SEC-004, SEC-005, SEC-015, SEC-034 |
 | `tenant-isolation` | SEC-001, SEC-003, SEC-006 |
 | `token-replay` | SEC-012, SEC-013, SEC-038 |
@@ -48,7 +48,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 | `mtls-spoofing` | SEC-007, SEC-009, SEC-010 |
 | `xff-spoofing` | SEC-008, SEC-009 |
 | `api-scope-escalation` | SEC-023, SEC-024, SEC-025 |
-| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031 |
+| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031, SEC-088, SEC-090, SEC-091 |
 | `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038, SEC-086, SEC-087 |
 | `password-reset-invalidation` | SEC-014 |
 
@@ -709,6 +709,34 @@ The up-front route check (`services/ipControls.ts`) stays: a submitted `client_i
 
 **Attack classes.** `session-persistence`
 
+### SEC-089 — Concurrent setup bootstrap created two platform owners
+
+*Fixed in v3.5.1. Component: `setup`.*
+
+**Issue.** `POST /setup/init` read `hasNoOwners()` and then, in separate statements, registered or promoted a user and set its role. Two callers issued close enough together both read "no owners" and both wrote, so a fresh deployment answered its first simultaneous requests with more than one platform owner. No database invariant prevented it: `updateRole` protects the last owner from demotion, and nothing says there may be only one.
+
+**Fix.** src/routes/setup.ts — the bootstrap runs inside `withAdvisoryLock("keystone:setup:bootstrap")`, taken on a reserved connection so the session lock is released by the session that took it; the owner check is repeated under the lock and a loser is answered 409 (in progress) or 403 (already complete) instead of racing
+
+**Test.** `src/tests/security/setup/bootstrap-race.test.ts`
+
+**Documentation.** [docs/DEPLOYMENT.md](../DEPLOYMENT.md)
+
+**Attack classes.** `privilege-escalation`
+
+### SEC-090 — Webhook delivery followed redirects, bypassing the outbound URL policy
+
+*Fixed in v3.5.1. Component: `webhooks`.*
+
+**Issue.** `deliverNow` validated the stored webhook URL with `assertSafeWebhookUrl` and then called `fetch` with the default `redirect: "follow"`. A consumer answering `302 Location: http://169.254.169.254/latest/meta-data/` had that request performed for it — payload and HMAC signature attached — while the private-address check, which exists for exactly that destination, never saw it. The guard was one response header away from being bypassed.
+
+**Fix.** src/services/webhooks.ts — the delivery request uses `redirect: "manual"` and a 3xx is thrown as `OutboundUrlRejected`, so a redirect is recorded as a terminal refusal rather than retried
+
+**Test.** `src/tests/security/webhooks/ssrf-redirect-and-schemes.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+**Attack classes.** `secret-disclosure`
+
 ## Medium
 
 ### SEC-013 — A used credential was not distinguishable from an unknown one
@@ -1226,6 +1254,20 @@ No change to `signWebhookPayload`, so signatures this server produces are byte-i
 
 **Documentation.** [docs/security/webhooks.md](webhooks.md)
 
+### SEC-091 — Plain HTTP webhook destinations were permitted in every non-production environment
+
+*Fixed in v3.5.1. Component: `webhooks`.*
+
+**Issue.** The transport rule was "HTTPS in production, anything anywhere else". A webhook body carries an HMAC signature over the payload — a credential — so a staging deployment, which traverses public hops, was indistinguishable from a developer's laptop from the config's point of view, and the signature travelled in the clear. The old refusal message already said "http to a loopback address", so the code was looser than the story it told.
+
+**Fix.** src/services/outboundPolicy.ts — plain HTTP requires `KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost`, is never allowed in production, and is restricted to a loopback destination
+
+**Test.** `src/tests/security/webhooks/https-transport.test.ts`
+
+**Documentation.** [docs/security/webhooks.md](webhooks.md)
+
+**Attack classes.** `secret-disclosure`
+
 ## Low
 
 ### SEC-041 — A test fixture path was correct at only one directory depth
@@ -1505,3 +1547,17 @@ The absence of a failure record is the part that matters. A failed run is visibl
 **Test.** `src/tests/security/supplyChain/releaseDispatchRecovery.test.ts`
 
 **Documentation.** [docs/security/RELEASE-HOLD-3.7.1.md](RELEASE-HOLD-3.7.1.md)
+
+### SEC-088 — Setup status disclosed whether a bootstrap token was configured
+
+*Fixed in v3.5.1. Component: `setup`.*
+
+**Issue.** `GET /setup/status` returned `setupToken: Boolean(...)` alongside `needsSetup`. The endpoint cannot require a credential — the wizard calls it before one exists — so the field was readable by anyone who could reach the port, and it answered a one-bit question about unclaimed instances: is there a token standing between me and owning this deployment.
+
+**Fix.** src/routes/setup.ts — `/setup/status` returns `{ needsSetup }` and nothing else; the boolean is not weakened, it is removed, because the wizard only ever branches on `needsSetup`
+
+**Test.** `src/tests/security/setup/status-response.test.ts`
+
+**Documentation.** [docs/DEPLOYMENT.md](../DEPLOYMENT.md)
+
+**Attack classes.** `secret-disclosure`

@@ -5,11 +5,66 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.9.2] - 2026-10-06
+## [3.9.4] - 2026-10-18
 
-*SEC-085: the release hold cleared itself, and then six releases turned out to have no way to publish.*
+### Security — setup bootstrap (SEC-088, SEC-089)
 
-... (unchanged)
+`GET /setup/status` no longer reports whether a setup token is configured. The
+endpoint is unauthenticated by necessity — the wizard calls it before any
+credential exists — so the boolean was readable by anyone who could reach the
+port, and it answered "is this instance unclaimed, and is there a token between me
+and owning it". Only `needsSetup` is returned (SEC-088).
+
+`POST /setup/init` is serialized behind a Postgres advisory lock
+(`keystone:setup:bootstrap`), taken on a reserved connection and repeated as an
+owner check *inside* the lock. Previously two callers arriving together both read
+"no owners" and both wrote, so a fresh deployment answered its first simultaneous
+requests with more than one platform owner. Losers now receive `409` (in progress)
+or `403` (already complete) (SEC-089).
+
+### Security — webhooks (SEC-090, SEC-091)
+
+Webhook delivery no longer follows redirects. The request used `fetch`'s default
+`redirect: "follow"` after validating only the *stored* URL, so a consumer
+answering `302 Location: http://169.254.169.254/latest/meta-data/` had that
+request made for it — payload and HMAC signature attached — while the
+private-address policy never saw the destination. A `3xx` is now a terminal
+refusal (SEC-090).
+
+Plain-HTTP webhook destinations now require `KEYSTONE_ALLOW_INSECURE_WEBHOOK=localhost`,
+are never permitted in production, and are restricted to a loopback host. The
+rule was "HTTPS in production, anything anywhere else", which made a shared
+staging deployment indistinguishable from a developer's laptop while the signing
+secret travelled in the clear (SEC-091).
+
+### New tests
+
+42 cases across six suites, all registered: `setup/status-response`,
+`setup/bootstrap-race` (20 concurrent `/setup/init` → exactly one owner),
+`webhooks/ssrf-redirect-and-schemes`, `webhooks/https-transport` (each
+environment asserted in a child process, because `config` is frozen at import),
+`rate-limiting/failure-mode`, and `tokens/strict-kid-extended` (`alg: none` and
+HS256 key-confusion are refused, and the algorithm allowlist comes from the held
+key). The security registry is at 89 entries.
+
+### Fixed — CLI hung under the recommended production queue provider
+
+`keystone user:create` and `keystone org:create` printed their success line and
+then never exited when `KEYSTONE_QUEUE_PROVIDER=bullmq` — the setting the roadmap
+itself recommends for production in §2.1. `withReleasedConnections` released the
+database pool, the cache client and the shared Redis, and a BullMQ queue owns a
+**fourth** set of Redis connections that nothing closed, so the process never
+reached an empty event loop.
+
+It stayed invisible because the default provider is `in-process`, which holds no
+handles, and that is what CI runs. A regression case now forces `bullmq` on the
+subprocess rather than inheriting the environment, because inheriting it is how
+the defect hid.
+
+### Fixed — release gates
+
+`CHANGELOG.md` had `[3.9.2]` above `[3.9.3]`, so `npm run verify:changelog`
+failed on the released tree; the entries are now in descending order.
 
 ## [3.9.3] - 2026-10-18
 
@@ -95,6 +150,12 @@ the manual path is a recovery route and **not a bypass**.
 6 cases. Restoring the pre-fix workflow fails 5 of 6; the sixth is the version gate
 against `package.json`, which was never broken and must stay intact — a manual path
 that could publish a version the tree does not claim would be a hole, not a hatch.
+
+## [3.9.2] - 2026-10-06
+
+*SEC-085: the release hold cleared itself, and then six releases turned out to have no way to publish.*
+
+... (unchanged)
 
 ## [3.9.1] - 2026-09-30
 
