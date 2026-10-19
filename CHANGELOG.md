@@ -5,6 +5,190 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.0] - 2026-10-19
+
+*Plan §5.1–§5.5: Keystone should be operable without a debugger. Building the probes turned up two defects in code that had already shipped and one in the queue driver.*
+
+### SEC-092, high — the request target was logged, audited and delivered with its query string
+
+A request target is not a path. It is a path **plus the query string**, and Keystone
+takes live, single-use credentials in the query string in four places:
+
+```text
+GET /auth/magic-link/verify?token=…          the token is the whole of the sign-in
+GET /auth/email-verification/verify?token=…
+GET /federation/:provider/callback?code=…
+GET /sso/oidc/:connectionId/callback?code=…
+```
+
+Three writers recorded it verbatim. Fastify's default `req` serializer wrote it to
+the access log; the audit log stored it; and a rate-limit refusal carried it in the
+event payload — which is not merely retained but **delivered to every webhook
+subscriber**, so the credential left the deployment. For the magic-link route one
+log line was enough to sign in as the user until the token was consumed, and a rate
+limiter is exactly the control that fires on requests to that route.
+
+The query string is now **dropped, not redacted**, in all four writers (the `req`
+serializer, the request logger, `machinePrincipal`, and the limiter's event). A
+redaction still records the length and the position of the value, and nothing that
+reads these logs needs the query string to identify a request — the path and the
+trace id (§5.4) do that.
+
+### SEC-093, high — the BullMQ driver started one worker per job type on one queue
+
+`process(type, handler)` created a `Worker` per registered type, and every one of
+them consumed the single queue named `"keystone"`. BullMQ addresses consumers by
+**queue name**, so those were not N specialised workers — they were N competing
+consumers of one stream. Whichever worker won the race ran the job, through the
+handler it had closed over: a `type_a` handler was handed `type_b` payloads, and
+`type_b`'s own handler sometimes never ran at all. An enqueued job could be consumed
+by the wrong code path and be marked complete.
+
+This is the driver the plan itself recommends for production (§2.1), so the
+misdispatch was the production path, and the in-process default is what every test
+ran on.
+
+One worker now owns the queue and dispatches on the job's own name through the
+handler map. A job whose type has no handler is **failed rather than completed**: a
+type mismatch or a deploy skew should be a failed job an operator can see and
+re-run, not work that quietly disappeared.
+
+### SEC-094, medium — a database error carried its bound parameter values
+
+`DrizzleQueryError` builds its message by interpolating the parameter *values*:
+
+```text
+Failed query: SELECT * FROM sessions WHERE refresh_token_hash = $1
+params: live-token-123
+```
+
+pino's error serializer copies that message into `message` **and** into `stack`, so
+`logger.error({ err })` — the natural way to log a failed query — wrote the value
+twice. Two unauthenticated endpoints returned the same text to the caller: `/ready`
+and `/setup/diagnostics`, where a database outage is exactly when they are called.
+
+The driver's parameter list is now stripped from both fields at the logger
+boundary, and from both responses.
+
+### The queue driver had a second half worth naming
+
+Because the misdispatch above is the failure this project keeps producing — a control
+that is present, plausible, and connected to the wrong thing — the dispatch has a
+test that asserts the **pair**: each handler sees exactly its own type, *and* both
+types actually run. Either half alone passes under the old behaviour.
+
+### Health, readiness and startup are three questions, not one (§5.3)
+
+`/health` answered 200 whenever the process was listening, which conflates:
+
+- **is this process alive?** — a hung process must be restarted;
+- **should traffic be sent to it?** — a process that cannot reach PostgreSQL must
+  not be;
+- **has it finished starting?** — a process still loading its signing keypair is
+  neither hung nor ready.
+
+Three endpoints now separate them. `/health/startup` answers 503 until `listen()`
+has returned, so a pod that is composed but not yet serving is not reported as
+started. `/health/ready` answers 503 when a **required** dependency is down, and
+`200` with `"status": "degraded"` when only Redis is missing — the queue falls back
+in-process and authentication still works, so failing the readiness probe there
+would take a working instance out of rotation. `/health` and `/ready` are kept as
+aliases so no existing probe breaks.
+
+The Kubernetes manifest gains a `startupProbe` (`40 × 10s`), because without one a
+slow boot — loading the keypair, seeding role permissions, adopting a legacy SCIM
+config — is indistinguishable from a hang, and the kubelet restarts the pod every
+30 seconds forever. The compose health check moves to `/ready` with a 20 s
+`start_period`: a container that has lost PostgreSQL must not be advertised as
+healthy to anything using `depends_on: condition: service_healthy`.
+
+### Metrics for the paths that fail (§5.2)
+
+The existing metrics counted what succeeded. Six more cover the failures an operator
+is paged for: `keystone_queue_jobs_total` and `keystone_queue_job_duration_seconds`,
+`keystone_oauth_failures_total`, `keystone_rate_limit_blocks_total` (labelled by
+which limiter decided), `keystone_db_statements_total`, and
+`keystone_dependency_latency_seconds` for the readiness probes themselves.
+
+One label changed shape rather than being added: refresh-token rotation reported the
+constant `"attempted"`, so the counter could not distinguish a rotation that
+succeeded from one **refused because the token had already been used** — the replay
+signal — from one that errored. It now reports `success`, `refused` or `error`.
+
+### One trace id from the request to the job to the webhook (§5.4)
+
+A `traceId` is minted per request, carried in `AsyncLocalStorage`, and propagated
+into the queue (`Job.traceId`) and out to webhook consumers as
+`X-Keystone-Trace-ID`. Without it, "the password reset the user did not ask for"
+cannot be joined to the job that produced it or the consumer that received it —
+three logs, three ids, no relation.
+
+The header is additive; existing consumers see one more header and nothing moves.
+
+### The access log now has a fixed field set (§5.1)
+
+Every request logs `requestId`, `traceId`, `operation`, `method`, `path`,
+`statusCode`, `result`, `errorCode`, `durationMs`, and `actorId`/`tenantId` when
+they are known. Where the field set was incomplete it was completed, and where it
+carried a credential it was removed rather than renamed.
+
+A redaction pass runs over every logged object (`password`, `token`, `secret`,
+`apiKey`, `authorization`, `code`, and the rest of the list), keyed case- and
+separator-insensitively so `api_key` and `apiKey` are the same field.
+
+### Diagnostics an owner can read (§5.5)
+
+`GET /v1/admin/platform/diagnostics`, platform-owner only, reports database, Redis,
+queue, worker, signing-key and configuration status — the questions an operator
+would otherwise answer with a shell on the box. No secret is returned, and no
+configuration *value* is echoed back; the endpoint reports whether a value is set
+and whether it is safe, not what it is.
+
+### Deployment — the frontend build chain (GHSA-68fv-2mgg-jv7q, CVE-2026-93749)
+
+`source-map-js` through 1.2.1 fails to validate the per-section offset in indexed
+source maps, so a malicious map blocks the event loop — a denial of service in the
+toolchain that builds the admin dashboard, not in Keystone itself. `vite`'s range
+resolved below the fix; an `overrides` entry now pins `source-map-js` to `>=1.2.2`
+(high, fixed upstream in 1.2.2). `npm audit` on the frontend tree reports 0
+vulnerabilities.
+
+### New tests
+
+69 cases across five new suites, plus two added to the existing queue suite:
+
+| suite | cases | pins |
+|---|---|---|
+| `observability/logging` | 27 | the field set, the redaction list, and the query string end-to-end against a booted server |
+| `observability/health` | 13 | live / ready / startup, and the degraded-versus-unavailable line |
+| `observability/traceContext` | 11 | id propagation request → job → webhook |
+| `observability/diagnostics` | 10 | every field the endpoint must *not* return |
+| `observability/metrics` | 8 | the six new series and the rotation outcome label |
+| `integration/queue` (existing) | 2 | correct dispatch, and a failed job for an unhandled type |
+
+The diagnostics suite asserts against the **real process environment** rather than a
+list of field names, because a field-name assertion passes the moment the writer
+renames the field — which is the failure it is meant to catch.
+
+### Regression
+
+The rate-limit refusal path dropped its own event. `stripQuery` read `url.length`
+before its first guard, and the refusal path passed `request.url` from a request
+object that need not carry one — the throw landed inside a `try`/`catch` whose
+comment said a monitoring failure must not turn a 429 into a 500, so it was
+swallowed. The refusal was still enforced and the counter still incremented; the
+*only* thing lost was the audit event and the webhook delivery. `stripQuery` is now
+total (an absent target yields an empty string), that `catch` logs, and the case
+that caught it — `emits rate_limit_triggered when a limiter refuses` — now also
+asserts the payload carries a path with no query string.
+
+Worth recording for the next one: the four BullMQ dispatch cases were green locally
+and **red on a clean checkout**, because `KEYSTONE_QUEUE_PROVIDER` defaults to
+`in-process` and their assertion needs the application itself on the BullMQ driver.
+A local `.env` supplied the variable; CI does not have one. The suite now selects
+the provider from Redis reachability and says so, and the whole gate is run with
+`.env` moved aside — a green local run that CI cannot reproduce is not a green run.
+
 ## [3.9.4] - 2026-10-18
 
 ### Security — setup bootstrap (SEC-088, SEC-089)
