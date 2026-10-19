@@ -80,9 +80,11 @@ Suites that assert a property but do not correspond to a defect we can evidence.
   Not a numbered finding: the degraded mode is the fix for SEC-047's neighbourhood and already existed, so there is no new defect behind these assertions. They are registered because the plugin's behaviour under an unreachable Redis is the property the fallback exists for, and `backend-choice.test.ts` covers the *selection* of the backend rather than the refusal that follows from it. The distinction matters: a suite that only proves the local counter works would stay green if the plugin stopped consulting it, which is the same shape as SEC-047 itself.
 - `src/tests/security/tokens/strict-kid-extended.test.ts` — That a token cannot choose its own algorithm: `alg: none` carrying a known `kid` is refused, an HS256 token keyed with the server's public key is refused, and the allowlist is derived from the held RSA key rather than from the header. Includes the positive control that an honest RS256 token still verifies.
   Not a numbered finding. Verification already behaves this way — the key handed to `jwtVerify` is an RSA `CryptoKey`, and jose declines a header that key cannot satisfy — so there was no defect to fix and none was evidenced. It is registered because the property is one refactor away from being lost: handing the key over as raw bytes, or populating `algorithms` from `decodeProtectedHeader(token).alg`, would silently restore the confusion family these cases reject. SEC-076 covers the strict-`kid` resolution that sits in front of it.
+- `src/tests/observability/diagnostics.test.ts` — That `/v1/admin/platform/diagnostics` does not become a copy of the configuration it summarizes. The negative assertions are made against the values actually present in the process environment — the encryption key, the internal API key, the database password, a middle line of the JWT private key, the Redis password — rather than against a list of field names, so a field added later that carries a value already in the environment fails the suite.
+  Not a numbered finding. The route is new in this release and asserts a property rather than describing a defect it repairs, so there is nothing to number. It is registered because the property erodes by addition: the report is assembled from the same `config` object the rest of the application reads, and one convenience field — the config echoed back "for debugging" — would turn the endpoint into a credential dump while every other assertion in the suite stayed green. Checking against the environment's real values is what keeps it true as the report grows.
 
 ## Coverage
 
-- 89 findings recorded in `docs/security/registry.json`.
-- 89 of 89 verified to have a regression test present right now.
-- 7 critical, 39 high, 28 medium, 15 low.
+- 92 findings recorded in `docs/security/registry.json`.
+- 92 of 92 verified to have a regression test present right now.
+- 7 critical, 41 high, 29 medium, 15 low.

@@ -23,6 +23,19 @@ export interface Job<T = unknown> {
    */
   workerId?: string;
   workerHeartbeatAt?: Date;
+  /**
+   * The trace id of the work that enqueued this job.
+   *
+   * **Added for §5.4.** A job runs on a worker, often a different process, minutes
+   * after the request that produced it has been answered — so every log line the
+   * handler emits was previously unattributable. The enqueueing site almost never
+   * sets this: both drivers stamp it from the ambient trace when the job is
+   * accepted, so a caller that knows nothing about tracing still gets correlation.
+   *
+   * Optional because a job legitimately has no cause — a startup recovery pass, a
+   * timer — and inventing an id for it would file unrelated work under one trace.
+   */
+  traceId?: string;
 }
 
 export type JobHandler = (job: Job) => void | Promise<void>;
@@ -35,6 +48,18 @@ export interface QueueStats {
 }
 
 export interface Queue {
+  /**
+   * Which driver this is, as the same string the queue metrics carry under
+   * `keystone_queue_jobs_total{provider}`.
+   *
+   * **Added for §5.5.** Diagnostics has to say which queue a deployment is actually
+   * running on, and "which class is this" is not something a route can answer
+   * without `instanceof` against the concrete driver — which would put the choice of
+   * driver in the HTTP layer. Required rather than optional so a third driver cannot
+   * be added without stating its label, and so the metric and the diagnostic can
+   * never disagree about what this instance is.
+   */
+  readonly provider: string;
   enqueue<T>(job: Job<T>): Promise<void>;
   process(type: string, handler: JobHandler): void;
   getStats?(): Promise<QueueStats[]>;

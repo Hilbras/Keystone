@@ -399,14 +399,26 @@ export async function rotateRefreshToken(
   clientId?: string,
   expectedAppId?: string
 ): Promise<TokenSet | null> {
-  // Counted in a `finally`-shaped wrapper rather than at each return: this function
-  // returns `null` for three different situations — unknown token, expired, and
-  // replayed — and a rotation counter that cannot tell them apart is the same
-  // problem as an authentication counter with one label.
+  // Counted at the wrapper rather than at each return, for the same reason as
+  // before: this function returns `null` for three different situations — unknown
+  // token, expired, and replayed — and the outcome label is richer here than at any
+  // single return.
+  //
+  // §5.2. The label used to be the constant `"attempted"`, which carried no
+  // information: a counter whose label never varies is a counter of call volume
+  // wearing a different name, and it could not answer the one question a rotation
+  // metric exists for — whether rotations are succeeding. It now reports the
+  // settled outcome. A thrown error is counted separately from a `null` return
+  // because they are different events: `refused` is the credential being rejected,
+  // `error` is the rotation failing for a reason that is not the credential's
+  // fault, such as the database being unreachable.
   try {
-    return await rotateRefreshTokenInternal(token, ip, userAgent, clientId, expectedAppId);
-  } finally {
-    recordTokenOperation("rotate", "attempted");
+    const result = await rotateRefreshTokenInternal(token, ip, userAgent, clientId, expectedAppId);
+    recordTokenOperation("rotate", result ? "success" : "refused");
+    return result;
+  } catch (err) {
+    recordTokenOperation("rotate", "error");
+    throw err;
   }
 }
 

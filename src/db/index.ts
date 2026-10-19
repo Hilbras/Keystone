@@ -4,6 +4,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
 import { noteQuery } from "./queryCounter.js";
+import { recordDbStatement } from "../plugins/operationalMetrics.js";
 
 let dbClient: postgres.Sql | null = null;
 
@@ -28,8 +29,16 @@ export function initDb(): void {
     // on every driver version used here, including prepared-statement execution,
     // so an N+1 regression is visible as a number rather than inferred from a
     // latency. It is a no-op unless a benchmark is counting.
+    //
+    // §5.2. The same callback publishes the fleet-wide statement counter. There is
+    // deliberately no duration here: postgres.js calls `debug` *before* the query is
+    // written to the socket, so this point has a start time and no end. Database
+    // latency is measured by the readiness probe instead, which is the only place a
+    // round trip can actually be timed — a number invented here would be a fiction
+    // that looked like a measurement.
     debug: () => {
       noteQuery();
+      recordDbStatement();
     },
   });
   db = drizzle(dbClient, { schema });

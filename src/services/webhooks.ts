@@ -10,6 +10,7 @@ import type { KeystoneEvent } from "./events/types.js";
 import { serviceLogger } from "../lib/logger.js";
 import { config } from "../config.js";
 import { assertSafeWebhookUrl, validateWebhookUrl, OutboundUrlRejected } from "./outboundPolicy.js";
+import { currentTraceId } from "../lib/traceContext.js";
 
 const moduleLog = serviceLogger("webhooks");
 
@@ -472,6 +473,11 @@ export async function deliverNow(deliveryId: string): Promise<void> {
   const attempts = delivery.attempts + 1;
   const now = new Date();
 
+  // §5.4. The trace of whatever produced this event, read from the job the delivery
+  // worker is running inside. Absent for a delivery enqueued by a timer or a
+  // recovery pass, and genuinely so — there is no request to attribute those to.
+  const traceId = currentTraceId();
+
   try {
     // Re-checked at delivery, not only at creation. Three reasons this cannot be
     // a creation-time check alone:
@@ -513,6 +519,11 @@ export async function deliverNow(deliveryId: string): Promise<void> {
         // header changes value or meaning.
         "X-Keystone-Event-ID": eventIdOf(delivery),
         "X-Keystone-Attempt": String(attempts),
+        // §5.4. Sent so a consumer that logs it can be joined to the Keystone trace
+        // that caused the event. Omitted rather than sent empty when there is no
+        // trace: a header with no value is worse than a missing one, because a
+        // consumer cannot tell it apart from a truncation.
+        ...(traceId ? { "X-Keystone-Trace-ID": traceId } : {}),
       },
       body: JSON.stringify(delivery.payload),
       signal: AbortSignal.timeout(10_000),

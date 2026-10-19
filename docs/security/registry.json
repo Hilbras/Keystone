@@ -1196,6 +1196,44 @@
       "covers": [
         "secret-disclosure"
       ]
+    },
+    {
+      "id": "SEC-092",
+      "title": "The access log, the audit log and webhook deliveries recorded the raw request target, publishing credentials that arrive in the query string",
+      "severity": "high",
+      "component": "observability",
+      "release": "3.10.0",
+      "issue": "Three writers recorded `request.url` verbatim, and the query string is where this API puts credentials. `GET /auth/magic-link/verify?token=\u2026` and `GET /auth/email-verification/verify?token=\u2026` carry a token that **is** the whole authentication, and the OIDC callbacks carry an authorization code. `src/plugins/requestLogger.ts` wrote the raw target into the access log. The `rate_limit_triggered` event payload did the same, and that payload does not only reach the audit log \u2014 it is delivered to webhook subscribers, so a throttled magic-link click published the token to a third-party endpoint and to that subscriber's own log. `src/plugins/machinePrincipal.ts` repeated it for `machine_principal_on_interactive_route`.\n\nThe line that made this measurable was not one of ours. Fastify writes its own `incoming request` line through a **default** `req` serializer, which this project did not override, so sanitizing only the fields we chose to log would have left the token in the log anyway. That was measured rather than reasoned: the probe in `src/tests/observability/logging.test.ts` drives a real request to `/auth/magic-link/verify?token=<secret>` and fails if the secret appears anywhere in the log stream, and its first run failed on Fastify's line. The fix therefore changes the serializer, not only the call sites.",
+      "fix": "src/lib/logSanitizer.ts \u2014 `stripQuery` applied at every writer: `src/plugins/requestLogger.ts`, the `req` serializer in `src/lib/logger.ts`, `src/plugins/rateLimit.ts` and `src/plugins/machinePrincipal.ts`",
+      "test": "src/tests/observability/logging.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": [
+        "secret-disclosure"
+      ]
+    },
+    {
+      "id": "SEC-093",
+      "title": "The BullMQ driver started one worker per job type on a single queue, so a job could reach the wrong handler and a registered handler could never run",
+      "severity": "high",
+      "component": "queue",
+      "release": "3.10.0",
+      "issue": "`BullMQQueue.process(type, handler)` created a worker **per type**, and every one of those workers consumed the same queue name. BullMQ addresses consumers by queue name, not by the job type it will hand them, so with two types registered the two in-process workers competed for every job and whichever won ran its own handler: a `type_a` handler was observed executing a `type_b` job while the `type_b` handler never ran at all \u2014 the queue reported that delivery as completed.\n\nThe consequence for the common case is worse than the misrouting. A driver constructed anywhere in the process wins the race for the queue name and then answers for types it was never given, so every `queue.process(\u2026)` call made afterwards registered a handler that consumed nothing. Measured both ways: a handler registered for a fresh type consumed 0 of the 16 jobs pushed for it in 8 seconds, and the `workflow_run` handler was seen executing against a null run id \u2014 which is what one handler receiving another's job looks like from the outside.\n\nFound by \u00a75.4, whose trace test asserted on a value only the right handler could produce. Nothing about the queue's own reporting showed a problem: jobs were accepted, completed and counted.",
+      "fix": "src/services/queue/bullmq.ts \u2014 one worker per process on the queue, dispatch by `bullJob.name` through a handler map consulted at execution time, and throw `no handler registered for job type \"\u2026\"` for a type that has none instead of letting the job complete. `provider` was added to the `Queue` interface in `src/services/queue/types.ts` so the driver in use can be read back from the container.",
+      "test": "src/tests/integration/queue.test.ts",
+      "documentation": "docs/ARCHITECTURE.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-094",
+      "title": "Database driver errors carry their bound parameter values, and were logged in both the message and the stack and returned to unauthenticated callers",
+      "severity": "medium",
+      "component": "observability",
+      "release": "3.10.0",
+      "issue": "drizzle composes a failed statement's message out of the SQL **and the values bound to it**: a deliberately failing query run against the live database produced a message of the form `Failed query: <sql>` followed by `params: <bound values, one per line>` (`DrizzleQueryError`, `node_modules/drizzle-orm/errors.js`). Every site that logs an error therefore logs the bound values. Two details made the obvious fix insufficient. `pino-std-serializers` flattens the cause into the logged error, so the same text appears in **both** `message` and `stack`, and scrubbing one of them would have left the other. And the message crossed a trust boundary: `/ready` returned it to an unauthenticated caller, and the setup wizard's `/setup/diagnostics` returned it to anyone who could reach the wizard.\n\n**Medium rather than high, and the reason is a property of this codebase rather than of the message.** Most credentials here are hashed before they reach a query \u2014 `src/services/magicLinks.ts` and `src/services/emailVerification.ts` store digests \u2014 so a bound value is usually not a usable secret. But nothing in the message distinguishes a digest from a raw one, and `params:` lists every bound value for every query, including the ones never hashed. The severity reflects what reaches the log today, not the shape of the leak.",
+      "fix": "src/lib/logSanitizer.ts \u2014 `scrubDriverErrorText` removes the bound-parameter line, wired into the `err` serializer in `src/lib/logger.ts`; the response bodies in `src/services/health.ts` and `src/services/setup/diagnostics.ts` now report a description instead of the driver's message",
+      "test": "src/tests/observability/logging.test.ts",
+      "documentation": "docs/security/monitoring.md",
+      "covers": []
     }
   ],
   "withdrawn": [
@@ -1262,6 +1300,11 @@
       "test": "src/tests/security/tokens/strict-kid-extended.test.ts",
       "covers": "That a token cannot choose its own algorithm: `alg: none` carrying a known `kid` is refused, an HS256 token keyed with the server's public key is refused, and the allowlist is derived from the held RSA key rather than from the header. Includes the positive control that an honest RS256 token still verifies.",
       "why": "Not a numbered finding. Verification already behaves this way \u2014 the key handed to `jwtVerify` is an RSA `CryptoKey`, and jose declines a header that key cannot satisfy \u2014 so there was no defect to fix and none was evidenced. It is registered because the property is one refactor away from being lost: handing the key over as raw bytes, or populating `algorithms` from `decodeProtectedHeader(token).alg`, would silently restore the confusion family these cases reject. SEC-076 covers the strict-`kid` resolution that sits in front of it."
+    },
+    {
+      "test": "src/tests/observability/diagnostics.test.ts",
+      "covers": "That `/v1/admin/platform/diagnostics` does not become a copy of the configuration it summarizes. The negative assertions are made against the values actually present in the process environment \u2014 the encryption key, the internal API key, the database password, a middle line of the JWT private key, the Redis password \u2014 rather than against a list of field names, so a field added later that carries a value already in the environment fails the suite.",
+      "why": "Not a numbered finding. The route is new in this release and asserts a property rather than describing a defect it repairs, so there is nothing to number. It is registered because the property erodes by addition: the report is assembled from the same `config` object the rest of the application reads, and one convenience field \u2014 the config echoed back \"for debugging\" \u2014 would turn the endpoint into a credential dump while every other assertion in the suite stayed green. Checking against the environment's real values is what keeps it true as the report grows."
     }
   ]
 }

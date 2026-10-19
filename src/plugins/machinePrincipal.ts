@@ -1,5 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { stripQuery } from "../lib/logSanitizer.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -40,7 +41,10 @@ export default fp(async function machinePrincipalBoundary(app: FastifyInstance) 
         action: "machine_principal_on_interactive_route",
         serviceAccountId: request.serviceAccount.id,
         method: request.method,
-        url: request.url,
+        // §5.1. The path without its query string: the audit record is durable and
+        // is forwarded to webhook subscribers, and on this server a query string can
+        // be a live credential (`/auth/magic-link/verify?token=…`). See `stripQuery`.
+        url: stripQuery(request.url),
       });
       return reply.status(403).send({
         error: "This endpoint is for user sessions only",

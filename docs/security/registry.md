@@ -4,13 +4,13 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**89 findings.**
+**92 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 7 |
-| high | 39 |
-| medium | 28 |
+| high | 41 |
+| medium | 29 |
 | low | 15 |
 
 ## Scope
@@ -48,7 +48,7 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 | `mtls-spoofing` | SEC-007, SEC-009, SEC-010 |
 | `xff-spoofing` | SEC-008, SEC-009 |
 | `api-scope-escalation` | SEC-023, SEC-024, SEC-025 |
-| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031, SEC-088, SEC-090, SEC-091 |
+| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031, SEC-088, SEC-090, SEC-091, SEC-092 |
 | `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038, SEC-086, SEC-087 |
 | `password-reset-invalidation` | SEC-014 |
 
@@ -737,6 +737,38 @@ The up-front route check (`services/ipControls.ts`) stays: a submitted `client_i
 
 **Attack classes.** `secret-disclosure`
 
+### SEC-092 — The access log, the audit log and webhook deliveries recorded the raw request target, publishing credentials that arrive in the query string
+
+*Fixed in v3.10.0. Component: `observability`.*
+
+**Issue.** Three writers recorded `request.url` verbatim, and the query string is where this API puts credentials. `GET /auth/magic-link/verify?token=…` and `GET /auth/email-verification/verify?token=…` carry a token that **is** the whole authentication, and the OIDC callbacks carry an authorization code. `src/plugins/requestLogger.ts` wrote the raw target into the access log. The `rate_limit_triggered` event payload did the same, and that payload does not only reach the audit log — it is delivered to webhook subscribers, so a throttled magic-link click published the token to a third-party endpoint and to that subscriber's own log. `src/plugins/machinePrincipal.ts` repeated it for `machine_principal_on_interactive_route`.
+
+The line that made this measurable was not one of ours. Fastify writes its own `incoming request` line through a **default** `req` serializer, which this project did not override, so sanitizing only the fields we chose to log would have left the token in the log anyway. That was measured rather than reasoned: the probe in `src/tests/observability/logging.test.ts` drives a real request to `/auth/magic-link/verify?token=<secret>` and fails if the secret appears anywhere in the log stream, and its first run failed on Fastify's line. The fix therefore changes the serializer, not only the call sites.
+
+**Fix.** src/lib/logSanitizer.ts — `stripQuery` applied at every writer: `src/plugins/requestLogger.ts`, the `req` serializer in `src/lib/logger.ts`, `src/plugins/rateLimit.ts` and `src/plugins/machinePrincipal.ts`
+
+**Test.** `src/tests/observability/logging.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
+
+**Attack classes.** `secret-disclosure`
+
+### SEC-093 — The BullMQ driver started one worker per job type on a single queue, so a job could reach the wrong handler and a registered handler could never run
+
+*Fixed in v3.10.0. Component: `queue`.*
+
+**Issue.** `BullMQQueue.process(type, handler)` created a worker **per type**, and every one of those workers consumed the same queue name. BullMQ addresses consumers by queue name, not by the job type it will hand them, so with two types registered the two in-process workers competed for every job and whichever won ran its own handler: a `type_a` handler was observed executing a `type_b` job while the `type_b` handler never ran at all — the queue reported that delivery as completed.
+
+The consequence for the common case is worse than the misrouting. A driver constructed anywhere in the process wins the race for the queue name and then answers for types it was never given, so every `queue.process(…)` call made afterwards registered a handler that consumed nothing. Measured both ways: a handler registered for a fresh type consumed 0 of the 16 jobs pushed for it in 8 seconds, and the `workflow_run` handler was seen executing against a null run id — which is what one handler receiving another's job looks like from the outside.
+
+Found by §5.4, whose trace test asserted on a value only the right handler could produce. Nothing about the queue's own reporting showed a problem: jobs were accepted, completed and counted.
+
+**Fix.** src/services/queue/bullmq.ts — one worker per process on the queue, dispatch by `bullJob.name` through a handler map consulted at execution time, and throw `no handler registered for job type "…"` for a type that has none instead of letting the job complete. `provider` was added to the `Queue` interface in `src/services/queue/types.ts` so the driver in use can be read back from the container.
+
+**Test.** `src/tests/integration/queue.test.ts`
+
+**Documentation.** [docs/ARCHITECTURE.md](../ARCHITECTURE.md)
+
 ## Medium
 
 ### SEC-013 — A used credential was not distinguishable from an unknown one
@@ -1267,6 +1299,20 @@ No change to `signWebhookPayload`, so signatures this server produces are byte-i
 **Documentation.** [docs/security/webhooks.md](webhooks.md)
 
 **Attack classes.** `secret-disclosure`
+
+### SEC-094 — Database driver errors carry their bound parameter values, and were logged in both the message and the stack and returned to unauthenticated callers
+
+*Fixed in v3.10.0. Component: `observability`.*
+
+**Issue.** drizzle composes a failed statement's message out of the SQL **and the values bound to it**: a deliberately failing query run against the live database produced a message of the form `Failed query: <sql>` followed by `params: <bound values, one per line>` (`DrizzleQueryError`, `node_modules/drizzle-orm/errors.js`). Every site that logs an error therefore logs the bound values. Two details made the obvious fix insufficient. `pino-std-serializers` flattens the cause into the logged error, so the same text appears in **both** `message` and `stack`, and scrubbing one of them would have left the other. And the message crossed a trust boundary: `/ready` returned it to an unauthenticated caller, and the setup wizard's `/setup/diagnostics` returned it to anyone who could reach the wizard.
+
+**Medium rather than high, and the reason is a property of this codebase rather than of the message.** Most credentials here are hashed before they reach a query — `src/services/magicLinks.ts` and `src/services/emailVerification.ts` store digests — so a bound value is usually not a usable secret. But nothing in the message distinguishes a digest from a raw one, and `params:` lists every bound value for every query, including the ones never hashed. The severity reflects what reaches the log today, not the shape of the leak.
+
+**Fix.** src/lib/logSanitizer.ts — `scrubDriverErrorText` removes the bound-parameter line, wired into the `err` serializer in `src/lib/logger.ts`; the response bodies in `src/services/health.ts` and `src/services/setup/diagnostics.ts` now report a description instead of the driver's message
+
+**Test.** `src/tests/observability/logging.test.ts`
+
+**Documentation.** [docs/security/monitoring.md](monitoring.md)
 
 ## Low
 

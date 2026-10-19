@@ -1,7 +1,8 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { redis } from "./redis.js";
-import { recordDependencyState } from "../plugins/operationalMetrics.js";
+import { scrubDriverErrorText } from "../lib/logSanitizer.js";
+import { recordDependencyLatency, recordDependencyState } from "../plugins/operationalMetrics.js";
 
 /**
  * What the probes are allowed to know about.
@@ -73,7 +74,12 @@ export async function checkDatabase(): Promise<DependencyCheck> {
   } catch (err) {
     return {
       ok: false,
-      detail: err instanceof Error ? err.message : String(err),
+      // `detail` is returned to an unauthenticated caller, so it is scrubbed of the
+      // driver's bound parameters before it leaves. `select 1` has none — but a
+      // readiness probe is not the only query that can be in flight when the pool
+      // breaks, and the message shape does not distinguish them. See
+      // `scrubDriverErrorText`.
+      detail: err instanceof Error ? scrubDriverErrorText(err.message) : String(err),
       latencyMs: Date.now() - started,
     };
   }
@@ -91,7 +97,7 @@ export async function checkRedis(): Promise<DependencyCheck> {
   } catch (err) {
     return {
       ok: false,
-      detail: err instanceof Error ? err.message : String(err),
+      detail: err instanceof Error ? scrubDriverErrorText(err.message) : String(err),
       latencyMs: Date.now() - started,
     };
   }
@@ -107,8 +113,11 @@ export async function buildReadinessReport(): Promise<ReadinessReport> {
 
   // Published here rather than polled on a timer, so the metric and this endpoint
   // cannot disagree — and so the gauge moves even when nothing scrapes, because a
-  // probe is a probe.
+  // probe is a probe. The latency is published from the same measurement, at the
+  // same moment, for the same reason: "redis is down" and "redis took 2s just
+  // before it went down" are two views of one reading, not two readings.
   recordDependencyState({ checks });
+  recordDependencyLatency({ checks });
 
   if (!database.ok) {
     return { status: "unavailable", checks };

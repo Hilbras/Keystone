@@ -347,7 +347,11 @@ signing keys.
 - Terminate TLS at the proxy, then set `KEYSTONE_TRUSTED_PROXIES` to that proxy's
   CIDR. **Without it, the client address is the proxy's** and every rate limit is
   shared across all users.
-- `GET /health` and `GET /ready` for probes; `GET /metrics` for Prometheus.
+- `GET /health/live` and `GET /health/ready` for probes (`GET /health` and
+  `GET /ready` are the same two answers under their short names), `GET
+  /health/startup` for the kubelet's startup gate, `GET /metrics` for Prometheus,
+  and `GET /v1/admin/platform/diagnostics` (owner) for a live view of every
+  dependency at once.
 - Back up PostgreSQL. The audit log is append-only by design, not by policy.
 
 → [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) ·

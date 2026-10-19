@@ -8,6 +8,7 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { config } from "./config.js";
+import { loggerOptions } from "./lib/logger.js";
 import { db } from "./db/index.js";
 import { initializeContainer } from "./di.js";
 import { getContainer } from "./container.js";
@@ -20,6 +21,7 @@ import { startTracing, stopTracing } from "./plugins/tracing.js";
 import authPlugin from "./plugins/auth.js";
 import auditPlugin from "./plugins/audit.js";
 import requestLogger from "./plugins/requestLogger.js";
+import requestTrace from "./plugins/requestTrace.js";
 import { subscribe, subscribeAll } from "./services/events/bus.js";
 import { auditLogSubscriber } from "./services/events/subscribers/auditLog.js";
 import { webhookSubscriber } from "./services/events/subscribers/webhook.js";
@@ -64,6 +66,7 @@ import sessionRoutes from "./routes/sessions.js";
 import profileRoutes from "./routes/profile.js";
 import emailVerificationRoutes from "./routes/emailVerification.js";
 import { generateSetupToken, printSetupToken } from "./services/setup/token.js";
+import { markStartupComplete } from "./services/startup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -96,9 +99,13 @@ export async function buildApp() {
     // thousands of requests and would spend more time serialising log lines than
     // serving them — a measurement that includes its own logging measures logging.
     // Unset in every other context, so nothing else changes.
-    logger: {
-      level: config.LOG_LEVEL ?? (config.NODE_ENV === "production" ? "info" : "debug"),
-    },
+    //
+    // §5.1. Fastify builds its own pino instance, so the secret scrubbing and the
+    // `service` field have to be installed on *this* instance as well as on the
+    // service logger — see `loggerOptions`, which both of them are built from.
+    logger: loggerOptions(
+      config.LOG_LEVEL ?? (config.NODE_ENV === "production" ? "info" : "debug")
+    ),
     // Derived from KEYSTONE_TRUSTED_PROXIES; `false` by default so a client
     // cannot spoof its address through x-forwarded-for.
     trustProxy: fastifyTrustProxySetting(),
@@ -107,6 +114,10 @@ export async function buildApp() {
 
   app.decorate("container", container);
 
+  // First, so every hook and handler registered afterwards runs inside the trace
+  // the request was given — including `requestLogger` below, which is why the id
+  // reaches the access log line.
+  await app.register(requestTrace);
   await app.register(requestLogger);
   // Must precede every plugin and route: strips client-identity headers from
   // requests that did not arrive from a configured trusted proxy.
@@ -231,6 +242,26 @@ export async function buildApp() {
     await cache.close().catch(() => {});
   });
 
+  // The startup gate flips here and nowhere else.
+  //
+  // `onListen` is the one hook Fastify runs at the moment the socket is bound,
+  // whatever called `listen()` — `start()` in production, a test fixture that binds
+  // its own ephemeral port, a future second entry point. It is registered in
+  // `buildApp` rather than in `start()` on purpose: a hook that only exists once
+  // `start()` has run is a hook that a test, a worker entry point or a benchmark
+  // never gets, and those would then answer 503 from `/health/startup` forever.
+  // That is a startup probe that never passes, so Kubernetes restarts the pod on a
+  // loop and the application never comes up — the failure mode this whole file
+  // exists to remove.
+  //
+  // It cannot fire before a successful bind: Fastify runs `onListen` after the
+  // listen callback reports success, so a refused or occupied port leaves the probe
+  // answering 503, which is the correct answer and one an operator can act on. See
+  // `services/startup.ts`.
+  app.addHook("onListen", async () => {
+    markStartupComplete();
+  });
+
   // Global API rate limiting to protect the platform from abuse.
   //
   // The probe endpoints are exempt, and the reason is not that probes are cheap.
@@ -267,7 +298,7 @@ export async function buildApp() {
     // when something is wrong and they are the thing that would have said so.
     // Prometheus has no way to back off politely; the scrape is cheap and the
     // caller is infrastructure.
-    if (path === "/health" || path === "/ready" || path === "/metrics") return;
+    if (path === "/health" || path === "/health/live" || path === "/health/ready" || path === "/health/startup" || path === "/ready" || path === "/metrics") return;
     return globalLimiter(request, reply);
   });
   // Note the bare `return`. An earlier version of this skipped the probes with

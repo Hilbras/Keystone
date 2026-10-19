@@ -213,6 +213,18 @@ for (const target of targets) {
           fail(`${where}: livenessProbe must point at /health, not ${liveness}`);
         }
 
+        /* --- the startup gate, without which a slow boot is a restart loop --- */
+        const startup = container.startupProbe?.httpGet?.path;
+        if (startup !== "/health/startup") {
+          fail(
+            `${where}: startupProbe must point at /health/startup, not ${startup}. ` +
+              `Without a startup probe the kubelet runs the liveness probe from the ` +
+              `first second, so a boot that takes longer than ` +
+              `initialDelaySeconds + periodSeconds * failureThreshold is killed and ` +
+              `restarted forever, and a service that would have come up never does.`
+          );
+        }
+
         /* --- the probe has to fit in its own budget --- */
         const timeout = container.readinessProbe?.timeoutSeconds;
         if (typeof timeout !== "number") {
@@ -385,6 +397,6 @@ if (problems.length > 0) {
 
 console.log("Kubernetes manifests OK.");
 console.log(`  version:  ${version} (manifest image tag matches package.json)`);
-console.log(`  probes:   liveness /health, readiness /ready`);
+console.log(`  probes:   startup /health/startup, liveness /health, readiness /ready`);
 console.log(`  env:      ${reachable.size} variables reachable, ${required.size} required by config.ts`);
 for (const note of notes) console.log(`  rendered: ${note}`);
