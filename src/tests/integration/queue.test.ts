@@ -14,6 +14,44 @@ process.env.KEYSTONE_INTERNAL_API_KEY ||= "queue-test-key";
 process.env.KEYSTONE_ENCRYPTION_KEY ||= "0123456789abcdef0123456789abcdef";
 process.env.LOGIN_MAX_ATTEMPTS ||= "1000";
 
+function redisReachable(host = "localhost", port = 6379): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    socket.on("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on("error", () => resolve(false));
+    socket.setTimeout(1000, () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Exercise the BullMQ driver, and say so in the environment rather than assume it.
+ *
+ * The `BullMQ queue` cases below assert that the application's queue is a
+ * `BullMQQueue`, because a private `new BullMQQueue(...)` in one process is not a
+ * second queue: BullMQ addresses consumers by queue *name*, this driver uses the
+ * single name `"keystone"`, and two instances on that name are two halves of one
+ * consumer pool — a job the test enqueues can be claimed by the application's
+ * worker, which has no handler for it. Those cases need the application itself on
+ * the driver, so the driver has to be chosen here, before `config` is imported.
+ *
+ * `KEYSTONE_QUEUE_PROVIDER` defaults to `in-process` and nothing sets it in CI, so
+ * without this line the four cases tested the assertion instead of the driver: they
+ * failed on every machine that had not written the variable into a local `.env` —
+ * which CI does not have — and passed only where one existed.
+ *
+ * Reachability decides it in both directions. With a Redis the cases run against
+ * the real driver; without one they skip and the application stays on the
+ * in-process provider that the rest of this file assumes.
+ */
+const redisAvailable = await redisReachable();
+process.env.KEYSTONE_QUEUE_PROVIDER = redisAvailable ? "bullmq" : "in-process";
+
 if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
   const { generateKeyPair, exportPKCS8, exportSPKI } = await import("jose");
   const pair = await generateKeyPair("RS256", { extractable: true });
@@ -44,6 +82,12 @@ const { redis } = await import("../../services/redis.js");
  * retry and dead-letter behaviour of both was unasserted — and the retry
  * behaviour is where a queue actually goes wrong.
  *
+ * The BullMQ cases run on the application's own queue, and two of them pin a
+ * dispatch defect: the driver used to start one worker per job type, all of them
+ * consuming the single `"keystone"` queue, so a job could be handed to the wrong
+ * type's handler and a registered handler might never run at all. See the note on
+ * `worker` in `services/queue/bullmq.ts`.
+ *
  * The second half of this file is the SEC-053 regression: one real failed login
  * must produce exactly one `user_login_failed` event. It is here rather than in a
  * security suite because the thing being pinned is a count, and the count is what
@@ -54,23 +98,6 @@ const RUN_ID = crypto.randomBytes(6).toString("hex");
 const PASSWORD = "Queue-Passw0rd!";
 const createdUserIds: string[] = [];
 let app: FastifyInstance;
-
-function redisReachable(host = "localhost", port = 6379): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host, port });
-    socket.on("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.on("error", () => resolve(false));
-    socket.setTimeout(1000, () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
-}
-
-const redisAvailable = await redisReachable();
 
 /** Wait for a condition, bounded so a dead worker fails rather than hangs. */
 async function waitFor(
@@ -193,8 +220,27 @@ describe("in-process queue", () => {
 });
 
 describe("BullMQ queue", () => {
+  // These tests run against the application's own queue rather than a private
+  // `new BullMQQueue(...)`, and that is not a convenience.
+  //
+  // BullMQ addresses consumers by *queue name*, and this driver uses the single
+  // name `"keystone"`. Every consumer on that name competes for the same jobs, so
+  // two `BullMQQueue` instances in one process are not two independent queues —
+  // they are two halves of one consumer pool, and a job a test enqueues can be
+  // delivered to the application's worker, whose handler map knows nothing about
+  // the test's job type. That is the same defect the last test below pins, seen
+  // from the other side, and it made these two tests pass or fail by which worker
+  // happened to win the race. Using the singleton models the deployment: one
+  // process, one handler registry, one set of consumers.
+  //
+  // The type names carry a run id so that repeated runs, and concurrent suites
+  // sharing this Redis, cannot collide.
   (redisAvailable ? it : it.skip)("retries a failing job and dead-letters it", async () => {
-    const queue = new BullMQQueue(process.env.REDIS_URL || "redis://localhost:6379");
+    const queue = app.container.queue;
+    assert.ok(
+      queue instanceof BullMQQueue,
+      "the provider is forced to `bullmq` at the top of this file; the application did not take it"
+    );
     const type = `q_dead_${RUN_ID}`;
     const attempts: number[] = [];
     const jobId = `dead-${RUN_ID}`;
@@ -204,42 +250,101 @@ describe("BullMQ queue", () => {
       throw new Error("always fails");
     });
 
-    try {
-      await queue.enqueue({ id: jobId, type, payload: { poison: true }, attempts: 2 });
+    await queue.enqueue({ id: jobId, type, payload: { poison: true }, attempts: 2 });
 
-      assert.ok(
-        await waitFor(() => attempts.length >= 2, 20000),
-        `expected two attempts, saw ${attempts.length}`
-      );
+    assert.ok(
+      await waitFor(() => attempts.length >= 2, 20000),
+      `expected two attempts, saw ${attempts.length}`
+    );
 
-      // And the job is retrievable afterwards, which is the part the in-process
-      // driver cannot do: an operator can look at what failed and re-run it.
-      const found = await waitFor(async () => (await queue.getFailed!(20)).length > 0, 20000);
-      assert.ok(found, "a dead-lettered job should be retrievable");
-      const failed = (await queue.getFailed!(20)).filter((j) => j.id === jobId);
-      assert.ok(failed.length > 0, `the failed job ${jobId} was not in the dead-letter list`);
-    } finally {
-      await queue.close();
-    }
+    // And the job is retrievable afterwards, which is the part the in-process
+    // driver cannot do: an operator can look at what failed and re-run it.
+    const found = await waitFor(async () => (await queue.getFailed(20)).length > 0, 20000);
+    assert.ok(found, "a dead-lettered job should be retrievable");
+    const failed = (await queue.getFailed(20)).filter((j) => j.id === jobId);
+    assert.ok(failed.length > 0, `the failed job ${jobId} was not in the dead-letter list`);
   });
 
   (redisAvailable ? it : it.skip)("reports stats for work it has seen", async () => {
-    const queue = new BullMQQueue(process.env.REDIS_URL || "redis://localhost:6379");
+    const queue = app.container.queue;
+    assert.ok(queue instanceof BullMQQueue, "these cases exercise the BullMQ driver");
     const type = `q_stats_${RUN_ID}`;
     let ran = false;
     queue.process(type, () => {
       ran = true;
     });
-    try {
-      await queue.enqueue({ id: `stats-${RUN_ID}`, type, payload: {} });
-      assert.ok(await waitFor(() => ran), "the job never ran");
-      const stats = await queue.getStats!();
-      assert.ok(Array.isArray(stats) && stats.length > 0, "getStats returned nothing");
-      assert.ok(typeof stats[0].count === "number", "count should be a number");
-    } finally {
-      await queue.close();
-    }
+    await queue.enqueue({ id: `stats-${RUN_ID}`, type, payload: {} });
+    assert.ok(await waitFor(() => ran), "the job never ran");
+    const stats = await queue.getStats();
+    assert.ok(Array.isArray(stats) && stats.length > 0, "getStats returned nothing");
+    assert.ok(typeof stats[0].count === "number", "count should be a number");
   });
+
+  (redisAvailable ? it : it.skip)(
+    "delivers each job to the handler registered for its type",
+    async () => {
+      // The regression. `process()` used to create one Worker per job type, and
+      // every one of them consumed the same `"keystone"` queue. Consumers are
+      // addressed by queue name, so those workers were N competing consumers of
+      // one stream rather than N specialized ones: with two types registered,
+      // whichever worker won the race ran the job, and it ran it through the
+      // handler it had closed over. A `type_a` handler was handed `type_b`
+      // payloads, and `type_b`'s own handler sometimes never ran at all — which
+      // is how the `workflow_run` handler came to be seen executing with a null
+      // run id, and how an enqueued job could be silently consumed by the wrong
+      // code path.
+      //
+      // The observable consequence asserted here is the pair: each handler sees
+      // exactly its own type, and both types actually run. Either half alone
+      // would pass under the old behaviour.
+      const queue = app.container.queue;
+      assert.ok(queue instanceof BullMQQueue, "this case exercises the BullMQ driver");
+
+      const typeA = `q_cross_a_${RUN_ID}`;
+      const typeB = `q_cross_b_${RUN_ID}`;
+      const seenByA: string[] = [];
+      const seenByB: string[] = [];
+      queue.process(typeA, (job) => {
+        seenByA.push(job.type);
+      });
+      queue.process(typeB, (job) => {
+        seenByB.push(job.type);
+      });
+
+      await queue.enqueue({ id: `cross-a-${RUN_ID}`, type: typeA, payload: { n: 1 } });
+      await queue.enqueue({ id: `cross-b-${RUN_ID}`, type: typeB, payload: { n: 2 } });
+
+      assert.ok(
+        await waitFor(() => seenByA.length > 0 && seenByB.length > 0, 20000),
+        `both types must run — saw ${JSON.stringify({ seenByA, seenByB })}`
+      );
+      assert.deepEqual(seenByA, [typeA], "the A handler must only ever see A jobs");
+      assert.deepEqual(seenByB, [typeB], "the B handler must only ever see B jobs");
+    }
+  );
+
+  (redisAvailable ? it : it.skip)(
+    "fails a job whose type has no handler instead of completing it",
+    async () => {
+      // The other half of the same fix, and the reason the dispatch above throws
+      // rather than returning. Some instance must own every job on this queue;
+      // if none of them has a handler for a job's type, the job is a mismatch or
+      // a deploy skew, and both are better surfaced as a failed job an operator
+      // can see and re-run than as a completion that quietly discarded the work.
+      const queue = app.container.queue;
+      assert.ok(queue instanceof BullMQQueue, "this case exercises the BullMQ driver");
+
+      const type = `q_unhandled_${RUN_ID}`;
+      const jobId = `unhandled-${RUN_ID}`;
+      await queue.enqueue({ id: jobId, type, payload: {}, attempts: 1 });
+
+      const recorded = await waitFor(
+        async () => (await queue.getFailed(50)).some((j) => j.id === jobId),
+        20000
+      );
+      assert.ok(recorded, "an unhandled job should be recorded as failed, not dropped");
+    }
+  );
 });
 
 describe("failed-login accounting (SEC-053)", () => {

@@ -35,6 +35,7 @@ import {
 } from "../services/tokens.js";
 import { fingerprintFromRequest } from "../services/devices.js";
 import { rateLimit } from "../plugins/rateLimit.js";
+import { recordOAuthFailure } from "../plugins/operationalMetrics.js";
 
 const AuthorizeQuerySchema = z.object({
   client_id: z.string(),
@@ -95,6 +96,52 @@ function extractClientCredentials(request: FastifyRequest, body: ClientCredentia
 }
 
 export default async function oauth2Routes(app: FastifyInstance) {
+  /**
+   * §5.2. One chokepoint for the OAuth failure counter.
+   *
+   * This file refuses a request from roughly fifteen places, and every one of them
+   * had to be remembered individually if the metric were recorded at the refusal
+   * site — the sixteenth would be added later and silently not counted. Reading the
+   * refusal back off the response instead means the counter describes what was
+   * actually returned, cannot disagree with the status code, and picks up routes
+   * added after this hook was written.
+   *
+   * `grant_type` is not part of every response body (the authorize endpoint is a GET
+   * with no body), so it falls back to a constant for those refusals rather than
+   * leaving the panel with an empty label.
+   *
+   * A 429 is excluded deliberately. The rate limiter sits in front of this route and
+   * answers with `{ error: "Too many attempts. Please try again later." }`; counting
+   * that here would file a rate-limit block as an OAuth protocol error and put a
+   * prose sentence in the `error` label, where every other value is a short RFC 6749
+   * code. The block already has its own series, `keystone_rate_limit_blocks_total`,
+   * and counting it twice under two names is how a dashboard ends up double-counting
+   * an incident.
+   */
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (reply.statusCode < 400 || reply.statusCode === 429) return payload;
+
+    const body = request.body as { grant_type?: unknown } | undefined;
+    const grantType = typeof body?.grant_type === "string" ? body.grant_type : "authorize";
+
+    let errorCode = "unknown";
+    try {
+      const parsed =
+        typeof payload === "string"
+          ? JSON.parse(payload)
+          : Buffer.isBuffer(payload)
+            ? JSON.parse(payload.toString("utf8"))
+            : undefined;
+      if (parsed && typeof parsed.error === "string") errorCode = parsed.error;
+    } catch {
+      // A refusal whose body is not JSON (a redirect, a plain-text 4xx) is still a
+      // refusal and still counted; only the finer label is unavailable.
+    }
+
+    recordOAuthFailure(grantType, errorCode);
+    return payload;
+  });
+
   app.get(
     "/authorize",
     {

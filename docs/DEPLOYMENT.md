@@ -288,6 +288,60 @@ that share one PostgreSQL. There is no configuration for it.
 
 ---
 
+## Observability
+
+| endpoint | auth | answers |
+|---|---|---|
+| `GET /health`, `GET /health/live` | none | liveness — `ok`, and it touches nothing external |
+| `GET /health/startup` | none | `200` once boot finished, `503` until then |
+| `GET /ready`, `GET /health/ready` | none | readiness — runs `select 1` and `ping` |
+| `GET /metrics` | none | Prometheus |
+| `GET /v1/admin/platform/diagnostics` | platform owner | database, Redis, queue backlog, worker identity, key state, configuration warnings |
+
+**`/ready` answers `503` only when PostgreSQL is unreachable.** With Redis down it
+answers `200 degraded`, because an instance with no Redis can still authenticate;
+taking every pod out of the rotation would turn a recoverable degradation into an
+outage. Watch `checks.redis.ok` in the body, or the queue metrics, rather than the
+status code.
+
+Point the kubelet at all three: a `startupProbe` on `/health/startup` with a
+generous `failureThreshold` (the shipped manifest allows 40 × 10s for migrations
+and key loading), a `livenessProbe` on `/health/live`, and a `readinessProbe` on
+`/health/ready`. A startup probe that never succeeds is never followed by the
+liveness probe, so a wrong path there hangs a pod forever instead of restarting it.
+
+### Logs
+
+One JSON object per line, with `requestId`, `traceId`, `operation`, `method`,
+`path`, `statusCode`, `result`, `errorCode`, `durationMs`, `actorId` and
+`tenantId` where the request has them. `KEYSTONE_LOG_LEVEL` sets the level for
+both this and Fastify's own logger.
+
+**Query strings are stripped before anything is written.** On this API the query
+string is where credentials travel — `/auth/magic-link/verify?token=…` is the
+whole authentication — and audit records are not only stored, they are delivered
+to webhook subscribers. That applies to the access log, Fastify's `incoming
+request` line, the audit events and every webhook payload.
+
+The trace id is carried into background work: a job enqueued by a request logs
+under that request's `traceId`, in another process and possibly a day later, and
+webhook deliveries send it as `X-Keystone-Trace-ID`.
+
+### Diagnostics
+
+`GET /v1/admin/platform/diagnostics` is the answer to "what does this instance
+think is going on" — every dependency read at the same moment, which is what
+makes a cause-and-effect reading possible at all. It never echoes the
+environment: key `kid`s and `createdAt`, never key material; the secrets
+provider's *name*, not its configuration.
+
+If `keys.active` and `keys.published` disagree, that is worth understanding
+before a key rotation: with `JWT_PRIVATE_KEY` set, this process signs with the
+environment key and never consults the database, so `keys.active` can list keys
+nothing is using.
+
+---
+
 ## Scaling
 
 For high traffic:

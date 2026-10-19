@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import platformRoutes from "./platform.js";
+import diagnosticsRoutes from "./diagnostics.js";
 import webhooksRoutes from "./webhooks.js";
 import organizationsRoutes from "./organizations.js";
 import permissionsRoutes from "./permissions.js";
@@ -8,6 +9,7 @@ import billingRoutes from "./billing.js";
 
 export default async function adminRoutes(app: FastifyInstance) {
   await app.register(platformRoutes);
+  await app.register(diagnosticsRoutes);
   await app.register(webhooksRoutes);
   await app.register(organizationsRoutes);
   await app.register(permissionsRoutes);

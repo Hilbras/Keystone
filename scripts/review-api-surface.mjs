@@ -331,9 +331,12 @@ const PUBLIC_BY_DESIGN = new Map([
   ["/sdk/keystone-dropin.js", "a static file a browser and a CDN fetch; limiting it breaks caching and protects nothing"],
   ["/sdk/keystone-dropin.js.sri", "the integrity hash of that static file, same reasoning"],
   ["/sdk/branding/:clientId", "logo and colour scheme for the login page, Cache-Control public for 5 minutes; an application that does not exist answers 404"],
-  ["/setup/status", "returns two booleans — whether setup is needed, and whether a setup token is configured. It does not return the token"],
+  ["/setup/status", "returns one boolean — whether the platform still needs its first-run setup. It does not return the setup token, and does not say whether one is configured: that second bit told an unauthenticated caller whether the token check ahead of /setup/init could be skipped (SEC-088)"],
   ["/health", "liveness probe"],
+  ["/health/live", "liveness probe, spelled the way Kubernetes examples write it; the same handler as /health"],
   ["/ready", "readiness probe"],
+  ["/health/ready", "readiness probe, spelled the way Kubernetes examples write it; the same handler as /ready"],
+  ["/health/startup", "the startup gate: 503 until the socket is bound. It reports one of two words and an uptime, so a caller learns nothing about the deployment it could not get by timing this request"],
 ]);
 
 /** SCIM authenticates with a bearer token of its own; see the route's preHandler. */

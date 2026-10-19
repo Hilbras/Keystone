@@ -1,10 +1,14 @@
 import crypto from "node:crypto";
-import { rateLimitRedisErrors, recordEmergencyFallback } from "./operationalMetrics.js";
+import { rateLimitRedisErrors, recordEmergencyFallback, recordRateLimitBlock } from "./operationalMetrics.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { redis } from "../services/redis.js";
 import { clientAddress } from "../services/trustedProxies.js";
 import { localRateLimit } from "../services/localRateLimit.js";
 import { emit } from "../services/events/bus.js";
+import { stripQuery } from "../lib/logSanitizer.js";
+import { serviceLogger } from "../lib/logger.js";
+
+const moduleLog = serviceLogger("rate-limit");
 
 interface RateLimitPluginOptions {
   keyPrefix: string;
@@ -215,6 +219,14 @@ async function reportLimited(
   options: { keyPrefix: string; maxAttempts: number; windowSeconds: number },
   decision: LimitDecision
 ): Promise<void> {
+  // §5.2. The refusal counter, recorded here because this function is the single
+  // funnel every limiter already passes through on a refusal — both the per-route
+  // preHandler and the global onRequest hook. `limiter` is carried as a label for
+  // the reason the doc comment above gives: a block decided by the process-local
+  // fallback is a degraded control, and a dashboard that cannot separate it from a
+  // distributed block would read a Redis outage as normal traffic shaping.
+  recordRateLimitBlock(options.keyPrefix, decision.limiter);
+
   try {
     await emit({
       type: "rate_limit_triggered",
@@ -226,11 +238,26 @@ async function reportLimited(
         limiter: decision.limiter,
         requestId: request.id,
         method: request.method,
-        path: request.url,
+        // §5.1. Path only. This payload is written to the audit log and delivered to
+        // webhook subscribers, so the query string here is not just retained — it is
+        // sent to a third party. On `/auth/magic-link/verify?token=…` that is a live
+        // sign-in credential, and a rate limiter is exactly the thing that fires on
+        // requests to it. See `stripQuery`.
+        path: stripQuery(request.url),
       },
     });
-  } catch {
-    // A monitoring failure must not turn a 429 into a 500.
+  } catch (error) {
+    // A monitoring failure must not turn a 429 into a 500 — but it must not be
+    // invisible either. This `catch` previously had no statement at all, and that
+    // is why a `TypeError` thrown here (see `stripQuery`) went unnoticed: the
+    // limiter kept refusing correctly, the counter above kept incrementing, and the
+    // only thing silently lost was the audit event and the webhook delivery. The
+    // warn is the difference between "no one triggered a limiter" and "the limiter
+    // fired and we could not tell anyone".
+    moduleLog.warn(
+      { err: error, keyPrefix: options.keyPrefix, limiter: decision.limiter },
+      "failed to emit rate_limit_triggered; the refusal is still enforced"
+    );
   }
 }
 

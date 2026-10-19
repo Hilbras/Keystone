@@ -3,6 +3,19 @@ import { config } from "../../config.js";
 import { db } from "../../db/index.js";
 import { redis } from "../redis.js";
 import { getPublicJwks } from "../tokens.js";
+import { scrubDriverErrorText } from "../../lib/logSanitizer.js";
+
+/**
+ * An error's message, with the driver's bound parameters removed.
+ *
+ * These messages are returned to the caller of `/setup/diagnostics`, and a failed
+ * Drizzle query carries its argument values inside the message text. Scrubbing at
+ * the point the message is formatted, rather than at each of the three call sites
+ * below, is what keeps a fourth one from being added without it.
+ */
+function describeError(err: unknown): string {
+  return err instanceof Error ? scrubDriverErrorText(err.message) : String(err);
+}
 
 export interface DiagnosticCheck {
   name: string;
@@ -22,7 +35,7 @@ export async function runSetupDiagnostics(): Promise<DiagnosticCheck[]> {
       checks.push({ name: "Database connectivity", status: "error", message: "Database not initialized" });
     }
   } catch (err) {
-    checks.push({ name: "Database connectivity", status: "error", message: err instanceof Error ? err.message : String(err) });
+    checks.push({ name: "Database connectivity", status: "error", message: describeError(err) });
   }
 
   // Redis
@@ -34,7 +47,7 @@ export async function runSetupDiagnostics(): Promise<DiagnosticCheck[]> {
       checks.push({ name: "Redis connectivity", status: "warning", message: "Redis not connected" });
     }
   } catch (err) {
-    checks.push({ name: "Redis connectivity", status: "error", message: err instanceof Error ? err.message : String(err) });
+    checks.push({ name: "Redis connectivity", status: "error", message: describeError(err) });
   }
 
   // JWT keys
@@ -46,7 +59,7 @@ export async function runSetupDiagnostics(): Promise<DiagnosticCheck[]> {
       checks.push({ name: "JWT signing keys", status: "error", message: "No signing keys available" });
     }
   } catch (err) {
-    checks.push({ name: "JWT signing keys", status: "error", message: err instanceof Error ? err.message : String(err) });
+    checks.push({ name: "JWT signing keys", status: "error", message: describeError(err) });
   }
 
   // Internal API key

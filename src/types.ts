@@ -7,6 +7,23 @@ declare module "fastify" {
     user?: User;
     /** Claims of the bearer/cookie access token that authenticated this request. */
     authClaims?: TokenClaims;
+    /**
+     * Correlation id for this request, from the inbound `traceparent` or minted.
+     *
+     * Always present on a request that reached a route, because the hook that sets
+     * it is registered before any other. See `lib/traceContext.ts` for why the id
+     * exists separately from OpenTelemetry's.
+     */
+    traceId?: string;
+    /** Start of the request, for the access log's `durationMs`. Set by `plugins/requestLogger.ts`. */
+    _startTime?: number;
+    /**
+     * The `code` from the error body sent to the client, captured on send.
+     *
+     * §5.1 wants an error code on every operation, and by `onResponse` the body is
+     * gone. See `plugins/requestLogger.ts`.
+     */
+    _errorCode?: string;
     state: {
       app?: Application;
       org?: Organization;

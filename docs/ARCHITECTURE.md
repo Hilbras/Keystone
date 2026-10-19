@@ -112,6 +112,10 @@ Subscribers consume events for audit logging, webhooks, anomaly detection, analy
 
 Keystone supports an in-process queue for local development and a BullMQ-backed queue for production. Set `KEYSTONE_QUEUE_PROVIDER=bullmq` or leave it empty when Redis is available. The queue runs email delivery, webhooks, and workflow actions asynchronously.
 
+**One worker per process, dispatch by job type name.** A queue consumer cannot choose which job it is handed — BullMQ addresses consumers by queue name — so a driver that started one worker per registered type would have its workers compete for every job and run whichever handler belonged to the worker that won. There is therefore exactly one worker per process on the queue, and it looks up `bullJob.name` when a job arrives. A job whose type has no handler **fails** rather than completing, because a job reported as done that no code ran is indistinguishable from work that happened.
+
+**Handlers are registered by job type name, and the lookup happens when a job arrives.** A `process(type, handler)` call made once the application is listening registers into the same map the worker reads, so it takes effect for jobs already queued — the worker is created on the first registration and reused, rather than one being created per call.
+
 ## Secrets management
 
 The secrets provider abstraction supports multiple backends:

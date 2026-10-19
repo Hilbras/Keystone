@@ -513,3 +513,152 @@ the check is exercised rather than trusted. Deleting the Ingress block from the
 script makes that test fail; so does putting the Ingress back in the base.
 
 
+# Structured logs, diagnostics and the queue
+
+Covers SEC-092, SEC-093 and SEC-094. §5.1 asked for an access log that says what
+happened without saying any of it to a stranger, and §5.5 for a diagnostics
+endpoint; the queue defect was found by the test §5.4 added, while it was being
+written for another reason.
+
+## SEC-092, high — the query string was the most reliable field in the log
+
+Three writers recorded `request.url`, and the query string is where this API puts
+credentials. `GET /auth/magic-link/verify?token=…` and
+`GET /auth/email-verification/verify?token=…` take a token that **is** the whole
+authentication, and the OIDC callbacks take an authorization code.
+
+| writer | where the value went |
+|---|---|
+| `plugins/requestLogger.ts` | the access log |
+| the `rate_limit_triggered` event payload | the audit log, **and every webhook subscriber** |
+| `plugins/machinePrincipal.ts` | the audit record for `machine_principal_on_interactive_route` |
+
+The middle row is the one that turns a log-hygiene problem into disclosure: a
+throttled magic-link click published the token to a third-party endpoint and to
+whatever that endpoint logs. The audit log is the softer case only because it is
+in the same database as the account it belongs to.
+
+### Fastify was writing it too
+
+Sanitizing our own fields would not have been enough, and this is measured rather
+than reasoned. `src/tests/observability/logging.test.ts` runs a real request to
+`/auth/magic-link/verify?token=<secret>` and requires the secret to appear
+**nowhere** in the log stream; the first version of the suite failed on
+
+```
+"req":{"method":"GET","url":"/auth/magic-link/verify?token=…"}
+```
+
+which is Fastify's own `incoming request` line, written through its default `req`
+serializer — a serializer this project had never overridden. So the fix had to be
+the serializer, not only the call sites, and `loggerOptions()` in `src/lib/logger.ts`
+now installs one that reproduces Fastify's default field for field with `url`
+reduced to its path. No field is dropped, because a field dropped is a dashboard
+panel or an alert that stops reading.
+
+Both pino instances come from that one options object. That is the point of the
+function: Fastify builds its own logger from the options passed to `fastify()`, so
+"the logging is sanitized" is a claim about two instances, and one of them is not
+under our control at the call site.
+
+### What a key-based rule cannot do, and why the call sites were still reviewed
+
+The `logMethod` hook sanitizes the first argument of every log call, which is
+where structured fields live. It cannot recover a secret interpolated into a
+message string — `log.info(\`verifying ${token}\`)` has no key to match on. That
+half is a review, and it is why the hook is described as one of two halves rather
+than as the fix.
+
+## SEC-094, medium — the driver error carried the values bound to the query
+
+drizzle composes a failed statement's message out of the SQL **and its bound
+parameters**. Executed against the live database on purpose:
+
+```
+Failed query: SELECT * FROM no_such_table_xyz WHERE token = $1
+params: live-token-123
+```
+
+(`DrizzleQueryError`, `node_modules/drizzle-orm/errors.js`.) So every site that
+logs an error logs the parameters of the query that failed.
+
+Two details made the obvious fix insufficient:
+
+- **`pino-std-serializers` flattens the cause into the logged error**, so the same
+  text lands in `message` **and** in `stack`. Scrubbing one field would have
+  looked complete and left the other.
+- **The message crossed a trust boundary.** `/ready` returned it to an
+  unauthenticated caller, and the setup wizard's `/setup/diagnostics` returned it
+  to anyone who could reach the wizard.
+
+`scrubDriverErrorText` removes the parameter list, and the two response sites
+report a description instead of the driver's message.
+
+### Medium, and the reason is about this codebase rather than about the message
+
+Most credentials here are hashed before they reach a query — `magicLinks.ts` and
+`emailVerification.ts` store digests — so a bound value is usually not a usable
+secret. Nothing in the message distinguishes a digest from a raw one, and `params:`
+lists every bound value for every query, including the ones never hashed. Medium
+describes what reaches the log today, not how the leak reads.
+
+## SEC-093, high — one worker per type, on one queue
+
+`process(type, handler)` created a worker **per type**, and every one of them
+consumed the same queue name. BullMQ addresses a consumer by queue *name*, not by
+the job type it will be given, so the workers were not specialists; they were
+competing consumers of one stream, and whichever won ran its own handler:
+
+| what was pushed | what ran |
+|---|---|
+| a `type_b` job | `type_a`'s handler, with `type_b`'s never contacted |
+
+That is the visible half. The quieter half is that a worker added by a later
+`process()` call joined the drain instead of adding a consumer, so a handler
+registered after `app.ready()` could consume nothing at all — measured, 0 of the
+16 jobs pushed for it in 8 seconds — while `getStats()` reported the jobs as
+accepted and completed.
+
+**This was found by §5.4, not by looking for it.** The trace test asserted on a
+value only the right handler could produce, and the `workflow_run` handler was
+observed executing against a null run id. A suite that had asserted "a job ran"
+would have stayed green: a job did run. The queue's own reporting was consistent
+throughout, which is the general shape of this class — the counter counts the
+wrong handler's work and has no way to know.
+
+The fix is one worker per process, dispatching on `bullJob.name` through a map
+looked up at execution time. A type with no handler now **throws** instead of
+completing, because a job reported as done that no code ran is indistinguishable
+from work that happened, and the failure queue is the only place an operator would
+ever see it.
+
+`src/tests/integration/queue.test.ts` pins both halves — each type reaching its own
+handler, and an unregistered type failing rather than completing — and its BullMQ
+cases use the application's queue from the container rather than constructing a
+second driver, because a second driver in one process *is* the defect.
+
+## SEC-092 / §5.5 — a diagnostics endpoint that is not a copy of the configuration
+
+`GET /v1/admin/platform/diagnostics` (platform owner) reports instance identity,
+startup state, dependency verdicts, queue backlog and worker id, signing key state
+and configuration warnings. Every one of those is assembled from the same `config`
+object the rest of the application reads, which is what makes the endpoint a
+convenience and also what makes it one field away from being a credential dump.
+
+So the suite's negative assertions are written against the values **actually
+present in the process environment** — the encryption key, the internal API key,
+the database password, a line of the JWT private key, the Redis password — rather
+than against a list of field names, and it requires none of them to appear in the
+response body. A field added later that carries a value already in the environment
+fails the suite; a field added that merely *looks* sensitive does not have to be
+predicted. `covers` in the registry records it for that reason: the property
+erodes by addition.
+
+One asymmetry the report keeps deliberately: `keys.active` lists what the secrets
+provider holds and `keys.published` lists the `kid`s the running process actually
+serves from JWKS. They differ whenever signing keys come from
+`JWT_PRIVATE_KEY`, which is the environment provider's normal state, and noticing
+that difference is the entire reason an operator opens this endpoint during a key
+rotation.
+
+

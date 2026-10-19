@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 
 /**
  * Boot a Keystone server against an unreachable database, and report what the
- * two probes answer.
+ * three probes answer.
  *
  * §5.2 needs a readiness probe that fails with PostgreSQL down. Producing that
  * in-process turned out to be harder than it looks, for a reason worth writing
@@ -70,6 +70,7 @@ async function writeReport(value: Record<string, unknown>): Promise<void> {
 }
 
 const { buildApp } = await import("../../index.js");
+const { buildStartupReport } = await import("../../services/startup.js");
 
 const report: Record<string, unknown> = {
   databaseUrl: PROBE_DATABASE_URL,
@@ -80,7 +81,19 @@ let app: Awaited<ReturnType<typeof buildApp>> | undefined;
 
 try {
   app = await buildApp();
+
+  // Recorded *before* the bind, and read directly rather than over HTTP because
+  // there is no socket to ask yet. This is the half of the ordering that an HTTP
+  // probe can never observe: a composed application that has not bound must still
+  // report "starting", or the startup gate is a constant.
+  report.startupBeforeListen = buildStartupReport();
+
   await app.listen({ port: 0, host: "127.0.0.1" });
+
+  // And the other half, read the same way, one statement after the bind. Between
+  // these two reads the only thing that happened is `listen()`, so a difference
+  // between them is attributable to the bind and to nothing else.
+  report.startupAfterListen = buildStartupReport();
 
   const address = app.server.address();
   const port = typeof address === "object" && address ? address.port : 0;
@@ -98,6 +111,23 @@ try {
   report.health = await get("/health");
   report.ready = await get("/ready");
   report.probeElapsedMs = Date.now() - started;
+
+  // The two aliases, and the startup gate.
+  //
+  // The startup gate is the one worth thinking about here: it is expected to
+  // answer **200** with the database unreachable. Startup asks "has boot
+  // finished", not "can this pod serve traffic" — that second question is
+  // readiness, and it is the one that answers 503 below. Conflating them is how a
+  // dependency outage becomes a restart loop: a startup probe that fails while
+  // PostgreSQL is down stops the kubelet from ever running the liveness probe, so
+  // a process that would have recovered the moment the database came back is
+  // restarted instead, and the deployment never converges.
+  //
+  // Reported over the same real socket as everything else, because the ordering
+  // between `listen()` and the flag is exactly the thing under test.
+  report.healthLive = await get("/health/live");
+  report.healthReady = await get("/health/ready");
+  report.healthStartup = await get("/health/startup");
 
   // Repeat calls, to separate a one-off connection cost from the steady-state
   // one. The first pays whatever ioredis and postgres.js charge for discovering

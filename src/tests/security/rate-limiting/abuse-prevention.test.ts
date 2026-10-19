@@ -74,8 +74,13 @@ async function withTrustedProxies(value: string, fn: () => Promise<void> | void)
   }
 }
 
-function fakeRequest(peer: string, headers: Record<string, string> = {}) {
+function fakeRequest(peer: string, headers: Record<string, string> = {}, url = "/") {
+  // `url` is present because a real `FastifyRequest` always has one, and the
+  // refusal path reads it (the event carries `path: stripQuery(request.url)`).
+  // Leaving it off this double is how a `TypeError` on an absent target survived
+  // review and shipped: the double was the only caller that could omit it.
   return {
+    url,
     headers: { ...headers },
     socket: { remoteAddress: peer },
     ip: peer,
@@ -313,7 +318,10 @@ describe("Abuse events are recorded", () => {
           return this;
         },
       } as never;
-      await guard(fakeRequest("198.51.100.5"), reply);
+      // A request to the route that takes a sign-in credential in the query
+      // string, so the assertion below covers the whole chain: limiter refuses →
+      // event emitted → credential absent from the payload.
+      await guard(fakeRequest("198.51.100.5", {}, "/auth/magic-link/verify?token=live-credential"), reply);
       return status;
     };
 
@@ -332,5 +340,9 @@ describe("Abuse events are recorded", () => {
       ["redis", "local", "none"].includes(String(seen[0].limiter)),
       "the event must say which limiter decided, so a degraded control is visible"
     );
+    // §5.1. The payload goes to the audit log and to webhook subscribers, so a
+    // query string here is a credential handed to a third party. Both halves
+    // matter: that the field is present, and that it carries no query.
+    assert.equal(seen[0].path, "/auth/magic-link/verify", "the event must name the path, with no query string");
   });
 });

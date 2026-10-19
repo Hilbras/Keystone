@@ -34,7 +34,7 @@ spec:
           # rollback has nothing to roll back to. `scripts/verify-k8s-manifests.mjs`
           # fails when this tag drifts from package.json, so the bump is part of
           # cutting a release rather than a thing somebody remembers.
-          image: ghcr.io/hilbras-dev/hilbras-keystone:3.9.4
+          image: ghcr.io/hilbras-dev/hilbras-keystone:3.10.0
           imagePullPolicy: Always
           ports:
             - name: http
@@ -55,6 +55,26 @@ spec:
             limits:
               cpu: 1000m
               memory: 1Gi
+          startupProbe:
+            # /health/startup, and the probe that makes the other two safe.
+            #
+            # While this one is failing the kubelet does not run the liveness or
+            # readiness probes at all, so a boot that is slow — loading the signing
+            # keypair, seeding role permissions, adopting a legacy SCIM config,
+            # loading workflows — is not misread as a hung process and restarted
+            # every 30 seconds, which is what a liveness probe alone does. The
+            # budget is 40 x 10s: five minutes to reach the bind, after which a
+            # process that still has not bound is genuinely stuck and the kubelet
+            # restarts it.
+            #
+            # It answers 503 until `listen()` returns, so a pod that is composed but
+            # not yet serving is not reported as started. See `services/startup.ts`.
+            httpGet:
+              path: /health/startup
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 40
           livenessProbe:
             httpGet:
               path: /health
