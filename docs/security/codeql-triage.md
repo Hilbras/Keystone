@@ -593,3 +593,76 @@ produce the same pair of CodeQL alerts. They are false positives, they are safe 
 dismiss, and the reason to dismiss rather than restructure is written down here. The
 alternative — inlining security-critical options at every registration — is worse, and
 this is the example that shows why.
+
+## `js/missing-rate-limiting` cannot see a Fastify hook, only a route
+
+**Added 3.10.0.** One alert, on the `onSend` hook in `src/routes/oauth2.ts`, dismissed as
+a false positive. It is the same rule that produced the two 3.5.8 alerts above, but a
+different mechanism: the previous pair was a limiter hidden behind a shared options
+object, and this one is not a route at all.
+
+### What happened
+
+§5.2 records the OAuth failure counter at one chokepoint rather than at each refusal
+site, and a Fastify `onSend` hook is that chokepoint:
+
+```ts
+app.addHook("onSend", async (request, reply, payload) => { … recordOAuthFailure(…) });
+```
+
+The alert reads *"This route handler performs authorization, but is not rate-limited"*
+and points at lines 121–143 — the hook body — not at any route in the file.
+
+### Why the rule fires, from the query's own source
+
+CodeQL decides what a route is in `javascript/ql/lib/semmle/javascript/frameworks/Fastify.qll`,
+and `addHook` is in the list of methods that count as a route registration:
+
+```
+// Fastify.qll, class RouteSetup
+methodName = ["route", "get", "head", "post", "put", "delete", "options", "patch", "addHook", "all"]
+```
+
+A hook is a route setup, so its callback is a handler, so `js/missing-rate-limiting`
+requires a `rateLimit(` call in front of it — which a global response hook does not have
+and cannot have. `AddHookRouteSetup` then sets `isMiddlewareSetup()` to `any()`, so the
+hook is also treated as middleware on every path.
+
+There is no restructuring that clears this. The trigger is the `addHook(` call name
+itself, so it fires wherever the hook is registered; and the per-route spelling does not
+help either, because `getNthHandlerName` lists `onSend` among the names a route's
+options object is read for:
+
+```
+"onRequest,preParsing,preValidation,preHandler,handler,preSerialization,onSend,onResponse"
+```
+
+So `app.post("/token", { onSend: fn, preHandler: [rateLimit(…)] })` would be read as an
+unlimited `onSend` handler in exactly the same way. The rule has no representation of a
+hook that runs for every response and is not a request entry point.
+
+### Why the hook is the right design, not a workaround
+
+The alternative is to call `recordOAuthFailure` at each refusal. `src/routes/oauth2.ts`
+refuses from roughly fifteen places, and a call at each one means the sixteenth — added
+later by someone who never read this file — is silently not counted. The counter would
+then understate exactly the failures it exists to surface, and it could disagree with the
+status code it is supposed to describe. Reading the refusal back off the response makes
+both impossible: the number is derived from what was returned, and routes added after
+the hook was written are covered by construction. The reasoning is in the doc comment at
+`src/routes/oauth2.ts:99`, next to the hook, so it travels with the code.
+
+The authorization the alert mentions is real and is not what is missing. `/userinfo` is
+behind `app.authenticate` and `app.requireHumanPrincipal()`; `/authorize`, `/token` and
+`/revoke` each carry their own `rateLimit` in `preHandler`. `npm run review:api --strict`
+and this repository's own route inventory both report the surface as complete — the
+inventory resolves a limiter's wrapping, the hook's, and the shared options object's,
+which is the same blind spot `findRoutes` was fixed for in 3.5.8.
+
+### Standing limitation
+
+Every `addHook` this repository adds will produce one of these alerts, for the rule's
+duration, and none of them describes a missing limit. Dismiss them on the alert, with
+this reason. Suppression comments do not work and are not used — a comment claiming to
+suppress something that is still reported is worse than no comment — and inlining a
+security control to satisfy a scanner that cannot see the control is worse than both.
