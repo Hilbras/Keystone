@@ -10,6 +10,13 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { config } from "./config.js";
 import { resolveProfile, securityDefaults } from "./config/profiles.js";
 import { loggerOptions } from "./lib/logger.js";
+import {
+  OPENAPI_SECURITY_SCHEMES,
+  OPENAPI_TAGS,
+  readPackageVersion,
+  tagForRoute,
+} from "./lib/openapi.js";
+import { defaultErrorCodeForStatus } from "./lib/errorCodes.js";
 import { closeDb, db } from "./db/index.js";
 import { verifySchema } from "./db/verifySchema.js";
 import {
@@ -30,6 +37,7 @@ import { startTracing, stopTracing } from "./plugins/tracing.js";
 import authPlugin from "./plugins/auth.js";
 import auditPlugin from "./plugins/audit.js";
 import requestLogger from "./plugins/requestLogger.js";
+import errorContract from "./plugins/errorContract.js";
 import requestTrace from "./plugins/requestTrace.js";
 import { subscribe, subscribeAll } from "./services/events/bus.js";
 import { auditLogSubscriber } from "./services/events/subscribers/auditLog.js";
@@ -127,28 +135,53 @@ export async function buildApp() {
   // the request was given — including `requestLogger` below, which is why the id
   // reaches the access log line.
   await app.register(requestTrace);
+  // Before `requestLogger`, whose onSend hook records the error code in the access
+  // line: the contract hook is what supplies a code to handlers that did not set
+  // one, and the log line should name the code the client actually received.
+  await app.register(errorContract);
   await app.register(requestLogger);
   // Must precede every plugin and route: strips client-identity headers from
   // requests that did not arrive from a configured trusted proxy.
   await app.register(headerSanitization);
+
+  // Before swagger, so the document sees the tags on the routes it records. A
+  // route that names its own tags keeps them; everything else is filed by mount
+  // point, which makes an untagged operation a build failure rather than a gap.
+  app.addHook("onRoute", (routeOptions) => {
+    if (!routeOptions.url) return;
+    const schema = (routeOptions.schema ?? {}) as { tags?: string[] };
+    if (!schema.tags || schema.tags.length === 0) {
+      routeOptions.schema = { ...schema, tags: [tagForRoute(routeOptions.url)] };
+    }
+  });
 
   await app.register(swagger, {
     openapi: {
       info: {
         title: "Hilbras Keystone API",
         description: "Identity platform API for Hilbras products and third-party apps.",
-        version: "3.0.1",
+        // §7.1. Read from package.json rather than typed here: the literal was
+        // `3.0.1` while the package was at 3.11.0, and nothing compared them.
+        version: readPackageVersion(),
       },
       servers: [{ url: config.AUTH_API_PUBLIC_URL || `http://localhost:${config.PORT}` }],
-      tags: [
-        { name: "Auth", description: "Authentication and session management" },
-        { name: "Admin", description: "Organization and application management" },
-        { name: "Discovery", description: "JWKS and health endpoints" },
-      ],
+      tags: OPENAPI_TAGS.map((tag) => ({ ...tag })),
+      components: {
+        securitySchemes: {
+          ...OPENAPI_SECURITY_SCHEMES,
+        },
+      },
     },
   });
   await app.register(swaggerUi, {
     routePrefix: "/documentation",
+  });
+
+  // §7.1. The UI's own `/documentation/json` was the only way to fetch the
+  // document, which made the contract an artefact of the documentation bundle
+  // rather than of the API. This is the path clients and generators expect.
+  app.get("/openapi.json", { schema: { hide: true } }, async (_request, reply) => {
+    return reply.type("application/json").send(app.swagger());
   });
 
   // §6.1. The empty-ALLOWED_ORIGINS warning used to live here. It now belongs to
@@ -379,20 +412,21 @@ export async function buildApp() {
         : (error as { issues: Array<{ path?: Array<string | number>; message?: string }> }).issues;
       return reply.status(400).send({
         error: "Invalid input",
+        code: "VALIDATION_ERROR",
         details: issues.map((issue) => ({ path: issue.path ?? [], message: issue.message ?? "Invalid value" })),
       });
     }
 
     if (error && typeof error === "object" && "validation" in error) {
       const message = error instanceof Error ? error.message : String(error);
-      return reply.status(400).send({ error: "Invalid input", details: message });
+      return reply.status(400).send({ error: "Invalid input", code: "VALIDATION_ERROR", details: message });
     }
 
     if (error instanceof Error && "statusCode" in error) {
       const statusCode = (error as Error & { statusCode: number }).statusCode;
       const code = (error as Error & { code?: string }).code;
       if (statusCode >= 400 && statusCode < 600) {
-        return reply.status(statusCode).send({ error: error.message, code });
+        return reply.status(statusCode).send({ error: error.message, code: code ?? defaultErrorCodeForStatus(statusCode) });
       }
     }
 

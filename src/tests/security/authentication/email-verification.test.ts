@@ -113,8 +113,11 @@ after(async () => {
 describe("email verification", () => {
   it("refuses a request with no token", async () => {
     const res = await app.inject({ method: "GET", url: "/auth/email-verification/verify" });
+    const missing = res.json();
     assert.equal(res.statusCode, 400);
-    assert.deepEqual(res.json(), { error: "Missing token" });
+    assert.equal(missing.error, "Missing token");
+    assert.equal(missing.code, "BAD_REQUEST");
+    assert.ok(typeof missing.requestId === "string" && missing.requestId.length > 0);
   });
 
   it("refuses a token that was never issued", async () => {
@@ -122,8 +125,11 @@ describe("email verification", () => {
       method: "GET",
       url: `/auth/email-verification/verify?token=${crypto.randomBytes(32).toString("base64url")}`,
     });
+    const neverIssued = res.json();
     assert.equal(res.statusCode, 400);
-    assert.deepEqual(res.json(), { error: "Invalid or expired token" });
+    assert.equal(neverIssued.error, "Invalid or expired token");
+    assert.equal(neverIssued.code, "BAD_REQUEST");
+    assert.ok(typeof neverIssued.requestId === "string" && neverIssued.requestId.length > 0);
   });
 
   it("accepts a real token exactly once", async () => {
@@ -225,8 +231,11 @@ describe("email verification", () => {
       method: "GET",
       url: `/auth/email-verification/verify?token=${encodeURIComponent(token)}`,
     });
+    const expired = res.json();
     assert.equal(res.statusCode, 400);
-    assert.deepEqual(res.json(), { error: "Invalid or expired token" });
+    assert.equal(expired.error, "Invalid or expired token");
+    assert.equal(expired.code, "BAD_REQUEST");
+    assert.ok(typeof expired.requestId === "string" && expired.requestId.length > 0);
 
     const [after] = await db.select().from(users).where(eq(users.id, user.id));
     assert.equal(after.emailVerified, false, "an expired token must not verify anybody");

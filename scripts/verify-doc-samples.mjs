@@ -46,7 +46,7 @@ const run = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** The guides §5.3 names. */
-const GUIDES = ["docs/HOW-KEYSTONE-WORKS.md", "docs/INTEGRATION.md"];
+const GUIDES = ["docs/HOW-KEYSTONE-WORKS.md", "docs/INTEGRATION.md", "docs/SDK.md"];
 
 /** Fence languages we can meaningfully compile. */
 const CODE = new Set(["ts", "typescript", "tsx"]);
@@ -218,14 +218,17 @@ declare function btoa(input: string): string;
 
   for (const sample of checked) {
     for (const specifier of new Set(
-      [...sample.source.matchAll(/from\s+["'](@hilbras\/keystone[^"']*)["']/g)].map((m) => m[1])
+      // The server package only. `@hilbras/keystone-client`, `-node` and the
+      // other SDK packages match a naive prefix and are separate packages, not
+      // subpaths of the published server.
+      [...sample.source.matchAll(/from\s+["'](@hilbras\/keystone(?:\/[^"']*)?)["']/g)].map((m) => m[1])
     )) {
       const result = resolvesFromExports(specifier);
       if (!result.ok) {
         problems.push(
           `${sample.guide}:${sample.line} — imports ${specifier}, which the published ` +
             `package does not serve (${result.why}). ` +
-            `Declared subpaths: ${result.siblings.join(", ") || "none"}`
+            `Declared subpaths: ${(result.siblings ?? []).join(", ") || "none"}`
         );
         continue;
       }
@@ -259,6 +262,7 @@ declare function btoa(input: string): string;
         "@hilbras/keystone/sdk": [path.join(root, "src/sdk/index.ts")],
         "@hilbras/keystone-sdk": [path.join(root, "packages/keystone-sdk/src/index.ts")],
         "@hilbras/keystone-node": [path.join(root, "packages/keystone-node/src/index.ts")],
+        "@hilbras/keystone-client": [path.join(root, "packages/keystone-client/src/index.ts")],
         "@hilbras/keystone-react": [path.join(root, "packages/keystone-react/src/index.ts")],
         "@hilbras/keystone-vue": [path.join(root, "packages/keystone-vue/src/index.ts")],
         "@hilbras/keystone-cli": [path.join(root, "packages/keystone-cli/src/index.ts")],

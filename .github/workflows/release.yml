@@ -301,9 +301,27 @@ jobs:
 
       - name: Publish npm package
         run: |
+          VERSION="$(node -p "require('./package.json').version")"
           if ! npm publish --provenance --access public; then
-            if npm view @hilbras/keystone@3.9.3 version >/dev/null 2>&1; then
-              echo "Package @hilbras/keystone@3.9.3 already published; treating as success."
+            if npm view "@hilbras/keystone@${VERSION}" version >/dev/null 2>&1; then
+              echo "Package @hilbras/keystone@${VERSION} already published; treating as success."
+            else
+              exit 1
+            fi
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and publish client package
+        working-directory: packages/keystone-client
+        run: |
+          npm ci
+          npm run build
+          npm pack --dry-run
+          VERSION="$(node -p "require('./package.json').version")"
+          if ! npm publish --provenance --access public; then
+            if npm view "@hilbras/keystone-client@${VERSION}" version >/dev/null 2>&1; then
+              echo "Package @hilbras/keystone-client@${VERSION} already published; treating as success."
             else
               exit 1
             fi

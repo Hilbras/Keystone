@@ -1,0 +1,29 @@
+{
+  "name": "@hilbras/keystone-client",
+  "version": "3.11.0",
+  "license": "MIT",
+  "description": "Typed HTTP client for the Hilbras Keystone identity platform — authentication, users, organizations, sessions, OAuth, webhooks and admin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hilbras/Keystone.git",
+    "directory": "packages/keystone-client"
+  },
+  "homepage": "https://github.com/Hilbras/Keystone/tree/main/packages/keystone-client",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^5.4.0"
+  },
+  "keystonePeer": {
+    "server": ">=3.11.0 <3.12.0"
+  }
+}
