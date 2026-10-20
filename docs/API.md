@@ -8,7 +8,11 @@ instance you are talking to.
 Every route also ships an interactive OpenAPI description served by the API itself:
 
 - **Swagger UI:** `GET /documentation`
-- **OpenAPI JSON:** `GET /documentation/json`
+- **OpenAPI JSON:** `GET /openapi.json` (also served at `GET /documentation/json`)
+
+The document's `info.version` is the running package version, and every
+operation carries a tag. `npm run verify:openapi` boots the built server and
+checks both, so a deployed instance cannot advertise a contract it does not serve.
 
 Unless stated otherwise, endpoints are served by the main API process
 (`KEYSTONE_SETUP_MODE` unset). The first-run **setup server** exposes its own
@@ -28,11 +32,73 @@ Endpoints marked **owner** additionally require the platform-owner role.
 ## Conventions
 
 - All bodies and responses are JSON.
-- Errors return `{ "error": string, ...details }` with an appropriate HTTP status
-  (`400` validation, `401` unauthenticated, `403` forbidden, `404` missing,
-  `409` conflict, `429` rate-limited).
+- Errors return `{ "error": string, "code": string, "requestId": string }` with
+  an appropriate HTTP status (`400` validation, `401` unauthenticated, `403`
+  forbidden, `404` missing, `409` conflict, `429` rate-limited).
 - Refresh tokens rotate atomically on every use and are bound to their client/application; replay or client mismatch is rejected.
 - Application-bound OAuth2 refresh requests must include the original `client_id` and `client_secret`; the refresh route authenticates the client before rotation.
+
+### Error model
+
+Every Keystone JSON error carries a stable `code` and the server's `requestId`:
+
+```json
+{
+  "error": "User not found",
+  "code": "NOT_FOUND",
+  "requestId": "8f3c2a1e-4b6d-4c2f-9a71-5d0e2b7c9f10"
+}
+```
+
+| Status | Default `code` | Meaning |
+| --- | --- | --- |
+| 400 | `BAD_REQUEST`, `VALIDATION_ERROR` | Malformed request; `details` names the invalid fields |
+| 401 | `UNAUTHORIZED` | Missing, expired or invalid credential |
+| 403 | `FORBIDDEN` | Credential valid, operation not allowed |
+| 404 | `NOT_FOUND` | Resource missing or outside the caller's tenant |
+| 409 | `CONFLICT` | Conflicts with current state |
+| 429 | `RATE_LIMITED` | Rate limit hit; `Retry-After` is present |
+| 500 | `INTERNAL_ERROR` | Unhandled failure; `requestId` is the log join key |
+| 501 | `NOT_IMPLEMENTED` | Operation unsupported by the configured provider |
+| 502–504 | `BAD_GATEWAY`, `SERVICE_UNAVAILABLE`, `GATEWAY_TIMEOUT` | Upstream or dependency failure |
+
+A handler with something more specific to say supplies its own code
+(`USER_NOT_FOUND`, `IP_NOT_ALLOWED`, …); the default is a fallback, not a
+replacement.
+
+Three envelopes are **not** Keystone's and deliberately keep their RFC shape:
+
+- **OAuth 2.0** — `{ "error": "invalid_grant", "error_description": "…" }`
+  (RFC 6749 §5.2). `requestId` is added as an ignorable extension member.
+- **SCIM 2.0** — `{ "schemas": [...], "status": "400", "detail": "…" }`
+  (RFC 7644 §3.12), unchanged.
+- **Authorization decisions** — `{ "allowed": false, "reason": "…" }` is a 200
+  answer to a question, not an error.
+
+`requestId` is also returned in the `request-id` response header. Quote it in a
+support request; it joins the response to the access log line and to every
+downstream job and webhook the request caused.
+
+### Pagination
+
+List endpoints that accept pagination use `limit` and `offset` query parameters
+and return a named collection (`{"logs": [...], "users": [...]}`). There is no
+cursor and no total count; request the next page until a short page is returned.
+
+### Retry safety
+
+| Method | Safe to retry | Notes |
+| --- | --- | --- |
+| `GET`, `HEAD`, `OPTIONS` | Yes | Idempotent by definition |
+| `POST /auth/login`, `/auth/refresh`, `/auth/logout` | No | Rotation consumes the token; a retry can revoke the session |
+| `POST /oauth2/token` | No | An authorization code is single-use; a replay is rejected and audited |
+| `POST /v1/admin/**`, `/setup/init`, `/scim/v2/**` | No | Writes; a retry can duplicate the effect |
+| Any request with `Idempotency-Key` | Only if the recipient deduplicates | Keystone accepts and forwards the header; it does not yet deduplicate on it |
+
+Retry only `429`, `502`, `503`, `504` and transport failures, with exponential
+backoff and jitter, and honour `Retry-After`. Never retry a `400`, `401`, `403`
+or `409` — the answer will not change. `@hilbras/keystone-client` implements
+exactly this policy; see `docs/SDK.md`.
 
 ---
 
@@ -42,7 +108,8 @@ Endpoints marked **owner** additionally require the platform-owner role.
 | --- | --- | --- | --- |
 | GET | `/.well-known/jwks.json` | public | RSA public keys for verifying access tokens (JWKS) |
 | GET | `/documentation` | public | Swagger UI |
-| GET | `/documentation/json` | public | OpenAPI document |
+| GET | `/documentation/json` | public | OpenAPI document (same as `/openapi.json`) |
+| GET | `/openapi.json` | public | OpenAPI document, versioned with the package |
 | GET | `/metrics` | public* | Prometheus metrics (*restrict via reverse proxy in production) |
 
 ---

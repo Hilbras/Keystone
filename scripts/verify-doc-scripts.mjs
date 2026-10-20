@@ -52,7 +52,7 @@ const scripts = pkg.scripts ?? {};
  * to satisfy a linter — which is how documentation stops being worth reading.
  */
 const manifests = [{ label: "package.json", scripts }];
-for (const rel of ["frontend", "packages/keystone-sdk", "packages/keystone-node", "packages/keystone-cli"]) {
+for (const rel of ["frontend", "packages/keystone-sdk", "packages/keystone-node", "packages/keystone-cli", "packages/keystone-client"]) {
   const file = path.join(root, rel, "package.json");
   if (!existsSync(file)) continue;
   const parsed = JSON.parse(await readFile(file, "utf8"));

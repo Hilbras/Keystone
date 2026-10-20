@@ -281,7 +281,7 @@ export function rateLimit(options: RateLimitPluginOptions) {
       return reply
         .header("Retry-After", String(decision.retryAfterSeconds ?? options.windowSeconds))
         .status(429)
-        .send({ error: "Too many attempts. Please try again later." });
+        .send({ error: "Too many attempts. Please try again later.", code: "RATE_LIMITED" });
     }
   };
 }
@@ -300,7 +300,7 @@ export function globalRateLimit(options: GlobalRateLimitOptions = {}) {
       return reply
         .header("Retry-After", String(decision.retryAfterSeconds ?? windowSeconds))
         .status(429)
-        .send({ error: "Rate limit exceeded. Please slow down." });
+        .send({ error: "Rate limit exceeded. Please slow down.", code: "RATE_LIMITED" });
     }
   };
 }

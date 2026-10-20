@@ -4,7 +4,7 @@
  *
  * The session's recurring defect is a control that reports success for something
  * other than what it measures — a check that cannot fail. This probe answers the
- * cheapest version of that question for the 16 gate steps in ci.yml: break the
+ * cheapest version of that question for the 18 gate steps in ci.yml: break the
  * repository in a way each gate is *supposed* to notice, and record whether the
  * gate noticed.
  *
@@ -197,6 +197,32 @@ const PROBES = [
     },
   },
   {
+    gate: "verify-openapi-version.mjs",
+    name: "the OpenAPI version is hard-coded again",
+    apply(dir) {
+      const file = path.join(dir, "src", "index.ts");
+      const text = readFileSync(file, "utf8");
+      writeFileSync(file, text.replace("version: readPackageVersion(),", 'version: "9.9.9",'));
+    },
+  },
+  {
+    gate: "verify-keystone-client.mjs",
+    name: "the client retries unsafe writes by default",
+    apply(dir) {
+      const file = path.join(dir, "packages", "keystone-client", "dist", "http.js");
+      // Read once and let a missing file be the error it is. Checking with
+      // `existsSync` and then reading is a race: the file can be gone between
+      // the two, and the probe would then fail for the wrong reason.
+      let text;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        return;
+      }
+      writeFileSync(file, text.replace("const retryable = options.retry ?? SAFE_METHODS.has(method);", "const retryable = options.retry ?? true;"));
+    },
+  },
+  {
     gate: "verify-action-pins.mjs",
     name: "an action pin is a tag rather than a commit SHA",
     apply(dir) {
@@ -210,7 +236,7 @@ const PROBES = [
 ];
 
 /** Gates that need more than a file copy — they read the compiled output. */
-const NEEDS_BUILD = new Set(["generate-auth-dashboard.mjs", "verify-doc-samples.mjs"]);
+const NEEDS_BUILD = new Set(["generate-auth-dashboard.mjs", "verify-doc-samples.mjs", "verify-openapi-version.mjs"]);
 
 /**
  * The four steps of the `gates` job this does not yet cover, named rather than
@@ -222,7 +248,7 @@ const NEEDS_BUILD = new Set(["generate-auth-dashboard.mjs", "verify-doc-samples.
  * `review-api-surface.mjs` is covered against its own rules by
  * `src/tests/security/reviewApiSurface.test.ts`, and lint is covered by
  * `--deny-warnings` failing CI. Both are known-good, so they are the lowest
- * priority to add here; the list exists so that "twelve" is not mistaken for
+ * priority to add here; the list exists so that "fifteen" is not mistaken for
  * "all sixteen".
  */
 const NOT_YET_PROBED = [
@@ -249,7 +275,7 @@ for (const probe of PROBES) {
     // A **symlink**, not a copy. The gates import nothing from node_modules at
     // all — they read files as text — but `verify-doc-samples.mjs` resolves
     // against the project, so a tree without it looks broken in a way that has
-    // nothing to do with the mutation. Copying it twelve times is 2.8GB of I/O
+    // nothing to do with the mutation. Copying it fifteen times is 3GB of I/O
     // for a link; the first version of this probe took long enough that it was
     // interrupted twice.
     symlinkSync(path.join(root, "node_modules"), path.join(scratch, "node_modules"), "dir");
@@ -270,6 +296,7 @@ for (const probe of PROBES) {
       "CHANGELOG.md",
       "README.md",
       ".nvmrc",
+      "src/index.ts",
     ];
     for (const name of WATCHED_FILES) {
       const full = path.join(scratch, name);
@@ -284,8 +311,13 @@ for (const probe of PROBES) {
         const current = stack.pop();
         for (const entry of readdirSync(current, { withFileTypes: true })) {
           const full = path.join(current, entry.name);
-          if (entry.isDirectory()) stack.push(full);
-          else if (/\.(ya?ml|json|md|mjs)$/.test(entry.name)) {
+          if (entry.isDirectory()) {
+            // Dependencies are a copy of the registry, not the repository. Walking
+            // them would read thousands of files per probe and make the watcher the
+            // slowest part of the gate.
+            if (entry.name === "node_modules") continue;
+            stack.push(full);
+          } else if (/\.(ya?ml|json|md|mjs|js)$/.test(entry.name)) {
             watched.push([full, readFileSync(full, "utf8")]);
           }
         }
@@ -329,6 +361,6 @@ console.log(
       ? `Not caught: ${notCaught.map((r) => r.gate).join(", ")}`
       : "Every gate noticed its own mutation.")
 );
-console.log(`\nNot probed (${NOT_YET_PROBED.length} of the 16 gate steps):`);
+console.log(`\nNot probed (${NOT_YET_PROBED.length} of the 18 gate steps):`);
 for (const line of NOT_YET_PROBED) console.log(`  - ${line}`);
 process.exit(notCaught.length > 0 ? 1 : 0);

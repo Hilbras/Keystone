@@ -201,7 +201,7 @@ for (const [file, key, keepPrefix] of [
   }
   // A reference that lost its registry is a manifest that cannot be applied, so
   // the resulting shape is verified rather than assumed.
-  if (keepPrefix && !out.includes(`ghcr.io/hilbras-dev/hilbras-keystone:${target}`)) {
+  if (keepPrefix && !out.includes(`ghcr.io/hilbras/keystone:${target}`)) {
     console.error(`  ${file}: the image reference is not the expected registry/name:${target}`);
     console.error("  Refusing to write a manifest that cannot be applied.");
     process.exit(1);

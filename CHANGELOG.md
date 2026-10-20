@@ -5,6 +5,84 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.0] - 2026-10-20
+
+*Plan §7.1–§7.6: API and SDK developer experience. The theme is that a contract nobody can machine-read is a contract that drifts, and a client that retries the wrong request is a bug with a friendly name.*
+
+### Added
+
+- **`GET /openapi.json`** — the OpenAPI document as a first-class endpoint, not
+  only as the Swagger UI's private copy. The document is OpenAPI 3.x, declares the
+  `bearerAuth` (JWT) and `apiKey` security schemes, and tags every operation by
+  route area (`auth`, `oauth`, `sessions`, `admin`, `webhooks`, `federation`, …)
+  through a single `onRoute` hook, so a new route is tagged when it is registered
+  rather than when someone remembers to edit a schema.
+- **`@hilbras/keystone-client`** (`packages/keystone-client`) — a typed TypeScript
+  client for authentication, sessions, API keys, organizations, OAuth, token
+  operations, webhooks, admin and health. It exposes `AuthenticationError`,
+  `AuthorizationError`, `ValidationError`, `NotFoundError`, `ConflictError`,
+  `RateLimitError`, `ServerError`, `NetworkError` and `KeystoneError`, preserving
+  the server's `code`, `requestId` and `details` on each.
+- The client's retry policy is deliberately asymmetric: idempotent methods retry
+  with exponential backoff and jitter, `Retry-After` is honoured, and a write is
+  retried **only** when the caller passes `retry: true`. `idempotencyKey` is
+  forwarded as `Idempotency-Key` for the operations that accept one.
+- **`scripts/verify-openapi-version.mjs`** (`npm run verify:openapi`) — boots the
+  built server, requests `/openapi.json`, and fails if the document version is not
+  `package.json`'s version, if it is not OpenAPI 3.x, if either security scheme is
+  missing, if a path has no tag, if a required path is absent, or if `src/index.ts`
+  hardcodes the version again.
+- **`scripts/verify-keystone-client.mjs`** (`npm run verify:client`) — fourteen
+  runtime checks against a failing fake `fetch`: retry counts and backoff,
+  `Retry-After`, the write/no-retry rule, error-class mapping, correlation fields,
+  access-token resolution per request, `Idempotency-Key`, and parameter encoding.
+- **`docs/SDK.md`**, **`docs/MULTI-TENANCY.md`**, **`docs/TROUBLESHOOTING.md`** —
+  a supported client surface with examples, the tenant-boundary rules as they are
+  enforced today, and the failure messages operators actually see.
+- Both gates run in CI: `verify:openapi` after `check:docs`, `verify:client` after
+  the SDK package verification. `scripts/probe-gates.mjs` now proves both gates
+  fail when their subject is broken.
+
+### Changed
+
+- **The OpenAPI version is derived, never typed.** It is read from `package.json`
+  at build time; the previous document carried the version of whichever release
+  last edited it.
+- **JSON errors carry a stable code and the request id.** An `onSend` hook adds
+  `requestId` to a Keystone error body and derives `code` from the status when the
+  handler did not supply one (`VALIDATION_ERROR` for a 400 with `details`,
+  `RATE_LIMITED` for a 429 included). An existing `code` is never overwritten.
+- Protocol bodies keep their protocol shape: RFC 6749 OAuth errors
+  (`invalid_grant`, `error_description`), RFC 7644 SCIM envelopes and
+  `{ allowed, reason }` authorization decisions are left untouched.
+- The global error handler now emits `VALIDATION_ERROR` for schema failures and a
+  status-derived code for every other unhandled error, so the contract holds even
+  when a route bypasses `sendResultError`.
+- `docs/API.md` documents `/openapi.json`, the error model, RFC envelopes,
+  pagination and which operations are safe to retry.
+- `scripts/verify-doc-samples.mjs` compiles the client examples and resolves the
+  `@hilbras/keystone-client` import; `scripts/verify-doc-scripts.mjs` checks the
+  new package's scripts.
+- Three coverage entries were registered for the error contract, the client retry
+  policy and the client smoke script.
+
+### Security
+
+- The retry policy is the security-relevant half of the client. An automatic retry
+  of `POST /auth/refresh` or `POST /oauth2/token` can revoke a session family or
+  burn a single-use authorization code; the client therefore never retries a write
+  unless the caller has classified it as safe.
+- The error hook mitigates a correlation gap rather than a numbered finding:
+  errors that omitted `requestId` could not be tied to a log line, and errors that
+  omitted `code` forced clients to parse prose. It is additive; no existing field
+  changes meaning.
+
+### Compatibility
+
+- No breaking changes. Every addition is a new route, a new package, a new field
+  in JSON error bodies, or a new gate. Existing clients that read `error` continue
+  to work; clients that compare whole error bodies will see the added fields.
+
 ## [3.11.0] - 2026-10-20
 
 *Plan §6.1–§6.7: enterprise deployment readiness. The theme is that a deployment which is wrong should say so at boot, not at 3am.*

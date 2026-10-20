@@ -1341,6 +1341,16 @@
       "test": "src/tests/observability/diagnostics.test.ts",
       "covers": "That `/v1/admin/platform/diagnostics` does not become a copy of the configuration it summarizes. The negative assertions are made against the values actually present in the process environment \u2014 the encryption key, the internal API key, the database password, a middle line of the JWT private key, the Redis password \u2014 rather than against a list of field names, so a field added later that carries a value already in the environment fails the suite.",
       "why": "Not a numbered finding. The route is new in this release and asserts a property rather than describing a defect it repairs, so there is nothing to number. It is registered because the property erodes by addition: the report is assembled from the same `config` object the rest of the application reads, and one convenience field \u2014 the config echoed back \"for debugging\" \u2014 would turn the endpoint into a credential dump while every other assertion in the suite stayed green. Checking against the environment's real values is what keeps it true as the report grows."
+    },
+    {
+      "test": "src/tests/errorContract.test.ts",
+      "covers": "The JSON error contract: a body with only `error` gains a status-derived `code` and the request id; a 400 with `details` becomes `VALIDATION_ERROR`; a handler's own code is preserved; OAuth (RFC 6749), SCIM (RFC 7644) and `{allowed, reason}` decision bodies are left in their protocol shapes; non-JSON bodies are untouched; and a 5xx maps to `SERVICE_UNAVAILABLE` rather than to a generic message.",
+      "why": "Not a numbered finding. The contract was already `{ error, code }` for the paths that used `sendResultError`; the defect was that most handlers did not, so the property \u2014 every Keystone JSON error is machine-readable and correlatable \u2014 was never true rather than broken by a change. It is registered because the hook is additive and easy to widen: adding `code` to an OAuth error body, or `requestId` to a SCIM envelope, would still pass a test that only checked the happy path while making two RFC-defined clients see a body they do not expect."
+    },
+    {
+      "test": "scripts/verify-keystone-client.mjs",
+      "covers": "That `@hilbras/keystone-client` retries safe methods with backoff, never retries a write unless the caller opts in, honours `Retry-After`, maps 401/403/404/409/422/429/5xx and transport failures to distinct error classes, preserves `code`/`requestId`/`details`, resolves an access-token provider per request, sends `Idempotency-Key` when asked, and encodes path and query parameters rather than concatenating them.",
+      "why": "Not a numbered finding: the client is new in 3.12.0. Registered because the retry policy is the security-relevant half \u2014 an automatic retry of `POST /auth/refresh` or `POST /oauth2/token` can revoke a session or burn an authorization code, and a client that retried every 503 would turn a transient server fault into exactly the replay those routes defend against. The script drives a real compiled build against a failing fetch, so it measures the behaviour rather than the presence of a `retry` option."
     }
   ]
 }

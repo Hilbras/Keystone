@@ -155,6 +155,13 @@ jobs:
       - name: Gate — documentation links resolve
         run: npm run check:docs
 
+      - name: Gate — the OpenAPI document describes this server
+        # It advertised version 3.0.1 against a 3.11.0 package, and nothing
+        # compared them. Now the version comes from package.json and this boots
+        # the built app to check the served document, its credential schemes, and
+        # that every operation is tagged with a declared tag.
+        run: npm run verify:openapi
+
       - name: Gate — the re-audit matrix regenerates and every claim verifies
         run: npm run reaudit:check
 
@@ -234,11 +241,18 @@ jobs:
         # @hilbras/keystone/sdk, a subpath the published package did not serve.
         run: node scripts/verify-doc-samples.mjs
 
-      - name: Gate — the five SDK packages share the server version and declare their range
+      - name: Gate — the SDK packages share the server version and declare their range
         # They were all at 1.0.0 against a 3.4.0 server, with nothing anywhere
         # saying which server each supports. A user installing a package cannot tell
         # whether it works with the server in front of them.
         run: node scripts/verify-sdk-packages.mjs
+
+      - name: Gate — the client honours its retry and error contract
+        # A compiled client and a working client are different claims. §7.4/§7.5
+        # are promises about behaviour: retry safe methods only, honour
+        # Retry-After, map status to a class a caller can act on. Driven against a
+        # fetch that fails in exactly those ways, with no network.
+        run: npm run verify:client
 
       - name: Gate — the Kubernetes manifests match the running software
         # The readiness probe pointed at /health — liveness, which answers 200
