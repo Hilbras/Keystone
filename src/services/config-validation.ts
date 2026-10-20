@@ -5,9 +5,6 @@ import {
   securityDefaults,
   type SecurityProfile,
 } from "../config/profiles.js";
-import { serviceLogger } from "../lib/logger.js";
-
-const moduleLog = serviceLogger("config-validation");
 
 /**
  * §6.1. One production-configuration validator, run at boot.
@@ -420,18 +417,5 @@ export function logConfigurationReport(
     if (finding.level === "error") log.fatal(fields, formatFinding(finding));
     else if (finding.level === "warning") log.warn(fields, formatFinding(finding));
     else log.info(fields, formatFinding(finding));
-  }
-}
-
-/**
- * The last-resort path for a caller that cannot reach the Fastify logger (the
- * CLI, or a boot failure before `buildApp()`).
- */
-export function logConfigurationReportToConsole(report: ConfigValidationReport): void {
-  for (const finding of report.findings) {
-    const line = formatFinding(finding);
-    if (finding.level === "error") console.error(line);
-    else if (finding.level === "warning") console.warn(line);
-    else moduleLog.info({ code: finding.code }, line);
   }
 }
