@@ -245,8 +245,100 @@ And connect the project:
 - [ ] Regular backups of PostgreSQL data
 - [ ] Server firewall allows only ports 80, 443, and SSH
 - [ ] `KEYSTONE_ALLOW_INSECURE_WEBHOOK` and `ALLOW_PRIVATE_WEBHOOK_TARGETS` are
-      **unset** — both are development affordances, and neither is checked by a
-      gate (plan §6.1 will validate unsafe production settings as a class)
+      **unset** — both are development affordances. Since 3.11.0 the first is
+      **refused at startup** in a production-like profile; the second is reported
+      as a warning in `/platform/diagnostics`
+- [ ] `KEYSTONE_QUEUE_PROVIDER=bullmq` (an in-process queue is refused in
+      `production`; see [Configuration validation](#configuration-validation))
+
+---
+
+## Configuration validation
+
+Every production-posture check runs once at boot, from
+`src/services/config-validation.ts`, and is logged as a structured report. The
+same report is rendered by `/v1/admin/platform/diagnostics` under `configuration`,
+so a running instance cannot disagree with the gate that let it start.
+
+**Profiles.** `NODE_ENV` selects one:
+
+| `NODE_ENV` | Production-like | Unsafe setting |
+|---|---|---|
+| `production` | yes | **refuses to start** |
+| `staging` | yes | **refuses to start** (same as production) |
+| `development` | no | warns |
+| `test` | no | quiet |
+
+Any other value is treated as `development` **and reported as a warning** —
+silently relaxing defaults because of a typo is exactly the failure this exists to
+catch.
+
+### Findings that refuse to start
+
+| Code | Condition |
+|---|---|
+| `CONFIG_INSECURE_COOKIE` | `COOKIE_SECURE=false` |
+| `CONFIG_WEAK_TOTP_KEY` | TOTP key missing, shorter than 32 characters, or the `.env.example` placeholder |
+| `CONFIG_IN_PROCESS_QUEUE` | `KEYSTONE_QUEUE_PROVIDER=in-process` in `production` (a warning in `staging`) |
+| `CONFIG_INSECURE_WEBHOOK_ALLOWED` | `KEYSTONE_ALLOW_INSECURE_WEBHOOK` set |
+
+`KEYSTONE_ALLOW_DEV_DEFAULTS=true` downgrades them to warnings and logs that it
+did. It is an escape hatch for a deliberate single-node development deployment,
+not a production setting.
+
+### Warnings
+
+`CONFIG_WEAK_INTERNAL_API_KEY`, `CONFIG_MISSING_ENCRYPTION_KEY`,
+`CONFIG_PRIVATE_WEBHOOK_TARGETS`, `CONFIG_PRIVATE_SSO_ENDPOINTS`,
+`CONFIG_UNSIGNED_WEBHOOKS`, `CONFIG_EMPTY_CORS`, `CONFIG_COOKIE_SAMESITE_NONE`,
+`CONFIG_UNTRUSTED_PROXY`, `CONFIG_HTTP_ISSUER`, `CONFIG_DEBUG_LOGGING`,
+`CONFIG_UNKNOWN_ENVIRONMENT`, `CONFIG_DEV_DEFAULTS_ENABLED`.
+
+None of these stop the process: refusing to boot on a missing optional integration
+turns hardening into an outage. They are in diagnostics so the decision is visible.
+
+Related: [backup, restore and profiles](OPERATIONS/backup-restore.md#8-configuration-profiles).
+
+---
+
+## Graceful shutdown
+
+The server installs `SIGTERM` and `SIGINT` handlers. On either:
+
+```text
+stop accepting requests -> finish active requests -> stop workers ->
+finish safe jobs -> release locks -> close PostgreSQL -> close Redis -> exit 0
+```
+
+`KEYSTONE_SHUTDOWN_TIMEOUT_MS` bounds the sequence (default `10000`). On expiry the
+process exits `1` and logs which dependency was still open. A second signal exits
+immediately.
+
+Give the orchestrator more time than the bound: Kubernetes'
+`terminationGracePeriodSeconds` defaults to 30 s, which covers the default. The
+image declares `STOPSIGNAL SIGTERM`, and `docker stop` therefore drains rather
+than severs.
+
+Before 3.11.0 there were no signal handlers: SIGTERM terminated the process
+immediately, and the queue/cache teardown in the `onClose` hook never ran because
+nothing called `app.close()`.
+
+---
+
+## Migrations
+
+The server applies pending migrations and then verifies that every table the
+application expects exists. In `production` and `staging`, a failed migration or a
+missing table **refuses to start**; in development it is logged.
+
+```bash
+npx @hilbras/keystone migrate --verify
+npx @hilbras/keystone schema:verify
+```
+
+See [migrations](OPERATIONS/migrations.md) for the up/verify/rollback model, the
+expand/migrate/contract strategy, and a deploy order that does not leave a rolling
+deployment reading a column it removed.
 
 ---
 

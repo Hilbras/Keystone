@@ -5,6 +5,150 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] - 2026-10-20
+
+*Plan §6.1–§6.7: enterprise deployment readiness. The theme is that a deployment which is wrong should say so at boot, not at 3am.*
+
+### SEC-095, medium — production configuration was checked in three places, and the unsafe settings that mattered most had no check
+
+Production posture was four ad-hoc blocks: a fatal for a weak TOTP key and one for
+`COOKIE_SECURE=false`, a warning for a missing encryption key, and two warnings in
+the diagnostics summary. Everything else that makes a deployment unsafe ran
+unchecked:
+
+```text
+in-process queue in a multi-instance deployment   work lost on restart, limits not shared
+KEYSTONE_ALLOW_INSECURE_WEBHOOK left set          plaintext webhook delivery
+debug logging in production                       request detail in the log
+empty ALLOWED_ORIGINS behind a credentialed cookie
+webhooks sent without a signature
+private-network allowlists enabled
+unsecured/unconfigured trusted proxies
+```
+
+Those checks also keyed off `NODE_ENV === "production"` alone, so **`staging`
+behaved exactly like development** — the environment that exists to prove the
+production configuration was the one that relaxed it — and a typo such as `prod`
+did the same silently.
+
+There is now one validator (`src/services/config-validation.ts`) over an explicit
+input struct, one report, and one decision:
+
+| Level | Effect |
+|---|---|
+| `error` | refuses to start in a production-like profile |
+| `warning` | logged and shown in `/v1/admin/platform/diagnostics` |
+| `info` | profile and resolved settings |
+
+The fatal set is deliberately small: insecure cookie, weak/placeholder TOTP key,
+in-process queue in **production**, and the insecure-webhook escape hatch.
+`staging` is production-strict with one concession — a single-node staging
+deployment may use the in-process queue, as a warning. Unknown environment names
+resolve to development **and are reported**, because guessing the stricter profile
+refuses to start a running system and guessing the looser one is what already
+happened.
+
+`KEYSTONE_ALLOW_DEV_DEFAULTS=true` still bypasses the refusal. It now logs how many
+unsafe settings it bypassed.
+
+### SEC-096, medium — a failed migration was logged and the process kept serving a schema it did not match
+
+`start()` caught `migrate()` failures, logged them, and called `listen()`. Nothing
+verified that the database had the schema the application expected. An interrupted
+migration, a restore from an older dump, or a `search_path` resolving elsewhere
+produced a process that was live, ready, and answering 500s to every request that
+touched a missing table.
+
+Startup now verifies the schema immediately after migrating. The expected tables are
+derived from `schema.ts` through Drizzle's own `isTable`/`getTableName`, so a table
+cannot be forgotten in a hand-maintained list. In `production` and `staging`, a
+failed migration **or** a missing table refuses to start.
+
+```bash
+npx @hilbras/keystone migrate --verify
+npx @hilbras/keystone schema:verify
+scripts/migrate.sh up --verify
+```
+
+`scripts/migrate.sh` also provides `rollback --dump FILE`. Drizzle migrations are
+forward-only; there is no down migration, and the script says so rather than
+pretending. The documented rollback is a dump taken before `up`, plus
+expand/migrate/contract for changes that must be reversible.
+
+### SEC-097, low — SIGTERM terminated the process immediately and the teardown never ran
+
+There was no `process.on('SIGTERM'|'SIGINT')` anywhere in `src/`. Node's default
+disposition terminated the process at once, so a deploy, `docker stop`, or pod
+eviction severed every in-flight request and every running job. The `onClose` hook
+that closes the queue and the cache never ran either, because nothing called
+`app.close()` in production — there was no stop path to call it from. The
+in-process queue's `close()` cleared its handler map without awaiting a running
+handler and let a retry timer fire into the empty map.
+
+The shutdown sequence is now explicit and bounded:
+
+```text
+stop accepting requests -> finish active requests -> stop workers ->
+finish safe jobs -> release locks -> close PostgreSQL -> close Redis -> exit 0
+```
+
+`KEYSTONE_SHUTDOWN_TIMEOUT_MS` (default `10000`) bounds it; on expiry the process
+exits `1` and names the step that was still open. A second signal exits
+immediately. The in-process queue awaits its in-flight set and clears pending retry
+timers. `Dockerfile` declares `STOPSIGNAL SIGTERM`.
+
+### Added
+
+- `src/config/profiles.ts` — explicit security defaults for `development`, `test`,
+  `staging`, `production`.
+- `src/services/config-validation.ts` — boot-time validator, also rendered by
+  diagnostics (new `configuration.profile` field).
+- `src/services/shutdown.ts` — ordered shutdown on SIGTERM/SIGINT.
+- `src/services/startup-recovery.ts` — one boot pass that reclaims stale webhook
+  claims, **re-enqueues `pending` deliveries whose queue job was lost** (a rebuilt
+  Redis or an in-process restart used to strand them silently), releases lock keys
+  with no expiry, counts queue backlog and dead-letter entries, and reports all of
+  it in `/v1/admin/platform/diagnostics` under `recovery`.
+- `src/db/verifySchema.ts`, `keystone schema:verify`, `migrate --verify`,
+  `scripts/migrate.sh` (up/verify/rollback).
+- `docs/OPERATIONS/backup-restore.md` — database and key backup, restore
+  verification checklist, disaster-recovery scenarios, RTO/RPO, what cannot be
+  recovered.
+- `docs/OPERATIONS/migrations.md` — up/verify/rollback, expand/migrate/contract,
+  dangerous-operation table, deploy order.
+- `HEALTHCHECK` in the image, against `/health/live`.
+- `src/tests/deployment/` — configuration validation, profiles, shutdown ordering
+  and timeout, startup recovery, delivery recovery, schema verification, queue
+  drain, and static assertions over the Dockerfile/compose/k8s descriptors.
+
+### Changed
+
+- **A production-like boot now refuses an in-process queue.** Compose and the k8s
+  ConfigMap already set `KEYSTONE_QUEUE_PROVIDER=bullmq`; a bare `docker run` with
+  no provider will now stop with an explanation. Set it to `bullmq`, or set
+  `KEYSTONE_ALLOW_DEV_DEFAULTS=true` for a deliberate single-process deployment.
+- `staging` is validated as production. A deployment that used `NODE_ENV=staging`
+  to get development defaults will now be refused until it is configured like
+  production.
+- An unknown `NODE_ENV` is reported. It still resolves to development.
+- `/v1/admin/platform/diagnostics` `configuration` gained `profile`; the response
+  gained `recovery`.
+- The k8s manifests now reference `ghcr.io/hilbras/keystone`, which is what
+  `release.yml` publishes. They referenced `ghcr.io/hilbras-dev/hilbras-keystone`,
+  a different organization from the repository, and the k8s gate hardcoded the
+  stale name.
+
+### Fixed
+
+- In-process queue: `close()` drains in-flight work instead of clearing the
+  handler map underneath it.
+- Startup recovery of webhook deliveries: a `pending` row whose queue job was lost
+  is re-enqueued rather than sitting visible and dead.
+- The webhook stale-claim sweep is owned by startup recovery, so the report and
+  the work cannot disagree.
+- Lock keys with no expiry (which could never be taken over) are released at boot;
+  locks with a TTL are never touched.
+
 ## [3.10.0] - 2026-10-19
 
 *Plan §5.1–§5.5: Keystone should be operable without a debugger. Building the probes turned up two defects in code that had already shipped and one in the queue driver.*

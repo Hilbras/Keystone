@@ -203,7 +203,7 @@ It runs in the `gates` job and is now a required check on `main`.
 
 ```yaml
 images:
-  - name: ghcr.io/hilbras-dev/hilbras-keystone
+  - name: ghcr.io/hilbras/keystone
     newTag: 3.4.0
 ```
 

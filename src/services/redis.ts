@@ -19,14 +19,15 @@ export function isRedisReady(): boolean {
  * Release the shared connection. Safe to call more than once, and a no-op if the
  * client never connected.
  *
- * Exists for the CLI, which is the only part of Keystone that has to *exit*
- * rather than keep serving. A live socket is a live handle, so a command that
- * touched Redis — anything that builds the container — never reached an empty
- * event loop and never returned. `initializeContainer()` left three of them
- * open, which is why closing the database pool alone was not enough and why the
- * command still hung.
+ * Exists for the CLI — the only part of Keystone that has to *exit* without serving —
+ * and for the graceful shutdown path (§6.3), which releases the connection on the
+ * way out. It must not be called anywhere else: the server has jobs to keep doing,
+ * and a live Redis connection is the server's distributed state.
  *
- * The server never calls this, and must not: it has jobs to keep doing.
+ * A live socket is a live handle, so a command that touched Redis — anything that
+ * builds the container — never reached an empty event loop and never returned.
+ * `initializeContainer()` left three of them open, which is why closing the
+ * database pool alone was not enough and why the command still hung.
  */
 export async function closeRedis(): Promise<void> {
   try {

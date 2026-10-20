@@ -48,6 +48,23 @@ COPY --from=builder /app/frontend/dist ./frontend/dist
 ENV NODE_ENV=production
 EXPOSE 4001
 
+# §6.7. The image declared no health check, so a bare `docker run` had no health
+# state at all — compose and k8s configured their own probes, and the image that is
+# actually published did not. The command is an explicit fetch rather than a shell
+# HTTP client because the runtime image installs only ca-certificates: no curl, no
+# wget. Node is already there.
+#
+# `/health/live` rather than `/ready` on purpose. A readiness failure means "do not
+# send traffic", which is the orchestrator's decision; a health check that reports
+# unhealthy on a Redis outage would restart a process that is serving correctly.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||4001)+'/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+# Node's default disposition is already SIGTERM, but stating it is what makes the
+# graceful handler in `services/shutdown.ts` reachable from `docker stop` and from
+# a Kubernetes preStop hook rather than an operator's assumption.
+STOPSIGNAL SIGTERM
+
 # Run as the same uid the k8s manifests pin (runAsUser: 1000), so bare
 # `docker run` and compose get the same posture as the cluster.
 RUN chown -R node:node /app

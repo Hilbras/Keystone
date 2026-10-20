@@ -113,6 +113,18 @@ const STALE_CLAIM_MS = 10 * 60 * 1000;
 const RECLAIM_INTERVAL_MS = 60_000;
 
 /**
+ * How old a `pending` delivery must be before boot recovery re-enqueues it.
+ *
+ * A `pending` row is a pointer; the job that carries it lives in Redis (or in the
+ * in-process driver's memory). If Redis is rebuilt, or an in-process deployment
+ * restarts, the row survives and the job does not. The row then sits at `pending`
+ * forever — visible, but never picked up — because the stale-claim sweep only
+ * touches `processing`. The grace period keeps a delivery enqueued moments before
+ * the restart from being queued twice for no reason.
+ */
+const PENDING_REENQUEUE_MS = 60_000;
+
+/**
  * A stable id for this process, recorded on every claim.
  *
  * Not for mutual exclusion — the database does that — but for the log line an
@@ -458,6 +470,34 @@ export async function reclaimStaleDeliveries(): Promise<number> {
   return reclaimed.length;
 }
 
+/**
+ * §6.4. Re-enqueue deliveries that are `pending` but have no live job behind them.
+ *
+ * The stale-claim sweep recovers `processing` rows. It cannot see the opposite
+ * failure: a `pending` row whose job was lost when Redis was rebuilt, or when an
+ * in-process deployment restarted. Nothing picks those up, and nothing reports
+ * them — the delivery is lost while sitting in plain sight.
+ *
+ * Duplicates are harmless by construction: `claimDelivery` is an atomic
+ * `pending -> processing` transition, so a second job for the same delivery sends
+ * nothing and returns.
+ */
+export async function reenqueuePendingDeliveries(limit = 200): Promise<number> {
+  const olderThan = new Date(Date.now() - PENDING_REENQUEUE_MS);
+  const rows = await db
+    .select({ id: webhookDeliveries.id })
+    .from(webhookDeliveries)
+    .where(
+      and(eq(webhookDeliveries.status, "pending"), lt(webhookDeliveries.createdAt, olderThan))
+    )
+    .limit(limit);
+
+  for (const row of rows) {
+    await queue.enqueue({ type: "webhook-delivery", payload: { deliveryId: row.id } });
+  }
+  return rows.length;
+}
+
 export async function deliverNow(deliveryId: string): Promise<void> {
   // **The claim, before any work.** Everything below this line happens only for
   // the one caller that won it; every other caller returns having sent nothing.
@@ -693,16 +733,18 @@ export function startWebhookWorker(): void {
   /**
    * Recover deliveries stranded by a worker that died mid-request.
    *
-   * Runs at startup rather than only on a timer, because the case that matters is
-   * a **restart**: a process killed while holding claims leaves those rows in
-   * `processing`, and without this they are never retried and never reported —
-   * not pending, so nothing picks them up; not failed, so nothing surfaces them.
-   * The delivery is simply gone.
+   * The boot-time pass is owned by `services/startup-recovery.ts` (§6.4), which
+   * runs it once before the server listens and records the count in a report. It
+   * used to run here as well; splitting the two would mean the operator-facing
+   * report reads zero because this sweep had already done the work silently.
    *
-   * Deliberately not awaited. Startup must not block on a table scan, and a
-   * failure here is logged rather than fatal — a recovery pass that cannot run is
-   * a reason to complain, not a reason to refuse to boot. `.unref()` so the timer
-   * never holds the process open during shutdown.
+   * The timer remains, for a worker that dies while the process is still up — the
+   * claim expires after `STALE_CLAIM_MS` and the next tick returns it to `pending`.
+   *
+   * Deliberately not awaited. A timer must not hold startup open, and a failure
+   * here is logged rather than fatal — a recovery pass that cannot run is a reason
+   * to complain, not a reason to refuse to boot. `.unref()` so the timer never
+   * holds the process open during shutdown.
    *
    * Errors are caught and logged rather than left to become an unhandled
    * rejection. That is the SEC-053 defect in a different place: an unhandled
@@ -722,7 +764,6 @@ export function startWebhookWorker(): void {
       });
   };
 
-  sweep();
   const timer = setInterval(sweep, RECLAIM_INTERVAL_MS);
   timer.unref();
 }

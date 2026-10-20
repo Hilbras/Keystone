@@ -71,7 +71,12 @@ program
 program
   .command("migrate")
   .description("Run database migrations")
-  .action(async () =>
+  // §6.5. Without this, "migrations applied" means only that the journal ran.
+  // A stale restore or an interrupted migration still prints that line and then
+  // fails per request, so the check is a separate, explicit step an operator (or
+  // `scripts/migrate.sh`) asks for.
+  .option("--verify", "Verify that every table the application expects exists")
+  .action(async (options: { verify?: boolean }) =>
     withReleasedConnections(async () => {
       const { migrate } = await import("drizzle-orm/postgres-js/migrator");
       const { db } = await import("./db/index.js");
@@ -80,6 +85,43 @@ program
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
       await migrate(db, { migrationsFolder: path.resolve(__dirname, "./db/migrations") });
       console.log("Migrations applied");
+
+      if (options.verify) {
+        const { verifySchema } = await import("./db/verifySchema.js");
+        const result = await verifySchema();
+        if (!result.ok) {
+          console.error(
+            `Schema verification failed: ${result.missing.length} table(s) missing — ${result.missing.join(", ")}`
+          );
+          // Set rather than exit: the `finally` above must still release the
+          // sockets, and an immediate exit would leave the pool open.
+          process.exitCode = 1;
+          return;
+        }
+        console.log(`Schema verified (${result.expected.length} tables)`);
+      }
+    })
+  );
+
+program
+  .command("schema:verify")
+  .description("Check that every table the application expects exists, without migrating")
+  // §6.5. Separate from `migrate --verify` because the interesting use is *after*
+  // something else migrated — a container start, a restore, a rollback — and
+  // re-running migrations to answer "is the schema intact?" is a surprising side
+  // effect for a read-only question.
+  .action(async () =>
+    withReleasedConnections(async () => {
+      const { verifySchema } = await import("./db/verifySchema.js");
+      const result = await verifySchema();
+      if (!result.ok) {
+        console.error(
+          `Schema verification failed: ${result.missing.length} table(s) missing — ${result.missing.join(", ")}`
+        );
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Schema verified (${result.expected.length} tables)`);
     })
   );
 
