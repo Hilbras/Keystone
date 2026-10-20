@@ -102,6 +102,16 @@ visible from a test that exercised the happy path.
   configuration, and a hardcoded one cannot be raised by the suite that
   exercises it — which matters because the budget is keyed on the client
   address, so in a test run it is shared by the whole suite.
+- The refresh-token lookups moved into `src/services/tokens.ts`, next to the
+  minting and the rotation they have to agree with. They were briefly a separate
+  module with its own copy of the token hash, and a copy is a drift risk: if the
+  two ever disagreed, every lookup would silently find nothing — and the
+  symptom, every refresh failing and no replay ever being detected, reads like
+  a configuration mistake rather than the divergence it is.
+- `vite` is updated to 8.3.4 in the frontend, and `launch-editor` to 2.14.2.
+  Three advisories (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv,
+  GHSA-r825-w8mm-5pxw) were published against the versions in use, and the
+  supply-chain gate turned red on `main` without this release being involved.
 
 ### Security
 

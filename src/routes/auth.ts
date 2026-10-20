@@ -75,7 +75,7 @@ const RefreshSchema = z.object({
  * otherwise have no subject.
  */
 async function refreshTokenUserId(token: string): Promise<string | null> {
-  const { refreshTokenOwner } = await import("../services/refreshTokenState.js");
+  const { refreshTokenOwner } = await import("../services/tokens.js");
   return refreshTokenOwner(token);
 }
 
