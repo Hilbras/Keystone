@@ -5,6 +5,144 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.0] - 2026-10-20
+
+*Plan §8.1–§8.8: failure and chaos testing. The theme is that a system is only as good as its behaviour when something breaks, and most of what breaks is not the thing the tests were written about.*
+
+### Fixed
+
+Four defects were found by writing the failure tests, not by reading the code.
+All four are in this release, all four are numbered, and none of them was
+visible from a test that exercised the happy path.
+
+- **The global rate limiter failed open when Redis was unreachable** (SEC-099).
+  The per-endpoint limiters carried an emergency local budget; the global one
+  did not, and it is the limit in front of every other endpoint — so a Redis
+  outage removed the ceiling from the whole server at once. The SCIM
+  pre-authentication budget had the same shape. Both now fall back.
+- **ioredis had no command timeout** (SEC-100). A *dropped* Redis was bounded;
+  a *slow* one was not, because ioredis waits for an answer indefinitely. The
+  rate limiter is in front of every request, so a degraded Redis took the API
+  down rather than just the limiter — and the degraded path that exists to keep
+  serving never engaged, because the request was still waiting on the command
+  that would not return. The operational probe had already recorded the cost:
+  eight seconds for the first request during an outage, twenty for each of the
+  next.
+- **The application's error handler was installed after the routes**
+  (SEC-101). Fastify resolves the handler for a route when the route is
+  registered, so `buildApp()`'s trailing `setErrorHandler` applied to none of
+  them. A schema violation answered **500** with the raw validation issues in
+  the body; a database failure answered **500** with the failed query, which
+  tells an attacker the schema. The handler is now installed before the first
+  route, and a database that cannot be reached answers **503**.
+- **Refresh-token replay was detected on one route only, and the detection it
+  had was too wide** (SEC-098). The schema carried a `consumed_at` column and a
+  comment describing a revoke-everything replay response, the event vocabulary
+  declared `refresh_token_replayed`, and `findRefreshTokenState()` existed to
+  answer the question — and nothing called it. The one place that looked, the
+  `/auth/refresh` route, revoked **every** credential the user had on any
+  detected replay, including the sessions on devices the attacker never
+  touched, and treated a token spent two hundred milliseconds ago exactly as it
+  treated one spent an hour ago — so a client that refreshed twice at once cost
+  the user their whole account. The OAuth grant path had no detection at all,
+  so a stolen token replayed through `/oauth2/token` kept working.
+- **Closing the application could wait forever for a Redis that was down**
+  (SEC-102). The cache's own Redis connection was closed with `quit()` and
+  nothing else, and `quit()` waits for an answer from a server that is down.
+  The server's SIGTERM path was bounded, so this was not a production outage —
+  but every probe, every test fixture and every consumer of `buildApp()` closed
+  the app without a bound, and a process that never exits is a process nobody
+  can tell apart from a slow one.
+
+### Added
+
+- **`refresh_tokens.family_id`** — the credential family a refresh token belongs
+  to: the chain of tokens descended from one original login. A login starts a
+  family, every rotation carries it forward, and two devices logging in
+  separately are two families. A replay now revokes the family, which is the
+  compromised credential and not the user's other devices.
+- **`exchangeRefreshToken()`** — a refresh exchange now reports *why* it
+  failed: `rotated`, `rejected`, `raced` (the same client asking twice) or
+  `replayed`. The old `TokenSet | null` could not tell a lost race from a
+  breach, so the two were handled the same way — and a race is not a breach.
+- **Seven chaos suites** under `src/tests/chaos/`, covering §8.1–§8.7: Redis
+  failure, database failure, worker crash, process crash, network failure,
+  concurrency, and fuzzing. The crash tests kill real processes with SIGKILL;
+  the concurrency tests run a hundred of everything at once; the fuzzer is
+  seeded, so a failure reproduces.
+- **`npm run test:chaos`** and a dedicated `chaos` job in CI with a longer
+  timeout, because these tests spawn child processes and probes and take
+  minutes rather than seconds.
+- **Two probes** — `slowRedisProbe` (a Redis that accepts connections and
+  never answers) and a business route on the existing dead-database probe.
+
+### Changed
+
+- A database that cannot be reached answers **503** `SERVICE_UNAVAILABLE`
+  rather than 500. The distinction matters: 500 says the server is broken and
+  invites a retry that can never succeed; 503 says try again, and tells a load
+  balancer to shed traffic rather than sending more of it.
+- A failed refresh leaves **one** audit row. The route used to write a second
+  event to carry the request's identity, which produced two rows for one
+  failure — and the second was named `refresh_token_replayed` whatever had
+  actually happened, so an ordinary expired token produced a row whose name
+  said "replayed". The request's identity is now passed into the domain
+  service, so the one event carries the reason, the user, the family *and* the
+  request that caused it. This is the same shape SEC-053 fixed elsewhere in
+  the event bus.
+- The anomaly-detection signals fail soft. A Redis that cannot answer means
+  "no signal", not "no service" — and the failed-login count that does gate
+  falls back to the emergency limiter's answer, which is where the control
+  lives when Redis is gone.
+- Redis failures are logged once at a level an operator is looking at, rather
+  than ioredis printing a stack trace for every failed command.
+- The organization-creation budget is configurable
+  (`ORG_CREATE_MAX_ATTEMPTS`, `ORG_CREATE_WINDOW_SECONDS`) rather than written
+  into the route. Every other limiter of its kind reads its budget from the
+  configuration, and a hardcoded one cannot be raised by the suite that
+  exercises it — which matters because the budget is keyed on the client
+  address, so in a test run it is shared by the whole suite.
+- The refresh-token lookups moved into `src/services/tokens.ts`, next to the
+  minting and the rotation they have to agree with. They were briefly a separate
+  module with its own copy of the token hash, and a copy is a drift risk: if the
+  two ever disagreed, every lookup would silently find nothing — and the
+  symptom, every refresh failing and no replay ever being detected, reads like
+  a configuration mistake rather than the divergence it is.
+- `vite` is updated to 8.3.4 in the frontend, and `launch-editor` to 2.14.2.
+  Three advisories (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv,
+  GHSA-r825-w8mm-5pxw) were published against the versions in use, and the
+  supply-chain gate turned red on `main` without this release being involved.
+
+### Security
+
+- The four defects above are the security content of this release. Two of them
+  (the global limiter's fail-open and the missing command timeout) turned a
+  dependency outage into an unbounded server, and one of them (the error
+  handler) put the failed query in the response body.
+- The replay handling is the interesting one. The *old* behaviour was
+  over-revocation: a detected replay signed the user out of every device they
+  had. That is a denial of service for the price of one stolen token, and it
+  buys the attacker nothing the compromised credential's own revocation does
+  not already buy. The new behaviour revokes the family — the set of tokens
+  descended from the login the attacker compromised — which is the smallest
+  set that certainly includes the attacker's current token.
+
+### Compatibility
+
+- **One migration.** `refresh_tokens.family_id` is added, backfilled with each
+  existing token's own id, and made not-null. A pre-existing token has no
+  rotation history to inherit a family from, so its own id is the only id
+  guaranteed unique to it; one family per user would mean revoking one leaked
+  family revoked every session the user had, which is the over-revocation this
+  release exists to remove. The migration is written as expand, backfill,
+  contract, because Postgres refuses to add a not-null column to a populated
+  table.
+- No breaking API changes. The refresh endpoint's error body is unchanged
+  (`{ error, code }`); the reason is now carried in the server-side error
+  details rather than in the response.
+- The error contract now applies to the routes it was always meant to apply
+  to, which means a validation error answers **400** where it answered **500**.
+
 ## [3.12.0] - 2026-10-20
 
 *Plan §7.1–§7.6: API and SDK developer experience. The theme is that a contract nobody can machine-read is a contract that drifts, and a client that retries the wrong request is a bug with a friendly name.*

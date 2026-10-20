@@ -81,7 +81,72 @@ jobs:
           NODE_ENV: test
           KEYSTONE_INTERNAL_API_KEY: test-key
           KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
-        run: npm test -- --test-timeout=60000
+        run: npm test -- --test-timeout=180000
+
+  # §8. The failure and chaos suites.
+  #
+  # These are the tests that kill things: a worker holding a delivery is
+  # SIGKILLed mid-flight, a process is killed inside the bootstrap's
+  # transaction, a Redis is made to accept connections and never answer, a
+  # database is made unreachable. Each of them spawns a child process or a
+  # probe, so each takes far longer than an ordinary suite and each needs a
+  # timeout the ordinary one does not.
+  #
+  # They are also run by the `backend` job above, because `npm test` collects
+  # `dist/tests/chaos/` along with everything else and a suite that only runs
+  # in one place is a suite that can be forgotten. Running them here as well
+  # is not redundancy for its own sake: it proves the group is *self-contained*
+  # and can be run on its own, which is what an operator investigating an
+  # outage needs.
+  chaos:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hilbras
+          POSTGRES_PASSWORD: hilbras
+          POSTGRES_DB: hilbras
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Run the failure and chaos suites
+        env:
+          DATABASE_URL: postgresql://hilbras:hilbras@localhost:5432/hilbras
+          REDIS_URL: redis://localhost:6379
+          NODE_ENV: test
+          KEYSTONE_INTERNAL_API_KEY: test-key
+          KEYSTONE_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+        run: npm run test:chaos
 
   # The mechanical gates. Five checks that were in `release.yml` and nowhere else,
   # which meant a pull request could merge with all of them red and they would

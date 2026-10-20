@@ -78,8 +78,12 @@ class SdkAuthenticationClient implements AuthenticationSdk {
     };
   }
 
-  async refresh(refreshToken: string, clientId?: string) {
-    const result = await this.app.refresh(refreshToken, clientId);
+  async refresh(
+    refreshToken: string,
+    clientId?: string,
+    context?: { requestId?: string; ip?: string; userAgent?: string }
+  ) {
+    const result = await this.app.refresh(refreshToken, clientId, context);
     if (!result.success) return result;
     return { success: true as const, data: { accessToken: result.data.accessToken, refreshToken: result.data.refreshToken, expiresAt: result.data.expiresAt, userId: result.data.userId } };
   }

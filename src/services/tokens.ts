@@ -7,10 +7,11 @@ import {
   decodeProtectedHeader,
   exportJWK,
 } from "jose";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq, and, gt, inArray, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   refreshTokens,
+  userSessions,
   users,
   applications,
   orgMemberships,
@@ -21,6 +22,7 @@ import { config } from "../config.js";
 import type { Span } from "@opentelemetry/api";
 import { ATTR, SPAN, recordSpan, withSpan } from "./spans.js";
 import { recordTokenOperation } from "../plugins/operationalMetrics.js";
+import { emit } from "./events/bus.js";
 import type { TokenClaims } from "../types.js";
 import {
   getActiveSigningKey,
@@ -111,6 +113,12 @@ export interface AccessTokenOptions {
   mfaFactor?: MfaAssertion;
   /** Scopes granted at the authorization step, carried on the refresh token. */
   scopes?: string[];
+  /**
+   * The credential family the refresh token belongs to. A login omits it and
+   * gets a fresh family; a rotation passes the family of the token it replaces,
+   * so the whole chain stays one credential that can be revoked as a unit.
+   */
+  familyId?: string;
 }
 
 export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Promise<string> {
@@ -290,6 +298,11 @@ async function mintTokenSet(
     deviceFingerprint: deviceFingerprint ?? null,
     mfaFactor: opts.mfaFactor ?? null,
     scopes: opts.scopes ?? [],
+    // A login starts a family; a rotation names the family it continues. The
+    // family id is generated here rather than derived from the user, so two
+    // devices logging in as the same person are two families and revoking one
+    // does not sign the other out.
+    familyId: opts.familyId ?? crypto.randomUUID(),
   }).returning();
 
   try {
@@ -392,13 +405,32 @@ async function verifyWithKey(token: string, publicKey: CryptoKey): Promise<Token
   return payload as unknown as TokenClaims;
 }
 
-export async function rotateRefreshToken(
+/**
+ * What a refresh exchange settled as.
+ *
+ * The old contract was `TokenSet | null`, and `null` meant three different
+ * things: an unknown token, an expired token, and a replayed one. Only the
+ * third is an incident, and only the third has a consequence — the credential
+ * family is revoked. A caller that cannot tell them apart either logs a
+ * breach where there was a race, or fails to revoke a family where there was a
+ * breach. So the outcome is named.
+ */
+export type RefreshExchange =
+  | { outcome: "rotated"; tokens: TokenSet }
+  /** The token was not usable: unknown, expired, or administratively revoked. */
+  | { outcome: "rejected" }
+  /** The token had already been spent, and long enough ago to be a breach. */
+  | { outcome: "replayed"; userId: string; familyId: string }
+  /** The token had just been spent — the same client asking twice. */
+  | { outcome: "raced"; userId: string; familyId: string };
+
+export async function exchangeRefreshToken(
   token: string,
   ip?: string,
   userAgent?: string,
   clientId?: string,
   expectedAppId?: string
-): Promise<TokenSet | null> {
+): Promise<RefreshExchange> {
   // Counted at the wrapper rather than at each return, for the same reason as
   // before: this function returns `null` for three different situations — unknown
   // token, expired, and replayed — and the outcome label is richer here than at any
@@ -414,12 +446,30 @@ export async function rotateRefreshToken(
   // fault, such as the database being unreachable.
   try {
     const result = await rotateRefreshTokenInternal(token, ip, userAgent, clientId, expectedAppId);
-    recordTokenOperation("rotate", result ? "success" : "refused");
+    recordTokenOperation("rotate", result.outcome === "rotated" ? "success" : "refused");
     return result;
   } catch (err) {
     recordTokenOperation("rotate", "error");
     throw err;
   }
+}
+
+/**
+ * Rotate a refresh token, or refuse it.
+ *
+ * The `TokenSet | null` shape is kept for the callers that only need to know
+ * whether the exchange worked. `exchangeRefreshToken` is the one that says
+ * *why* it did not.
+ */
+export async function rotateRefreshToken(
+  token: string,
+  ip?: string,
+  userAgent?: string,
+  clientId?: string,
+  expectedAppId?: string
+): Promise<TokenSet | null> {
+  const result = await exchangeRefreshToken(token, ip, userAgent, clientId, expectedAppId);
+  return result.outcome === "rotated" ? result.tokens : null;
 }
 
 async function rotateRefreshTokenInternal(
@@ -428,7 +478,7 @@ async function rotateRefreshTokenInternal(
   userAgent?: string,
   clientId?: string,
   expectedAppId?: string
-): Promise<TokenSet | null> {
+): Promise<RefreshExchange> {
   const hash = hashToken(token);
   const now = new Date();
 
@@ -444,8 +494,56 @@ async function rotateRefreshTokenInternal(
     )
     .limit(1);
   if (!existing) {
-    // Not a rotation. Whether it was a replay is decided by the caller, which
-    // does the state lookup; this records the refusal so a spike is visible.
+    // The token is not live. That is three different situations, and only one
+    // of them is an incident:
+    //
+    // - unknown, expired, or administratively revoked: a client that lost a
+    //   token. Ordinary, and it must not touch anything else.
+    // - spent just now: the same client asking twice. Refused, and the
+    //   family survives.
+    // - spent long ago: somebody came back with a token that was stolen.
+    //   The family is revoked.
+    //
+    // The first question is which of the three it is, and only the row can
+    // answer that.
+    const detection = await detectRefreshTokenReplay(token, now);
+    if (detection.replayed && detection.userId && detection.familyId) {
+      if (detection.raced) {
+        recordSpan(SPAN.tokenRotation, {
+          [ATTR.flow]: "refresh",
+          [ATTR.rotated]: false,
+          [ATTR.outcome]: "raced",
+        });
+        return { outcome: "raced", userId: detection.userId, familyId: detection.familyId };
+      }
+
+      // A breach. Every token descended from this login goes, because the one
+      // the attacker holds is the one the victim's client no longer has.
+      const revoked = await revokeRefreshTokenFamily(detection.familyId, now);
+      recordTokenOperation("replay", "detected");
+      await emit({
+        type: "refresh_token_replayed",
+        payload: {
+          userId: detection.userId,
+          // The same fields the route's audit row carried, so an operator
+          // reading the audit log sees one shape whether the event came from
+          // here or from the request that noticed it.
+          metadata: {
+            replayed: true,
+            familyId: detection.familyId,
+            revokedTokens: revoked,
+          },
+        },
+      });
+      recordSpan(SPAN.tokenRotation, {
+        [ATTR.flow]: "refresh",
+        [ATTR.rotated]: false,
+        [ATTR.outcome]: "replayed",
+      });
+      return { outcome: "replayed", userId: detection.userId, familyId: detection.familyId };
+    }
+
+    // Not a rotation. This records the refusal so a spike is visible.
     // The span represents the *decision*, not the query — the query is already
     // covered by the postgres auto-instrumentation.
     recordSpan(SPAN.tokenRotation, {
@@ -453,38 +551,38 @@ async function rotateRefreshTokenInternal(
       [ATTR.rotated]: false,
       [ATTR.outcome]: "not-rotated",
     });
-    return null;
+    return { outcome: "rejected" };
   }
 
   const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
-  if (!user?.isActive || user.accountReviewRequired) return null;
+  if (!user?.isActive || user.accountReviewRequired) return { outcome: "rejected" };
 
   // A session may only keep rotating while it still represents an MFA-verified
   // login. Sessions created before MFA was enabled, or without a recorded
   // factor, are refused rather than silently upgraded.
-  if (user.totpEnabled && !existing.mfaFactor) return null;
+  if (user.totpEnabled && !existing.mfaFactor) return { outcome: "rejected" };
 
   let appId: string | undefined;
   let orgId: string | undefined;
   if (existing.appId) {
-    if (expectedAppId && expectedAppId !== existing.appId) return null;
+    if (expectedAppId && expectedAppId !== existing.appId) return { outcome: "rejected" };
     const [application] = await db
       .select({ id: applications.id, orgId: applications.orgId, clientId: applications.clientId })
       .from(applications)
       .where(and(eq(applications.id, existing.appId), eq(applications.isActive, true)))
       .limit(1);
-    if (!application || !clientId || application.clientId !== clientId) return null;
+    if (!application || !clientId || application.clientId !== clientId) return { outcome: "rejected" };
 
     const [membership] = await db
       .select({ id: orgMemberships.id })
       .from(orgMemberships)
       .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, user.id)))
       .limit(1);
-    if (!membership) return null;
+    if (!membership) return { outcome: "rejected" };
     appId = application.id;
     orgId = application.orgId;
   } else if (clientId || expectedAppId) {
-    return null;
+    return { outcome: "rejected" };
   }
 
   // Claim only after all client, application, membership, and account checks
@@ -502,12 +600,18 @@ async function rotateRefreshTokenInternal(
     )
     .returning();
   if (!claimed) {
+    // Another request claimed this token between the read above and the write
+    // here. That is a race the caller lost, not a breach: the token was live
+    // when this request looked at it, so the two requests are the same client
+    // asking twice, and the family is left alone. A request that arrives
+    // *after* the other one finished finds no live token at all, and is
+    // classified by the replay detection above.
     recordSpan(SPAN.tokenRotation, {
       [ATTR.flow]: "refresh",
       [ATTR.rotated]: false,
       [ATTR.outcome]: "claim-lost",
     });
-    return null;
+    return { outcome: "raced", userId: existing.userId, familyId: existing.familyId };
   }
 
   recordSpan(SPAN.tokenRotation, {
@@ -517,7 +621,7 @@ async function rotateRefreshTokenInternal(
     [ATTR.clientId]: clientId ?? "none",
   });
 
-  return createTokenSet(
+  const tokens = await createTokenSet(
     user,
     ip,
     userAgent,
@@ -526,6 +630,10 @@ async function rotateRefreshTokenInternal(
       orgId,
       clientId,
       deviceFingerprint: claimed.deviceFingerprint ?? undefined,
+      // The family is carried forward, so the new token and the one it replaces
+      // are one credential. This is what makes "revoke everything descended
+      // from this login" a single statement instead of a guess.
+      familyId: claimed.familyId,
       // Carried forward from the token being rotated. A refresh may narrow the
       // grant but never widen it, so the stored set is authoritative rather than
       // anything the caller supplies.
@@ -537,6 +645,8 @@ async function rotateRefreshTokenInternal(
     claimed.deviceFingerprint ?? undefined,
     "refresh"
   );
+
+  return { outcome: "rotated", tokens };
 }
 
 export async function revokeRefreshToken(token: string): Promise<void> {
@@ -554,3 +664,184 @@ export function hashToken(token: string): string {
 
 // Re-exported from secrets service for backwards compatibility.
 export { hashApiKey, generateApiKey } from "./secrets.js";
+
+/**
+ * Inspect a refresh token without consuming it.
+ *
+ * Rotation makes a presented token unusable, so by the time an exchange fails
+ * the only way to tell a replay from a revoked-but-never-used token is to look
+ * the row up. The distinction matters: re-presentation of a *consumed* token
+ * means two parties hold it (the leak itself) and the account's remaining
+ * sessions should be revoked, while an administratively revoked token (logout,
+ * revoke-all, deactivation) tells us nothing — a stale tab retrying after
+ * "log out everywhere else" must not be able to kill the session the user just
+ * kept alive.
+ *
+ * These live here, with the minting and the rotation, because all three have
+ * to agree on how a token is hashed. They were briefly a separate module with
+ * its own copy of the hash, and a copy is a drift risk: if the two ever
+ * disagreed, every lookup would silently find nothing, and the symptom — every
+ * refresh failing, and no replay ever being detected — reads like a
+ * configuration mistake rather than the divergence it is.
+ */
+
+type State = "live" | "consumed" | "revoked" | "expired" | "unknown";
+
+interface TokenState {
+  state: State;
+  userId: string;
+  familyId: string;
+  /** When the token was spent by rotation; null unless it was. */
+  consumedAt: Date | null;
+}
+
+async function stateOf(token: string): Promise<TokenState | undefined> {
+  const [row] = await db
+    .select()
+    .from(refreshTokens)
+    .where(eq(refreshTokens.tokenHash, hashToken(token)))
+    .limit(1);
+  if (!row) return undefined;
+  const state: State =
+    row.consumedAt !== null
+      ? "consumed"
+      : row.revokedAt !== null
+        ? "revoked"
+        : row.expiresAt.getTime() <= Date.now()
+          ? "expired"
+          : "live";
+  return { state, userId: row.userId, familyId: row.familyId, consumedAt: row.consumedAt };
+}
+
+/** True only when the token exists and has already been spent by rotation. */
+export async function findRefreshTokenState(token: string): Promise<boolean> {
+  const found = await stateOf(token);
+  return found?.state === "consumed";
+}
+
+/** The user a refresh token belongs to, or null if it is not known. */
+export async function refreshTokenOwner(token: string): Promise<string | null> {
+  const found = await stateOf(token);
+  return found?.userId ?? null;
+}
+
+/**
+ * What a failed exchange turned out to be.
+ *
+ * `replayed` is the only one of these that is an incident: the token was
+ * presented twice, which means two parties hold it. Everything else — unknown,
+ * expired, administratively revoked — is a client that lost a token, which is
+ * an ordinary event and must not sign anyone out.
+ */
+export interface ReplayDetection {
+  replayed: boolean;
+  /** True when the token was spent so recently that this is a race, not a breach. */
+  raced?: boolean;
+  userId?: string;
+  familyId?: string;
+}
+
+/**
+ * How long after a rotation a re-presentation is still treated as a benign race.
+ *
+ * A client that sends two refreshes at once — two tabs, a retry after a slow
+ * response, a mobile client waking twice — is the common case, and the server
+ * cannot tell it apart from an attacker replaying a stolen token: both present
+ * a token that has already been spent. RFC 9700 says to revoke the grant on
+ * reuse, and that is right for a token that was stolen an hour ago and
+ * presented again now. It is wrong for a token presented two hundred
+ * milliseconds after it was spent, because there the second presentation is
+ * the same client, and revoking the family would sign the client out of the
+ * session it legitimately just renewed.
+ *
+ * So the two are separated by time, which is the only signal available. A
+ * re-presentation inside this window is a race and is refused without
+ * touching the family; one outside it is a breach, and the family goes.
+ *
+ * The window is deliberately short. The race it covers is measured in
+ * milliseconds; thirty seconds is two orders of magnitude of headroom, and it
+ * still means a stolen token presented half a minute after the attacker's
+ * own rotation is caught.
+ */
+export const REPLAY_GRACE_MS = 30_000;
+
+/**
+ * Decide whether a presented refresh token was replayed.
+ *
+ * The lookup is by hash alone, with no expiry or revocation filter: a replayed
+ * token is by definition not live, so filtering it out of the query would
+ * filter out exactly the thing being looked for. The `consumedAt` marker is
+ * what distinguishes a replay from a logout.
+ */
+export async function detectRefreshTokenReplay(
+  token: string,
+  now: Date = new Date()
+): Promise<ReplayDetection> {
+  const found = await stateOf(token);
+  if (!found || found.state !== "consumed") return { replayed: false };
+  // A token spent inside the grace window was almost certainly spent by the
+  // same client that is now presenting it a second time. `raced` says so, and
+  // the caller refuses the exchange without revoking the family.
+  const raced = found.consumedAt !== null && now.getTime() - found.consumedAt.getTime() < REPLAY_GRACE_MS;
+  return { replayed: true, raced, userId: found.userId, familyId: found.familyId };
+}
+
+/**
+ * Revoke every token descended from one login.
+ *
+ * This is the response to a replay, and it is deliberately wider than the
+ * token that was replayed. A stolen token was valid at the moment it was
+ * stolen; the attacker may have rotated it, and the token that rotated it is
+ * in the attacker's hands, not the victim's. Revoking only the presented token
+ * would leave the attacker's replacement alive. The family is the set of
+ * tokens that all descend from the login the attacker compromised, so
+ * revoking the family is the smallest set that certainly includes the
+ * attacker's current token.
+ *
+ * The presented token is included in the family, so it is revoked here too.
+ *
+ * The sessions that hang off those tokens end with them, in the same
+ * transaction. A session row that outlives its refresh token is a session that
+ * claims to be live and cannot be refreshed — which is the state a user sees
+ * as "signed in on my phone" that no longer means anything. Revoking the
+ * tokens and ending the sessions together is what keeps the two consistent.
+ */
+export async function revokeRefreshTokenFamily(
+  familyId: string,
+  at: Date = new Date()
+): Promise<number> {
+  return db.transaction(async (tx) => {
+    // The whole family, not only the tokens this call newly revoked. The token
+    // that was replayed was already revoked when it was consumed, so it is not
+    // in the set of newly-revoked rows — but its session is exactly the one
+    // that must end. Selecting the family first and revoking the sessions
+    // against it covers both.
+    const family = await tx
+      .select({ id: refreshTokens.id })
+      .from(refreshTokens)
+      .where(eq(refreshTokens.familyId, familyId));
+
+    if (family.length === 0) return 0;
+
+    const revoked = await tx
+      .update(refreshTokens)
+      .set({ revokedAt: at })
+      .where(and(eq(refreshTokens.familyId, familyId), isNull(refreshTokens.revokedAt)))
+      .returning({ id: refreshTokens.id });
+
+    await tx
+      .update(userSessions)
+      .set({ revokedAt: at })
+      .where(
+        and(
+          inArray(
+            userSessions.refreshTokenId,
+            family.map((row) => row.id)
+          ),
+          isNull(userSessions.revokedAt)
+        )
+      );
+
+    return revoked.length;
+  });
+}

@@ -8,7 +8,6 @@ import {
   getRefreshToken,
 } from "../plugins/auth.js";
 import { rateLimit } from "../plugins/rateLimit.js";
-import { revokeAllUserCredentials } from "../services/sessionRevocation.js";
 import { checkImpossibleTravel } from "../services/anomalyDetection.js";
 import { sendSuspiciousLoginAlert } from "../services/email.js";
 import { checkIpAllowed } from "../services/ipControls.js";
@@ -68,21 +67,15 @@ const RefreshSchema = z.object({
 });
 
 /**
- * Whether a refresh token was already spent.
+ * The user a refresh token belongs to, if it is still resolvable.
  *
- * Rotation consumes the token, so a live token presented twice means the first
- * use was someone else. A token that does not exist at all is a different
- * problem — a guess, or a stale client — and does not warrant revoking the
- * account's sessions.
+ * Used to attribute a logout to its subject: the logout route has no
+ * `authenticate` preHandler — presenting the token being revoked is what
+ * proves the caller — so `request.user` is undefined and the audit row would
+ * otherwise have no subject.
  */
-async function wasRefreshTokenAlreadyUsed(token: string): Promise<boolean> {
-  const { findRefreshTokenState } = await import("../services/refreshTokenState.js");
-  return findRefreshTokenState(token);
-}
-
-/** The user a spent refresh token belonged to, if it is still resolvable. */
 async function refreshTokenUserId(token: string): Promise<string | null> {
-  const { refreshTokenOwner } = await import("../services/refreshTokenState.js");
+  const { refreshTokenOwner } = await import("../services/tokens.js");
   return refreshTokenOwner(token);
 }
 
@@ -405,25 +398,25 @@ export default async function authRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
-    const result = await sdk.authentication.refresh(refreshToken, clientId);
+    const result = await sdk.authentication.refresh(refreshToken, clientId, {
+      requestId: request.id,
+      ip: request.ip,
+      userAgent: request.headers["user-agent"],
+    });
     if (!result.success) {
-      // Distinguish a replayed token from one that was never issued. Rotation
-      // consumes a refresh token, so a second presentation of the same token is
-      // either an attacker racing the legitimate client or a stolen token being
-      // used twice — and it means the token has leaked.
-      const replayed = await wasRefreshTokenAlreadyUsed(refreshToken);
-      await request.audit("refresh_token_replayed", {
-        replayed,
-        ip: request.ip,
-      });
-      if (replayed) {
-        // A replay means the token is known to someone else, so everything it
-        // could mint should stop working rather than just this one request.
-        const ownerId = await refreshTokenUserId(refreshToken);
-        if (ownerId) {
-          await revokeAllUserCredentials(ownerId);
-        }
-      }
+      // The replay decision is made once, in the token service, which is the
+      // only place that sees the rotation. This route used to repeat the
+      // lookup and revoke *every* credential the user had; the service now
+      // revokes the credential family the replayed token belongs to, which is
+      // the compromised credential and not the user's other devices. The
+      // OAuth grant path has no detection of its own, and the two answers
+      // could disagree — one revoked everything, the other nothing.
+      //
+      // The route writes no event of its own. The domain service emits one
+      // `token_refresh_failed`, with the reason and the request's identity in
+      // it, and that is the record. A second event here — which is what this
+      // route used to write — produced two rows for one failure, one of them
+      // named `refresh_token_replayed` whatever had actually happened.
       return sendResultError(reply, result);
     }
 

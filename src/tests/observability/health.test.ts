@@ -123,7 +123,11 @@ async function probeWith(options: { databaseUrl: string; redisUrl: string }): Pr
       PROBE_DATABASE_URL: options.databaseUrl,
       KEYSTONE_LOG_LEVEL: "error",
     },
-    timeout: 120_000,
+    // Shorter than the suite's per-test timeout on purpose. The probe boots a
+    // whole server, which takes seconds when the machine is quiet and a minute
+    // when it is not; when it overruns, the failure should say *the probe
+    // overran* rather than being a bare test timeout with nothing to point at.
+    timeout: 90_000,
     maxBuffer: 8 * 1024 * 1024,
   }).catch((err: unknown) => {
     const e = err as { stderr?: string; stdout?: string };

@@ -7,19 +7,45 @@ const NEW_DEVICE_THRESHOLD = 3;
 // suspicious (approximation of impossible travel without a GeoIP database).
 const IMPOSSIBLE_TRAVEL_WINDOW_SECONDS = 900;
 
-export async function recordFailedLogin(identifier: string): Promise<number> {
-  if (redis.status !== "ready" && redis.status !== "connect") return 0;
-  const key = `anomaly:failed_login:${identifier}`;
-  const now = Date.now();
-  const windowStart = now - ANOMALY_WINDOW_SECONDS * 1000;
+/**
+ * Run a Redis operation, falling back when Redis cannot answer.
+ *
+ * §8.1. The status check handled "Redis is not connected" and nothing else. A
+ * Redis that is connected and *slow* passes that check — the socket is open,
+ * the client reports `ready` — and then the command times out and the error
+ * propagates into the request. The caller got a 500 for a login that should
+ * have been refused with a 401, and the outage turned every authentication
+ * attempt into a server error.
+ *
+ * Anomaly detection is a signal, not a gate. A Redis that cannot answer means
+ * "no signal", not "no service". The one that does gate — the failed-login
+ * count — falls back to "not an anomaly", and the limit that actually bounds
+ * the attempts in that window is the rate limiter's emergency local budget,
+ * which is where the control lives when Redis is gone.
+ */
+async function degrade<T>(operation: () => Promise<T>, fallback: T): Promise<T> {
+  if (redis.status !== "ready" && redis.status !== "connect") return fallback;
+  try {
+    return await operation();
+  } catch {
+    return fallback;
+  }
+}
 
-  const pipeline = redis.pipeline();
-  pipeline.zremrangebyscore(key, 0, windowStart);
-  pipeline.zadd(key, now, `${now}:${Math.random().toString(36).slice(2)}`);
-  pipeline.zcard(key);
-  pipeline.pexpire(key, ANOMALY_WINDOW_SECONDS * 1000);
-  const results = await pipeline.exec();
-  return (results?.[2]?.[1] as number) ?? 0;
+export async function recordFailedLogin(identifier: string): Promise<number> {
+  return degrade(async () => {
+    const key = `anomaly:failed_login:${identifier}`;
+    const now = Date.now();
+    const windowStart = now - ANOMALY_WINDOW_SECONDS * 1000;
+
+    const pipeline = redis.pipeline();
+    pipeline.zremrangebyscore(key, 0, windowStart);
+    pipeline.zadd(key, now, `${now}:${Math.random().toString(36).slice(2)}`);
+    pipeline.zcard(key);
+    pipeline.pexpire(key, ANOMALY_WINDOW_SECONDS * 1000);
+    const results = await pipeline.exec();
+    return (results?.[2]?.[1] as number) ?? 0;
+  }, 0);
 }
 
 /**
@@ -36,13 +62,14 @@ export async function recordFailedLogin(identifier: string): Promise<number> {
  * now separate and the name says which one it is.
  */
 export async function countFailedLogins(identifier: string): Promise<number> {
-  if (redis.status !== "ready" && redis.status !== "connect") return 0;
-  const key = `anomaly:failed_login:${identifier}`;
-  // Trim the window first, so a count is not inflated by entries that have already
-  // aged out. The recorder does the same trim; doing it here too means a caller
-  // that only ever reads still sees the number it would see after a write.
-  await redis.zremrangebyscore(key, 0, Date.now() - ANOMALY_WINDOW_SECONDS * 1000);
-  return redis.zcard(key);
+  return degrade(async () => {
+    const key = `anomaly:failed_login:${identifier}`;
+    // Trim the window first, so a count is not inflated by entries that have already
+    // aged out. The recorder does the same trim; doing it here too means a caller
+    // that only ever reads still sees the number it would see after a write.
+    await redis.zremrangebyscore(key, 0, Date.now() - ANOMALY_WINDOW_SECONDS * 1000);
+    return redis.zcard(key);
+  }, 0);
 }
 
 export async function isFailedLoginAnomaly(identifier: string): Promise<boolean> {
@@ -50,18 +77,19 @@ export async function isFailedLoginAnomaly(identifier: string): Promise<boolean>
 }
 
 export async function recordNewDevice(userId: string): Promise<number> {
-  if (redis.status !== "ready" && redis.status !== "connect") return 0;
-  const key = `anomaly:new_device:${userId}`;
-  const now = Date.now();
-  const windowStart = now - ANOMALY_WINDOW_SECONDS * 1000;
+  return degrade(async () => {
+    const key = `anomaly:new_device:${userId}`;
+    const now = Date.now();
+    const windowStart = now - ANOMALY_WINDOW_SECONDS * 1000;
 
-  const pipeline = redis.pipeline();
-  pipeline.zremrangebyscore(key, 0, windowStart);
-  pipeline.zadd(key, now, `${now}:${Math.random().toString(36).slice(2)}`);
-  pipeline.zcard(key);
-  pipeline.pexpire(key, ANOMALY_WINDOW_SECONDS * 1000);
-  const results = await pipeline.exec();
-  return (results?.[2]?.[1] as number) ?? 0;
+    const pipeline = redis.pipeline();
+    pipeline.zremrangebyscore(key, 0, windowStart);
+    pipeline.zadd(key, now, `${now}:${Math.random().toString(36).slice(2)}`);
+    pipeline.zcard(key);
+    pipeline.pexpire(key, ANOMALY_WINDOW_SECONDS * 1000);
+    const results = await pipeline.exec();
+    return (results?.[2]?.[1] as number) ?? 0;
+  }, 0);
 }
 
 /**
@@ -69,10 +97,11 @@ export async function recordNewDevice(userId: string): Promise<number> {
  * the same reason as `isFailedLoginAnomaly`.
  */
 export async function isNewDeviceAnomaly(userId: string): Promise<boolean> {
-  if (redis.status !== "ready" && redis.status !== "connect") return false;
-  const key = `anomaly:new_device:${userId}`;
-  await redis.zremrangebyscore(key, 0, Date.now() - ANOMALY_WINDOW_SECONDS * 1000);
-  return (await redis.zcard(key)) >= NEW_DEVICE_THRESHOLD;
+  return degrade(async () => {
+    const key = `anomaly:new_device:${userId}`;
+    await redis.zremrangebyscore(key, 0, Date.now() - ANOMALY_WINDOW_SECONDS * 1000);
+    return (await redis.zcard(key)) >= NEW_DEVICE_THRESHOLD;
+  }, false);
 }
 
 /**
@@ -84,18 +113,20 @@ export async function isNewDeviceAnomaly(userId: string): Promise<boolean> {
  * "blocked").
  */
 export async function checkImpossibleTravel(userId: string, ip: string | undefined): Promise<boolean> {
-  if (!ip || (redis.status !== "ready" && redis.status !== "connect")) return false;
-  const key = `anomaly:last_login:${userId}`;
-  const now = Date.now();
+  if (!ip) return false;
+  return degrade(async () => {
+    const key = `anomaly:last_login:${userId}`;
+    const now = Date.now();
 
-  const previous = await redis.hgetall(key);
-  await redis
-    .multi()
-    .hset(key, "ip", ip, "ts", String(now))
-    .pexpire(key, 30 * 24 * 60 * 60 * 1000)
-    .exec();
+    const previous = await redis.hgetall(key);
+    await redis
+      .multi()
+      .hset(key, "ip", ip, "ts", String(now))
+      .pexpire(key, 30 * 24 * 60 * 60 * 1000)
+      .exec();
 
-  if (!previous?.ip || !previous?.ts) return false;
-  const elapsed = now - Number(previous.ts);
-  return previous.ip !== ip && elapsed < IMPOSSIBLE_TRAVEL_WINDOW_SECONDS * 1000;
+    if (!previous?.ip || !previous?.ts) return false;
+    const elapsed = now - Number(previous.ts);
+    return previous.ip !== ip && elapsed < IMPOSSIBLE_TRAVEL_WINDOW_SECONDS * 1000;
+  }, false);
 }

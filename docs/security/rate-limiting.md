@@ -30,6 +30,35 @@ deliberate: the fallback is per-instance, and applying it to high-volume
 low-value endpoints would trade a real availability problem for a small
 reduction in abuse resistance.
 
+**The global limiter and the pre-authentication budget used to be in that
+group, and no longer are (SEC-099).** The global limiter is the limit in
+front of every other endpoint, so a Redis outage removed the ceiling from the
+whole server at once — and an outage is exactly when unlimited attempts are
+worth having. The SCIM pre-authentication budget guards the
+authentication-failure path, and a budget that disappears precisely when the
+service it protects is in trouble is the wrong way round. Both now fall back
+to the emergency local budget. A fleet allows N times the intended rate
+during an outage, which is a worse number than the intended one and a far
+better one than unbounded.
+
+## A slow Redis is bounded, not just an absent one (SEC-100)
+
+`ioredis` has no command timeout by default. A **dropped** connection is
+bounded — the client reconnects and `maxRetriesPerRequest` eventually rejects
+the command. A Redis that is *slow* — the socket is open, the server is
+healthy, it just answers later than it should — was not: every command waited
+for an answer that never came.
+
+The rate limiter is in front of every request, so a degraded Redis took the API
+down rather than just the limiter, and the degraded path above never got a
+chance to engage, because the request was still waiting on the command that
+would not return. The operational probe recorded the cost: eight seconds for
+the first request during an outage and twenty for each of the next.
+
+`commandTimeout` (one second, `KEYSTONE_REDIS_COMMAND_TIMEOUT_MS`) closes it.
+The anomaly-detection signals fail soft for the same reason: a signal that
+cannot be collected is not a reason to fail the request.
+
 ## The primary limiter was not running (SEC-047, 3.2.0)
 
 Everything above describes a design in which Redis is the limiter and the

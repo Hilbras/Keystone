@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { validateRedirectUris } from "../../services/redirectUri.js";
+import { config } from "../../config.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getSdk } from "../../sdk/index.js";
 import { toPublicApplication, toPublicUser } from "../../types.js";
@@ -106,8 +107,8 @@ export default async function organizationsRoutes(app: FastifyInstance) {
         app.authenticate,
         rateLimit({
           keyPrefix: "create-org",
-          maxAttempts: 5,
-          windowSeconds: 3600,
+          maxAttempts: config.ORG_CREATE_MAX_ATTEMPTS,
+          windowSeconds: config.ORG_CREATE_WINDOW_SECONDS,
           // A Redis outage must not remove the limit on an endpoint worth brute-forcing.
           emergencyLocalLimit: true,
         }),

@@ -29,7 +29,7 @@ import { findUserById } from "../services/users.js";
 import {
   revokeRefreshToken,
   createApplicationAccessToken,
-  rotateRefreshToken,
+  exchangeRefreshToken,
   MfaRequiredError,
   type MfaAssertion,
 } from "../services/tokens.js";
@@ -445,24 +445,34 @@ export default async function oauth2Routes(app: FastifyInstance) {
         }
 
         // Lazy import to avoid circular dependency.
-        const tokens = await rotateRefreshToken(
+        const exchange = await exchangeRefreshToken(
           body.refresh_token,
           request.ip,
           request.headers["user-agent"],
           body.client_id,
           application.id
         );
-        if (!tokens) {
+        if (exchange.outcome !== "rotated") {
           request.state.app = application;
           request.state.org = await app.container.organizationRepository.findById(application.orgId);
           await request.audit("oauth2_refresh_failed", {
             appId: application.id,
             orgId: application.orgId,
             clientId: application.clientId,
+            // RFC 6749 §5.2 gives the client one error code for every way the
+            // grant can fail, and inventing a second one would break clients
+            // that branch on `invalid_grant`. The distinction that matters is
+            // ours, so it goes in the audit rather than on the wire: a replayed
+            // token means the credential family has just been revoked, and an
+            // operator reading "invalid_grant" has no way to know that.
             reason: "invalid_grant",
+            ...(exchange.outcome === "replayed" || exchange.outcome === "raced"
+              ? { outcome: exchange.outcome }
+              : {}),
           });
           return reply.status(400).send({ error: "invalid_grant" });
         }
+        const tokens = exchange.tokens;
 
         request.state.auditUserId = tokens.userId;
         request.state.app = application;
