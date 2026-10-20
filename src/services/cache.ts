@@ -1,4 +1,5 @@
 import { Redis } from "ioredis";
+import { closeRedisClient } from "./redis.js";
 import { serviceLogger } from "../lib/logger.js";
 
 const log = serviceLogger("cache");
@@ -125,8 +126,11 @@ class CacheProvider {
   async close(): Promise<void> {
     this.memory.clear();
     if (this.redis) {
-      await this.redis.quit();
+      const client = this.redis;
       this.redis = null;
+      // Bounded: `quit()` waits for a server that may be down, and a shutdown
+      // that never finishes is a process that never exits. See `closeRedisClient`.
+      await closeRedisClient(client);
     }
   }
 }

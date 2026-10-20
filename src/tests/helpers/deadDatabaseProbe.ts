@@ -112,6 +112,29 @@ try {
   report.ready = await get("/ready");
   report.probeElapsedMs = Date.now() - started;
 
+  // A **business** route, not another probe endpoint.
+  //
+  // The health probes answer 503 when the database is down, by construction —
+  // they check the database. So a probe that only asked them proved nothing
+  // about what a *caller* gets, and the answer it gave was "503", while every
+  // business route was answering 500 with the failed query in the body. The
+  // status a caller sees during an outage is the thing worth knowing, and only
+  // a business route knows it.
+  //
+  // The login route is used because it is unauthenticated, it reaches the
+  // database on every call, and a body that never existed cannot answer.
+  const businessStarted = Date.now();
+  const business = await fetch(`${base}/auth/token-login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: "nobody@example.test", password: "wrong-on-purpose" }),
+  });
+  report.business = {
+    statusCode: business.status,
+    body: await business.text(),
+    elapsedMs: Date.now() - businessStarted,
+  };
+
   // The two aliases, and the startup gate.
   //
   // The startup gate is the one worth thinking about here: it is expected to

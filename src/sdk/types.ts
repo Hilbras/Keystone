@@ -38,7 +38,17 @@ export interface AuthenticationSdk {
   register(input: { username: string; email: string; password: string; name?: string; clientId?: string; metadata?: Record<string, unknown> }): Promise<Result<AuthResponse>>;
   login(input: { email: string; password: string; clientId?: string; flow?: "login" | "token_login"; ipAddress?: string; userAgent?: string }): Promise<Result<LoginResponse>>;
   completeMfa(input: { challenge: string; code: string; factor?: "totp" | "backup_code"; ipAddress?: string; userAgent?: string }): Promise<Result<MfaCompleteResponse>>;
-  refresh(refreshToken: string, clientId?: string): Promise<Result<{ accessToken: string; refreshToken: string; expiresAt: Date; userId?: string }>>;
+  /**
+   * The request's own identity, passed through so the single
+   * `token_refresh_failed` event can carry it. The route used to write a second
+   * event to carry the same facts, which produced two audit rows for one
+   * failure.
+   */
+  refresh(
+    refreshToken: string,
+    clientId?: string,
+    context?: { requestId?: string; ip?: string; userAgent?: string }
+  ): Promise<Result<{ accessToken: string; refreshToken: string; expiresAt: Date; userId?: string }>>;
   logout(refreshToken?: string): Promise<Result<void>>;
   createPasswordResetToken(email: string): Promise<Result<{ token: string; user: SelfUser } | null>>;
   resetPasswordWithToken(token: string, newPassword: string): Promise<Result<SelfUser>>;

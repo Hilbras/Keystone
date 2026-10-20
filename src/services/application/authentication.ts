@@ -125,8 +125,12 @@ export class AuthenticationApplicationService {
     };
   }
 
-  async refresh(refreshToken: string, clientId?: string): Promise<Result<TokenSet>> {
-    const result = await this.domain.refresh(refreshToken, clientId);
+  async refresh(
+    refreshToken: string,
+    clientId?: string,
+    context?: { requestId?: string; ip?: string; userAgent?: string }
+  ): Promise<Result<TokenSet>> {
+    const result = await this.domain.refresh(refreshToken, clientId, context);
     if (!result.success) return result;
     return { success: true, data: result.data.tokens };
   }

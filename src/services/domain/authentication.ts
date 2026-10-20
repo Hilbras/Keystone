@@ -5,7 +5,7 @@ import type { User } from "../../db/schema.js";
 import { consumePasswordResetTokenRow } from "../singleUse.js";
 import { revokeAllUserCredentials } from "../sessionRevocation.js";
 import { createHumanUser, verifyPassword as verifyZitadelPassword } from "../zitadel.js";
-import { createTokenSet, rotateRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
+import { createTokenSet, exchangeRefreshToken, revokeRefreshToken, type MfaAssertion, type TokenSet } from "../tokens.js";
 import { isPasswordBreached } from "../hibp.js";
 import { ipMatchesEntry } from "../ipControls.js";
 import { isFailedLoginAnomaly } from "../anomalyDetection.js";
@@ -408,15 +408,68 @@ export class AuthenticationDomainService {
     return ok({ user, tokens, context, flow, factor, clientId });
   }
 
-  async refresh(refreshToken: string, clientId?: string): Promise<Result<{ tokens: TokenSet; userId?: string }>> {
-    const tokens = await rotateRefreshToken(refreshToken, undefined, undefined, clientId);
-    if (!tokens) {
-      await emit({ type: "token_refresh_failed", payload: { reason: "invalid_refresh_token" } });
-      return err({ code: "INVALID_REFRESH_TOKEN", message: "Invalid or expired session.", statusCode: 401 });
+  async refresh(
+    refreshToken: string,
+    clientId?: string,
+    context?: { requestId?: string; ip?: string; userAgent?: string }
+  ): Promise<Result<{ tokens: TokenSet; userId?: string }>> {
+    // The outcome is named rather than a boolean, because three different
+    // failures share one response and only one of them is an incident. A
+    // replayed token has already had its credential family revoked by the token
+    // service; a raced token is the same client asking twice; anything else is
+    // a token the client lost. Collapsing them into one reason made a breach
+    // indistinguishable from a stale tab, which is the distinction an operator
+    // reads the log to make.
+    const exchange = await exchangeRefreshToken(refreshToken, undefined, undefined, clientId);
+    if (exchange.outcome !== "rotated") {
+      const reason =
+        exchange.outcome === "replayed"
+          ? "refresh_token_replayed"
+          : exchange.outcome === "raced"
+            ? "refresh_token_raced"
+            : "invalid_refresh_token";
+      await emit({
+        type: "token_refresh_failed",
+        payload: {
+          reason,
+          // The request's own identity, so the audit row for a failed refresh
+          // can be joined to the access log and to the client that reported
+          // the failure.
+          //
+          // The route used to write a *second* event to carry this, which is
+          // the duplicate SEC-053 removed elsewhere: two rows for one failure,
+          // one of them misnamed. The context is passed in instead, so there is
+          // one event and it says everything.
+          ...(context?.requestId ? { requestId: context.requestId } : {}),
+          ...(context?.ip ? { ip: context.ip } : {}),
+          ...(context?.userAgent ? { userAgent: context.userAgent } : {}),
+          ...(exchange.outcome === "replayed" || exchange.outcome === "raced"
+            ? { userId: exchange.userId, metadata: { familyId: exchange.familyId } }
+            : {}),
+        },
+      });
+      return err({
+        code: "INVALID_REFRESH_TOKEN",
+        message: "Invalid or expired session.",
+        statusCode: 401,
+        // The reason travels with the error so a caller can act on it without
+        // repeating the detection. The route used to do its own lookup, which
+        // meant two places could disagree about whether a token was a replay —
+        // and the OAuth grant path had no detection at all.
+        //
+        // `details` never reaches the client: `sendResultError` sends only
+        // `{ error, code }`.
+        details: {
+          refreshFailure: reason,
+          ...(exchange.outcome === "replayed" || exchange.outcome === "raced"
+            ? { refreshFamilyId: exchange.familyId, userId: exchange.userId }
+            : {}),
+        },
+      });
     }
 
-    await emit({ type: "token_refresh", payload: { userId: tokens.userId } });
-    return ok({ tokens, userId: tokens.userId });
+    await emit({ type: "token_refresh", payload: { userId: exchange.tokens.userId } });
+    return ok({ tokens: exchange.tokens, userId: exchange.tokens.userId });
   }
 
   async logout(refreshToken?: string): Promise<Result<void>> {

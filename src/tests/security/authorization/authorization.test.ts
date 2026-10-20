@@ -15,6 +15,12 @@ process.env.DATABASE_URL ||= "postgresql://hilbras:hilbras@localhost:5432/hilbra
 process.env.REDIS_URL ||= "redis://localhost:6379";
 process.env.KEYSTONE_INTERNAL_API_KEY ||= "security-test-internal-key";
 process.env.KEYSTONE_ENCRYPTION_KEY ||= "0123456789abcdef0123456789abcdef";
+// The organization-creation budget is five per hour, keyed on the client
+// address — so it is shared by everything arriving from that address, which
+// in a test run is the whole suite. The suite creates organizations on the
+// route, so it needs the budget raised for itself, the way every other suite
+// that exercises a limiter raises the one it is exercising.
+process.env.ORG_CREATE_MAX_ATTEMPTS ||= "1000";
 
 if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
   const { generateKeyPair, exportPKCS8, exportSPKI } = await import("jose");

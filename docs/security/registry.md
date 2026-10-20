@@ -4,12 +4,12 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**95 findings.**
+**99 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 7 |
-| high | 41 |
+| high | 45 |
 | medium | 31 |
 | low | 16 |
 
@@ -42,14 +42,14 @@ The CI pipeline must exercise each of these. Every one is claimed by at least on
 | `privilege-escalation` | SEC-001, SEC-002, SEC-003, SEC-007, SEC-023, SEC-025, SEC-028, SEC-032, SEC-089 |
 | `mfa-bypass` | SEC-004, SEC-005, SEC-015, SEC-034 |
 | `tenant-isolation` | SEC-001, SEC-003, SEC-006 |
-| `token-replay` | SEC-012, SEC-013, SEC-038 |
+| `token-replay` | SEC-012, SEC-013, SEC-038, SEC-098 |
 | `oauth-attacks` | SEC-016, SEC-017, SEC-018, SEC-019, SEC-020, SEC-021 |
 | `scim-cross-tenant` | SEC-006 |
 | `mtls-spoofing` | SEC-007, SEC-009, SEC-010 |
 | `xff-spoofing` | SEC-008, SEC-009 |
 | `api-scope-escalation` | SEC-023, SEC-024, SEC-025 |
-| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031, SEC-088, SEC-090, SEC-091, SEC-092 |
-| `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038, SEC-086, SEC-087 |
+| `secret-disclosure` | SEC-026, SEC-027, SEC-028, SEC-029, SEC-030, SEC-031, SEC-088, SEC-090, SEC-091, SEC-092, SEC-101 |
+| `session-persistence` | SEC-014, SEC-015, SEC-031, SEC-038, SEC-086, SEC-087, SEC-098 |
 | `password-reset-invalidation` | SEC-014 |
 
 ## Critical
@@ -768,6 +768,68 @@ Found by §5.4, whose trace test asserted on a value only the right handler coul
 **Test.** `src/tests/integration/queue.test.ts`
 
 **Documentation.** [docs/ARCHITECTURE.md](../ARCHITECTURE.md)
+
+### SEC-098 — Refresh-token replay was detected on one route only, and the detection it did have revoked every credential the user had
+
+*Fixed in v3.13.0. Component: `authentication`.*
+
+**Issue.** Rotation consumes a refresh token, so presenting one twice means two parties hold it. The schema carried a `consumed_at` column and a comment describing a revoke-everything replay response, the event vocabulary declared `refresh_token_replayed`, and `findRefreshTokenState()` existed to answer the question — and nothing called it.
+
+The one place that *did* look was the `/auth/refresh` route, and it did two things wrongly. It revoked **every** credential the user had, on every detected replay, including the sessions on devices the attacker never touched: an attacker holding one stolen token could sign the victim out of their phone, which buys the attacker nothing the credential's own revocation does not already buy. And it treated a token consumed two hundred milliseconds ago exactly as it treated one consumed an hour ago, so a client that refreshed twice at once — two tabs, a retry after a slow response — cost the user their whole account.
+
+The OAuth grant path had no detection at all. A stolen token replayed through `/oauth2/token` was refused and nothing else happened, so the token the attacker held stayed alive indefinitely, and the `refresh_token_replayed` event was a dead event type.
+
+**Fix.** src/services/tokens.ts — `exchangeRefreshToken` returns a named outcome (`rotated`, `rejected`, `raced`, `replayed`); the replay path revokes the **credential family** the token belongs to and emits `refresh_token_replayed` exactly once. src/db/schema.ts — `refresh_tokens.family_id` records the chain of tokens descended from one login, and every rotation carries it forward. src/services/refreshTokenState.ts — `detectRefreshTokenReplay()` and `revokeRefreshTokenFamily()`, which end the sessions that hang off the revoked tokens in the same transaction. src/services/domain/authentication.ts — the reason travels with the error so the route can audit it without repeating the detection. src/routes/auth.ts — the route's own lookup and its account-wide revocation are gone; the decision is made once, where the rotation happens.
+
+**Test.** `src/tests/security/tokens/refreshTokenReplay.test.ts`
+
+**Documentation.** [docs/security/tokens.md](tokens.md)
+
+**Attack classes.** `token-replay`, `session-persistence`
+
+### SEC-099 — The global rate limiter failed open when Redis was unreachable — and it is the limit in front of every other endpoint
+
+*Fixed in v3.13.0. Component: `rate-limiting`.*
+
+**Issue.** The per-endpoint limiters carried `emergencyLocalLimit`, so an endpoint worth brute-forcing kept its budget when Redis went away. The **global** limiter did not: it was the one caller that passed `useEmergencyLocal: false`, so a Redis outage removed the ceiling from the entire server at once — exactly the window in which an outage and an attack coincide.
+
+The `isAllowed()` pre-authentication budget had the same shape, and it guards the SCIM authentication-failure path.
+
+**Fix.** src/plugins/rateLimit.ts — the global limiter and the pre-authentication budget now use the emergency local limiter. The local budget is per-process, so a fleet allows N times the intended rate while Redis is down: a worse number than the intended one and a far better one than unbounded, and the same trade the per-prefix limiters already make.
+
+**Test.** `src/tests/chaos/redis-failure.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-100 — ioredis had no command timeout, so a Redis that was slow rather than absent hung every request that touched it
+
+*Fixed in v3.13.0. Component: `infrastructure`.*
+
+**Issue.** The shared client was created with `maxRetriesPerRequest: 3` and `lazyConnect: true` and nothing else. A **dropped** connection is bounded — ioredis reconnects and the retries eventually reject. A Redis that is *slow* is not: the socket is open, the server is healthy, it just answers later than it should, and ioredis waits for the answer indefinitely.
+
+The rate limiter is in front of every request, so a degraded Redis took the whole API down rather than just the limiter, and the degraded path that exists to keep serving never engaged — the request was still waiting on the command that would not return. The operational probe recorded the cost: eight seconds for the first request during an outage and twenty for each of the next.
+
+**Fix.** src/services/redis.ts — `commandTimeout` from `config.REDIS_COMMAND_TIMEOUT_MS` (default one second), and an `error` listener so a failure is logged once at a level an operator is looking at instead of ioredis printing a stack trace per failed command. src/services/anomalyDetection.ts — the anomaly signals fail soft, because a signal that cannot be collected is not a reason to fail the request.
+
+**Test.** `src/tests/chaos/redis-failure.test.ts`
+
+**Documentation.** [docs/security/rate-limiting.md](rate-limiting.md)
+
+### SEC-101 — The application's error handler was installed after the routes, so it applied to none of them
+
+*Fixed in v3.13.0. Component: `deployment`.*
+
+**Issue.** Fastify resolves the error handler for a route when the route is **registered**. `buildApp()` called `app.setErrorHandler(...)` at the end, after every route had been registered, so every route kept Fastify's default handler.
+
+The consequences were not subtle. A schema violation — a missing email, a malformed body — answered **500** with the raw validation issues in the response body, instead of the 400 `VALIDATION_ERROR` the contract promises. A database failure answered **500** with the failed query in the body, which tells an attacker the schema. And the 3.12.0 error-contract suite did not catch any of it, because it exercised the mechanism on a bare Fastify app whose routes were on the root instance, where the handler did apply.
+
+**Fix.** src/index.ts — the handler is installed before the first route is registered, and it is a named function so the ordering is visible. src/lib/dependencyErrors.ts — `isDatabaseUnavailable()`, which walks the cause chain for a SQLSTATE or a transport error code, so a dependency that is down answers 503 rather than 500.
+
+**Test.** `src/tests/chaos/db-failure.test.ts`
+
+**Documentation.** [docs/security/configuration.md](configuration.md)
+
+**Attack classes.** `secret-disclosure`
 
 ## Medium
 

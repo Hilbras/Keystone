@@ -76,6 +76,37 @@ legitimate user had already used it, and a reader of the old code would have
 concluded that it could not. The same copy-paste would grant something on a flow
 where consumption is not idempotent.
 
+## A refresh token belongs to a family, and a replay ends the family (SEC-098)
+
+Rotation consumes a refresh token, so presenting one twice means two parties
+hold it. What happens then depends on a distinction the token itself carries:
+
+- **The family.** `refresh_tokens.family_id` records the chain of tokens
+  descended from one original login. A login starts a family, every rotation
+  carries it forward, and two devices logging in separately are two families.
+  The family deliberately does not follow a user across logins, because
+  revoking one device must not sign the other out.
+- **The race.** A client that sends two refreshes at once — two tabs, a retry
+  after a slow response — is the ordinary case and not an attack. The server
+  cannot tell it apart from a replay, so it separates them by time: a
+  re-presentation within thirty seconds of the consumption is a race and is
+  refused without touching the family; one outside it is a breach.
+
+On a breach the whole family is revoked, in one transaction, together with the
+sessions that hang off those tokens. The family is the smallest set that
+certainly includes the attacker's current token: a stolen token may already
+have been rotated, and the token the attacker holds is a descendant of it.
+
+The alternative — revoking *every* credential the user has — buys no
+additional security and hands the attacker a denial of service for the price of
+one stolen token. That was the previous behaviour, and it is the reason the
+family exists.
+
+A replay also emits `refresh_token_replayed` exactly once, and the refresh
+exchange reports which of the four outcomes it settled as: `rotated`,
+`rejected`, `raced` or `replayed`. The old `TokenSet | null` could not tell a
+lost race from a breach, so the two were handled identically.
+
 ## Tokens are stored hashed
 
 `generateVerificationToken` returns the value that is mailed and the digest that

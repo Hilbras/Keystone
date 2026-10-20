@@ -84,6 +84,22 @@ export const config = {
 
   DATABASE_URL: requireEnvUnlessSetup("DATABASE_URL"),
   REDIS_URL: getEnv("REDIS_URL", "redis://localhost:6379"),
+  /**
+   * How long a single Redis command may take before it is abandoned (§8.1).
+   *
+   * ioredis has no command timeout by default. A Redis that is *slow* — the
+   * socket is open, the server is answering, just later than it should — makes
+   * every command wait forever, and the rate limiter is in front of every
+   * request, so a degraded Redis takes the whole API down rather than just the
+   * limiter. A dropped connection is a different failure: ioredis reconnects
+   * and `maxRetriesPerRequest` eventually rejects. Only the slow case is
+   * unbounded, and only a timeout closes it.
+   *
+   * One second is generous for a local Redis and short enough that the
+   * emergency local limiter engages while the caller still has a request worth
+   * serving.
+   */
+  REDIS_COMMAND_TIMEOUT_MS: Number(getEnv("KEYSTONE_REDIS_COMMAND_TIMEOUT_MS", "1000")),
 
   // Public application URLs. Registered here so routes and services read
   // `config.*` once instead of re-reading `process.env` per request — six route
@@ -268,6 +284,17 @@ export const config = {
   LOGIN_WINDOW_SECONDS: positiveInt("LOGIN_WINDOW_SECONDS", "900"),
   GLOBAL_RATE_LIMIT_MAX: Number(getEnv("GLOBAL_RATE_LIMIT_MAX", "100")),
   GLOBAL_RATE_LIMIT_WINDOW: Number(getEnv("GLOBAL_RATE_LIMIT_WINDOW", "60")),
+  /**
+   * Budget for `POST /v1/admin/organizations` — five per hour, per address.
+   *
+   * Configurable rather than written into the route because every other
+   * limiter of its kind reads its budget from here, and a hardcoded one cannot
+   * be raised by the suite that exercises it. The budget is keyed on the
+   * client address, so it is shared by everything arriving from that address —
+   * which in a test run is the whole suite.
+   */
+  ORG_CREATE_MAX_ATTEMPTS: Number(getEnv("ORG_CREATE_MAX_ATTEMPTS", "5")),
+  ORG_CREATE_WINDOW_SECONDS: Number(getEnv("ORG_CREATE_WINDOW_SECONDS", "3600")),
   /**
    * Per-prefix budget for `POST /auth/refresh`. The route writes on every
    * attempt, so it gets its own named limiter instead of relying purely on the

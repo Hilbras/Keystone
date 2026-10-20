@@ -59,6 +59,7 @@ Every Keystone JSON error carries a stable `code` and the server's `requestId`:
 | 409 | `CONFLICT` | Conflicts with current state |
 | 429 | `RATE_LIMITED` | Rate limit hit; `Retry-After` is present |
 | 500 | `INTERNAL_ERROR` | Unhandled failure; `requestId` is the log join key |
+| 503 | `SERVICE_UNAVAILABLE` | A dependency is down — the database, for now. The request may be perfectly valid and the server perfectly fine; the answer is "try again", not "we are broken" |
 | 501 | `NOT_IMPLEMENTED` | Operation unsupported by the configured provider |
 | 502–504 | `BAD_GATEWAY`, `SERVICE_UNAVAILABLE`, `GATEWAY_TIMEOUT` | Upstream or dependency failure |
 

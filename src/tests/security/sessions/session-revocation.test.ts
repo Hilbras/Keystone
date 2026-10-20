@@ -93,6 +93,7 @@ async function seedLiveCredentials(userId: string, count = 1) {
         userId,
         tokenHash: crypto.randomBytes(32).toString("hex"),
         expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+        familyId: crypto.randomUUID(),
       })
       .returning();
     const [session] = await db

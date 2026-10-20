@@ -21,6 +21,8 @@ import { config } from "../config.js";
 import type { Span } from "@opentelemetry/api";
 import { ATTR, SPAN, recordSpan, withSpan } from "./spans.js";
 import { recordTokenOperation } from "../plugins/operationalMetrics.js";
+import { detectRefreshTokenReplay, revokeRefreshTokenFamily } from "./refreshTokenState.js";
+import { emit } from "./events/bus.js";
 import type { TokenClaims } from "../types.js";
 import {
   getActiveSigningKey,
@@ -111,6 +113,12 @@ export interface AccessTokenOptions {
   mfaFactor?: MfaAssertion;
   /** Scopes granted at the authorization step, carried on the refresh token. */
   scopes?: string[];
+  /**
+   * The credential family the refresh token belongs to. A login omits it and
+   * gets a fresh family; a rotation passes the family of the token it replaces,
+   * so the whole chain stays one credential that can be revoked as a unit.
+   */
+  familyId?: string;
 }
 
 export function createAccessToken(user: User, opts: AccessTokenOptions = {}): Promise<string> {
@@ -290,6 +298,11 @@ async function mintTokenSet(
     deviceFingerprint: deviceFingerprint ?? null,
     mfaFactor: opts.mfaFactor ?? null,
     scopes: opts.scopes ?? [],
+    // A login starts a family; a rotation names the family it continues. The
+    // family id is generated here rather than derived from the user, so two
+    // devices logging in as the same person are two families and revoking one
+    // does not sign the other out.
+    familyId: opts.familyId ?? crypto.randomUUID(),
   }).returning();
 
   try {
@@ -392,13 +405,32 @@ async function verifyWithKey(token: string, publicKey: CryptoKey): Promise<Token
   return payload as unknown as TokenClaims;
 }
 
-export async function rotateRefreshToken(
+/**
+ * What a refresh exchange settled as.
+ *
+ * The old contract was `TokenSet | null`, and `null` meant three different
+ * things: an unknown token, an expired token, and a replayed one. Only the
+ * third is an incident, and only the third has a consequence — the credential
+ * family is revoked. A caller that cannot tell them apart either logs a
+ * breach where there was a race, or fails to revoke a family where there was a
+ * breach. So the outcome is named.
+ */
+export type RefreshExchange =
+  | { outcome: "rotated"; tokens: TokenSet }
+  /** The token was not usable: unknown, expired, or administratively revoked. */
+  | { outcome: "rejected" }
+  /** The token had already been spent, and long enough ago to be a breach. */
+  | { outcome: "replayed"; userId: string; familyId: string }
+  /** The token had just been spent — the same client asking twice. */
+  | { outcome: "raced"; userId: string; familyId: string };
+
+export async function exchangeRefreshToken(
   token: string,
   ip?: string,
   userAgent?: string,
   clientId?: string,
   expectedAppId?: string
-): Promise<TokenSet | null> {
+): Promise<RefreshExchange> {
   // Counted at the wrapper rather than at each return, for the same reason as
   // before: this function returns `null` for three different situations — unknown
   // token, expired, and replayed — and the outcome label is richer here than at any
@@ -414,12 +446,30 @@ export async function rotateRefreshToken(
   // fault, such as the database being unreachable.
   try {
     const result = await rotateRefreshTokenInternal(token, ip, userAgent, clientId, expectedAppId);
-    recordTokenOperation("rotate", result ? "success" : "refused");
+    recordTokenOperation("rotate", result.outcome === "rotated" ? "success" : "refused");
     return result;
   } catch (err) {
     recordTokenOperation("rotate", "error");
     throw err;
   }
+}
+
+/**
+ * Rotate a refresh token, or refuse it.
+ *
+ * The `TokenSet | null` shape is kept for the callers that only need to know
+ * whether the exchange worked. `exchangeRefreshToken` is the one that says
+ * *why* it did not.
+ */
+export async function rotateRefreshToken(
+  token: string,
+  ip?: string,
+  userAgent?: string,
+  clientId?: string,
+  expectedAppId?: string
+): Promise<TokenSet | null> {
+  const result = await exchangeRefreshToken(token, ip, userAgent, clientId, expectedAppId);
+  return result.outcome === "rotated" ? result.tokens : null;
 }
 
 async function rotateRefreshTokenInternal(
@@ -428,7 +478,7 @@ async function rotateRefreshTokenInternal(
   userAgent?: string,
   clientId?: string,
   expectedAppId?: string
-): Promise<TokenSet | null> {
+): Promise<RefreshExchange> {
   const hash = hashToken(token);
   const now = new Date();
 
@@ -444,8 +494,56 @@ async function rotateRefreshTokenInternal(
     )
     .limit(1);
   if (!existing) {
-    // Not a rotation. Whether it was a replay is decided by the caller, which
-    // does the state lookup; this records the refusal so a spike is visible.
+    // The token is not live. That is three different situations, and only one
+    // of them is an incident:
+    //
+    // - unknown, expired, or administratively revoked: a client that lost a
+    //   token. Ordinary, and it must not touch anything else.
+    // - spent just now: the same client asking twice. Refused, and the
+    //   family survives.
+    // - spent long ago: somebody came back with a token that was stolen.
+    //   The family is revoked.
+    //
+    // The first question is which of the three it is, and only the row can
+    // answer that.
+    const detection = await detectRefreshTokenReplay(token, now);
+    if (detection.replayed && detection.userId && detection.familyId) {
+      if (detection.raced) {
+        recordSpan(SPAN.tokenRotation, {
+          [ATTR.flow]: "refresh",
+          [ATTR.rotated]: false,
+          [ATTR.outcome]: "raced",
+        });
+        return { outcome: "raced", userId: detection.userId, familyId: detection.familyId };
+      }
+
+      // A breach. Every token descended from this login goes, because the one
+      // the attacker holds is the one the victim's client no longer has.
+      const revoked = await revokeRefreshTokenFamily(detection.familyId, now);
+      recordTokenOperation("replay", "detected");
+      await emit({
+        type: "refresh_token_replayed",
+        payload: {
+          userId: detection.userId,
+          // The same fields the route's audit row carried, so an operator
+          // reading the audit log sees one shape whether the event came from
+          // here or from the request that noticed it.
+          metadata: {
+            replayed: true,
+            familyId: detection.familyId,
+            revokedTokens: revoked,
+          },
+        },
+      });
+      recordSpan(SPAN.tokenRotation, {
+        [ATTR.flow]: "refresh",
+        [ATTR.rotated]: false,
+        [ATTR.outcome]: "replayed",
+      });
+      return { outcome: "replayed", userId: detection.userId, familyId: detection.familyId };
+    }
+
+    // Not a rotation. This records the refusal so a spike is visible.
     // The span represents the *decision*, not the query — the query is already
     // covered by the postgres auto-instrumentation.
     recordSpan(SPAN.tokenRotation, {
@@ -453,38 +551,38 @@ async function rotateRefreshTokenInternal(
       [ATTR.rotated]: false,
       [ATTR.outcome]: "not-rotated",
     });
-    return null;
+    return { outcome: "rejected" };
   }
 
   const [user] = await db.select().from(users).where(eq(users.id, existing.userId)).limit(1);
-  if (!user?.isActive || user.accountReviewRequired) return null;
+  if (!user?.isActive || user.accountReviewRequired) return { outcome: "rejected" };
 
   // A session may only keep rotating while it still represents an MFA-verified
   // login. Sessions created before MFA was enabled, or without a recorded
   // factor, are refused rather than silently upgraded.
-  if (user.totpEnabled && !existing.mfaFactor) return null;
+  if (user.totpEnabled && !existing.mfaFactor) return { outcome: "rejected" };
 
   let appId: string | undefined;
   let orgId: string | undefined;
   if (existing.appId) {
-    if (expectedAppId && expectedAppId !== existing.appId) return null;
+    if (expectedAppId && expectedAppId !== existing.appId) return { outcome: "rejected" };
     const [application] = await db
       .select({ id: applications.id, orgId: applications.orgId, clientId: applications.clientId })
       .from(applications)
       .where(and(eq(applications.id, existing.appId), eq(applications.isActive, true)))
       .limit(1);
-    if (!application || !clientId || application.clientId !== clientId) return null;
+    if (!application || !clientId || application.clientId !== clientId) return { outcome: "rejected" };
 
     const [membership] = await db
       .select({ id: orgMemberships.id })
       .from(orgMemberships)
       .where(and(eq(orgMemberships.orgId, application.orgId), eq(orgMemberships.userId, user.id)))
       .limit(1);
-    if (!membership) return null;
+    if (!membership) return { outcome: "rejected" };
     appId = application.id;
     orgId = application.orgId;
   } else if (clientId || expectedAppId) {
-    return null;
+    return { outcome: "rejected" };
   }
 
   // Claim only after all client, application, membership, and account checks
@@ -502,12 +600,18 @@ async function rotateRefreshTokenInternal(
     )
     .returning();
   if (!claimed) {
+    // Another request claimed this token between the read above and the write
+    // here. That is a race the caller lost, not a breach: the token was live
+    // when this request looked at it, so the two requests are the same client
+    // asking twice, and the family is left alone. A request that arrives
+    // *after* the other one finished finds no live token at all, and is
+    // classified by the replay detection above.
     recordSpan(SPAN.tokenRotation, {
       [ATTR.flow]: "refresh",
       [ATTR.rotated]: false,
       [ATTR.outcome]: "claim-lost",
     });
-    return null;
+    return { outcome: "raced", userId: existing.userId, familyId: existing.familyId };
   }
 
   recordSpan(SPAN.tokenRotation, {
@@ -517,7 +621,7 @@ async function rotateRefreshTokenInternal(
     [ATTR.clientId]: clientId ?? "none",
   });
 
-  return createTokenSet(
+  const tokens = await createTokenSet(
     user,
     ip,
     userAgent,
@@ -526,6 +630,10 @@ async function rotateRefreshTokenInternal(
       orgId,
       clientId,
       deviceFingerprint: claimed.deviceFingerprint ?? undefined,
+      // The family is carried forward, so the new token and the one it replaces
+      // are one credential. This is what makes "revoke everything descended
+      // from this login" a single statement instead of a guess.
+      familyId: claimed.familyId,
       // Carried forward from the token being rotated. A refresh may narrow the
       // grant but never widen it, so the stored set is authoritative rather than
       // anything the caller supplies.
@@ -537,6 +645,8 @@ async function rotateRefreshTokenInternal(
     claimed.deviceFingerprint ?? undefined,
     "refresh"
   );
+
+  return { outcome: "rotated", tokens };
 }
 
 export async function revokeRefreshToken(token: string): Promise<void> {

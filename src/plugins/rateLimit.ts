@@ -174,7 +174,10 @@ async function checkLimit(
 
 /** Kept for callers that only need a yes/no, such as a pre-authentication budget. */
 async function isAllowed(key: string, maxAttempts: number, windowSeconds: number): Promise<boolean> {
-  const decision = await checkLimit(key, maxAttempts, windowSeconds, false, "pre-auth");
+  // The emergency local limiter is on here too. This budget guards the SCIM
+  // authentication-failure path, and a limiter that disappears exactly when the
+  // service it protects is in trouble is the wrong way round.
+  const decision = await checkLimit(key, maxAttempts, windowSeconds, true, "pre-auth");
   return decision.allowed;
 }
 
@@ -294,7 +297,16 @@ export function globalRateLimit(options: GlobalRateLimitOptions = {}) {
   return async function onRequest(request: FastifyRequest, reply: FastifyReply) {
     const id = clientIdentifier(request);
     const key = `${keyPrefix}:${id}`;
-    const decision = await checkLimit(key, maxRequests, windowSeconds, false, keyPrefix);
+    // The emergency local limiter is on, and this used to be the one place it
+    // was off. A global limiter that fails open is the worst kind of fail-open:
+    // it is the limit that exists to protect every other endpoint, and during
+    // a Redis outage it silently removed the ceiling on the whole server.
+    //
+    // The local budget is per-process, so a fleet of N instances allows N
+    // times the intended rate while Redis is down. That is a worse number than
+    // the intended one and a far better one than unbounded — and it is the
+    // same trade the per-prefix limiters already make.
+    const decision = await checkLimit(key, maxRequests, windowSeconds, true, keyPrefix);
     if (!decision.allowed) {
       await reportLimited(request, { keyPrefix, maxAttempts: maxRequests, windowSeconds }, decision);
       return reply

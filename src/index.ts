@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import fastify, { type FastifyInstance } from "fastify";
+import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
@@ -17,6 +17,7 @@ import {
   tagForRoute,
 } from "./lib/openapi.js";
 import { defaultErrorCodeForStatus } from "./lib/errorCodes.js";
+import { isDatabaseUnavailable } from "./lib/dependencyErrors.js";
 import { closeDb, db } from "./db/index.js";
 import { verifySchema } from "./db/verifySchema.js";
 import {
@@ -350,6 +351,23 @@ export async function buildApp() {
   await app.register(mtlsPlugin);
   await app.register(metricsPlugin);
 
+  // Before every route is registered, and that ordering is load-bearing.
+  //
+  // Fastify resolves the error handler for a route when the route is
+  // registered, not when the request arrives. A handler installed *after* the
+  // routes therefore applies to none of them: every route kept Fastify's
+  // default handler, which answers a schema violation with 500 and the raw
+  // validation issues in the body, and a database failure with 500 and the
+  // failed query. The application's own handler — the one that answers 400 for
+  // a validation error and keeps the internals out of the response — was
+  // installed at the end of `buildApp()`, where it applied to nothing.
+  //
+  // The 3.12.0 error-contract suite did not catch it because it exercised a
+  // bare Fastify app with its routes on the root instance, where the handler
+  // did apply. This is the same mistake in the opposite direction: a test of
+  // the mechanism rather than of the server.
+  app.setErrorHandler(errorHandler);
+
   await app.register(authRoutes, { prefix: "/auth" });
   await app.register(sessionRoutes, { prefix: "/auth" });
   await app.register(profileRoutes, { prefix: "/auth" });
@@ -399,43 +417,66 @@ export async function buildApp() {
 
   await app.register(setupRoutes, { prefix: "/setup" });
 
-  app.setErrorHandler((error: unknown, request, reply) => {
-    const isZodLike = error instanceof ZodError || (
-      error &&
-      typeof error === "object" &&
-      ((error as { name?: unknown }).name === "ZodError" ||
-        ("issues" in error && Array.isArray((error as { issues?: unknown }).issues)))
-    );
-    if (isZodLike) {
-      const issues = error instanceof ZodError
-        ? error.issues
-        : (error as { issues: Array<{ path?: Array<string | number>; message?: string }> }).issues;
-      return reply.status(400).send({
-        error: "Invalid input",
-        code: "VALIDATION_ERROR",
-        details: issues.map((issue) => ({ path: issue.path ?? [], message: issue.message ?? "Invalid value" })),
-      });
-    }
-
-    if (error && typeof error === "object" && "validation" in error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return reply.status(400).send({ error: "Invalid input", code: "VALIDATION_ERROR", details: message });
-    }
-
-    if (error instanceof Error && "statusCode" in error) {
-      const statusCode = (error as Error & { statusCode: number }).statusCode;
-      const code = (error as Error & { code?: string }).code;
-      if (statusCode >= 400 && statusCode < 600) {
-        return reply.status(statusCode).send({ error: error.message, code: code ?? defaultErrorCodeForStatus(statusCode) });
-      }
-    }
-
-    request.log.error({ err: error }, "Unhandled error");
-    const message = config.NODE_ENV === "production" ? "Internal server error" : String(error);
-    return reply.status(500).send({ error: message });
-  });
-
   return app;
+}
+
+/**
+ * The application's error handler.
+ *
+ * Named and hoisted so it can be installed *before* the routes are registered.
+ * Fastify resolves the handler for a route at registration time, so a handler
+ * installed afterwards applies to nothing — which is how every route ended up
+ * answering a validation error with 500 and the raw validation issues, and a
+ * database failure with 500 and the failed query.
+ */
+function errorHandler(error: unknown, request: FastifyRequest, reply: FastifyReply) {
+  const isZodLike = error instanceof ZodError || (
+    error &&
+    typeof error === "object" &&
+    ((error as { name?: unknown }).name === "ZodError" ||
+      ("issues" in error && Array.isArray((error as { issues?: unknown }).issues)))
+  );
+  if (isZodLike) {
+    const issues = error instanceof ZodError
+      ? error.issues
+      : (error as { issues: Array<{ path?: Array<string | number>; message?: string }> }).issues;
+    return reply.status(400).send({
+      error: "Invalid input",
+      code: "VALIDATION_ERROR",
+      details: issues.map((issue) => ({ path: issue.path ?? [], message: issue.message ?? "Invalid value" })),
+    });
+  }
+
+  if (error && typeof error === "object" && "validation" in error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return reply.status(400).send({ error: "Invalid input", code: "VALIDATION_ERROR", details: message });
+  }
+
+  if (error instanceof Error && "statusCode" in error) {
+    const statusCode = (error as Error & { statusCode: number }).statusCode;
+    const code = (error as Error & { code?: string }).code;
+    if (statusCode >= 400 && statusCode < 600) {
+      return reply.status(statusCode).send({ error: error.message, code: code ?? defaultErrorCodeForStatus(statusCode) });
+    }
+  }
+
+  // §8.2. A database that cannot be reached is not a bug in the request and
+  // not a bug in the server: it is a dependency being unavailable, and the
+  // honest answer is 503 — "temporarily unable, try again" — rather than 500,
+  // which says "we are broken" and invites a retry with backoff that will
+  // never succeed. It also tells a load balancer to shed traffic instead of
+  // sending more of it at a server that cannot answer.
+  if (isDatabaseUnavailable(error)) {
+    request.log.error({ err: error }, "database unavailable");
+    return reply.status(503).send({
+      error: "Service temporarily unavailable",
+      code: "SERVICE_UNAVAILABLE",
+    });
+  }
+
+  request.log.error({ err: error }, "Unhandled error");
+  const message = config.NODE_ENV === "production" ? "Internal server error" : String(error);
+  return reply.status(500).send({ error: message });
 }
 
 async function start() {

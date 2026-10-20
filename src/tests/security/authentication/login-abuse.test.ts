@@ -273,7 +273,17 @@ describe("A replayed refresh token is detected", () => {
     assert.equal(response.statusCode, 200, `token login failed: ${response.body}`);
     const body = response.json();
     assert.ok(body.refreshToken, "token login must return a refresh token in the body");
-    return { userId: id, refreshToken: body.refreshToken };
+    return { userId: id, email, refreshToken: body.refreshToken };
+  }
+
+  /**
+   * The digest a refresh token is stored under.
+   *
+   * The same one-line helper the token service uses, written out here so the
+   * suite does not import the service it is testing.
+   */
+  function sha256(value: string): string {
+    return crypto.createHash("sha256").update(value).digest("hex");
   }
 
   it("reports a second presentation of a consumed token as a replay", async () => {
@@ -282,6 +292,17 @@ describe("A replayed refresh token is detected", () => {
     // The first rotation consumes the token, as every rotation must.
     const first = await refreshWith(refreshToken);
     assert.equal(first.statusCode, 200, "the first use is legitimate");
+
+    // Age the consumption so the second presentation is outside the grace
+    // window. Inside it, the second presentation is the same client asking
+    // twice — a race, not a breach — and the case below asserts that
+    // separately. Waiting the window out would be slow and flaky, so the
+    // timestamp is moved instead, which is also what a token stolen an hour
+    // ago looks like.
+    await db
+      .update(refreshTokens)
+      .set({ consumedAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(refreshTokens.tokenHash, sha256(refreshToken)));
 
     const snapshot = await snapshotIds();
     const second = await refreshWith(refreshToken);
@@ -302,7 +323,31 @@ describe("A replayed refresh token is detected", () => {
     );
   });
 
-  it("revokes the account's remaining credentials, because the token leaked", async () => {
+  it("does not call a client that refreshes twice a breach", async () => {
+    // Two tabs, or a retry after a slow response. The second presentation is
+    // refused, but it is not a leak and must not be reported as one: a replay
+    // revokes a credential family, and treating every race as a breach would
+    // sign users out for opening a second tab.
+    const { refreshToken } = await loginAndRotate();
+
+    const first = await refreshWith(refreshToken);
+    assert.equal(first.statusCode, 200, "the first use is legitimate");
+
+    const snapshot = await snapshotIds();
+    const second = await refreshWith(refreshToken);
+    assert.equal(second.statusCode, 401, "a spent token must not mint another session");
+
+    const added = (await newRowsSince(snapshot)).filter(
+      (r) => r.event === "refresh_token_replayed:v1"
+    );
+    assert.equal(
+      added.length,
+      0,
+      "a client that refreshes twice is not a breach, and must not be reported as one"
+    );
+  });
+
+  it("revokes the credential family the replayed token belongs to", async () => {
     const { userId, refreshToken } = await loginAndRotate();
 
     // Establish a live session the legitimate client would still be holding.
@@ -315,6 +360,11 @@ describe("A replayed refresh token is detected", () => {
       .where(eq(refreshTokens.userId, userId));
     const liveHashes = liveBefore.filter((t) => t.revokedAt === null).map((t) => t.tokenHash);
     assert.ok(liveHashes.length > 0, "precondition: a rotated token should be live before the replay");
+
+    await db
+      .update(refreshTokens)
+      .set({ consumedAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(refreshTokens.tokenHash, sha256(refreshToken)));
 
     const replayed = await refreshWith(refreshToken);
     assert.equal(replayed.statusCode, 401, "a spent token must not mint another session");
@@ -336,6 +386,42 @@ describe("A replayed refresh token is detected", () => {
     }
   });
 
+  it("leaves another login of the same user alone", async () => {
+    // The revocation is scoped to the family the replayed token belongs to.
+    // The previous behaviour revoked every credential the user had, which is
+    // a denial of service for the price of one stolen token and buys the
+    // attacker nothing the family's own revocation does not already buy.
+    const { email, refreshToken } = await loginAndRotate();
+
+    // A second login, on a different device: a different family.
+    const second = await app.inject({
+      method: "POST",
+      url: "/auth/token-login",
+      payload: { email, password: PASSWORD },
+    });
+    assert.equal(second.statusCode, 200, second.body);
+    const otherToken = second.json().refreshToken as string;
+    assert.ok(otherToken, "the second login must return a refresh token");
+
+    const rotated = await refreshWith(refreshToken);
+    assert.equal(rotated.statusCode, 200, "the first rotation is legitimate");
+    await db
+      .update(refreshTokens)
+      .set({ consumedAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(refreshTokens.tokenHash, sha256(refreshToken)));
+
+    const replayed = await refreshWith(refreshToken);
+    assert.equal(replayed.statusCode, 401);
+
+    // The other login's token still works.
+    const other = await refreshWith(otherToken);
+    assert.equal(
+      other.statusCode,
+      200,
+      "a replay in one login must not end another login of the same user"
+    );
+  });
+
   it("does not revoke anything for a token that was never issued", async () => {
     const { userId } = await loginAndRotate();
 
@@ -346,11 +432,21 @@ describe("A replayed refresh token is detected", () => {
     const added = (await newRowsSince(snapshot)).filter(
       (r) => r.event === "refresh_token_replayed:v1"
     );
-    assert.equal(added.length, 1, "the attempt must be recorded even though nothing was revoked");
     assert.equal(
-      rowMetadata(added[0]).replayed,
-      false,
-      "an unknown token is a guess or a stale client, not evidence of a leak, and must not revoke the account"
+      added.length,
+      0,
+      "an unknown token is a guess or a stale client, not evidence of a leak, and must not be reported as a replay"
+    );
+    // The attempt is still recorded — under the name that says what happened.
+    // A row named `refresh_token_replayed` for a token that was never issued is
+    // a row that teaches an operator to ignore the name.
+    const failures = (await newRowsSince(snapshot)).filter(
+      (r) => r.event === "token_refresh_failed:v1"
+    );
+    assert.equal(
+      failures.length,
+      1,
+      "the attempt must be recorded even though nothing was revoked"
     );
     const live = await db
       .select()

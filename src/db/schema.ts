@@ -183,6 +183,22 @@ export const refreshTokens = pgTable(
      * Only `consumedAt` triggers the revoke-everything replay response.
      */
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    /**
+     * The credential family this token belongs to: the chain of tokens descended
+     * from one original login.
+     *
+     * Rotation mints a new token that replaces the old one, and the two are the
+     * same credential in different guises — a leaked "current" token is a leaked
+     * "previous" token. Without a family there is no way to say "revoke every
+     * token descended from this login" when a replay is detected, which is the
+     * only safe response to a replay: the attacker and the victim both hold a
+     * token, and the victim's remaining session must not survive the discovery.
+     *
+     * A login starts a family; every rotation carries it forward. The family
+     * deliberately does not follow a user across logins: two devices logging in
+     * separately are two families, and revoking one must not sign the other out.
+     */
+    familyId: uuid("family_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
@@ -199,6 +215,7 @@ export const refreshTokens = pgTable(
     userIdx: index("refresh_tokens_user_idx").on(table.userId),
     appIdx: index("refresh_tokens_app_idx").on(table.appId),
     hashIdx: index("refresh_tokens_hash_idx").on(table.tokenHash),
+    familyIdx: index("refresh_tokens_family_idx").on(table.familyId),
     // Same shape as user_sessions: cleanup is `expires_at < now()` regardless
     // of revocation, so a plain index serves it and a partial one would not.
     expiresIdx: index("refresh_tokens_expires_idx").on(table.expiresAt),
