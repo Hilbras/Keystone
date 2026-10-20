@@ -4,14 +4,14 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**92 findings.**
+**95 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 7 |
 | high | 41 |
-| medium | 29 |
-| low | 15 |
+| medium | 31 |
+| low | 16 |
 
 ## Scope
 
@@ -1314,6 +1314,32 @@ No change to `signWebhookPayload`, so signatures this server produces are byte-i
 
 **Documentation.** [docs/security/monitoring.md](monitoring.md)
 
+### SEC-095 — A production boot accepted unsafe configuration, because the checks lived at three points of use and the unsafe conditions that mattered most had no check at all
+
+*Fixed in v3.11.0. Component: `deployment`.*
+
+**Issue.** Production posture was enforced by four ad-hoc blocks: a fatal for a weak TOTP key and one for `COOKIE_SECURE=false` in `src/index.ts`, a warning for a missing encryption key, and two warnings in the diagnostics summary. Everything else that makes a deployment unsafe ran unchecked — an in-process queue in a multi-instance deployment (work lost on restart, limits not shared), `KEYSTONE_ALLOW_INSECURE_WEBHOOK` left set, debug logging, an empty CORS list behind a credentialed cookie, webhooks sent without a signature, and private-network allowlists. The checks that existed also keyed off `NODE_ENV === "production"` alone, so `staging` — the environment that exists to prove the production configuration — silently ran with development defaults, and a typo such as `prod` did the same with no warning.
+
+**Medium:** each condition is individually a deployment mistake rather than a remotely triggerable flaw. The reason it is a finding at all is that the set was invisible: nothing could be re-checked, nothing appeared in the operator-facing diagnostics consistently, and adding a new unsafe setting meant remembering to add a fourth check.
+
+**Fix.** src/services/config-validation.ts — one pure validator over an explicit input struct, producing ERROR/WARNING/INFO findings with stable codes, logged once at boot and rendered by `services/diagnostics.ts` so a running instance cannot disagree with the gate; `src/config/profiles.ts` — explicit security defaults per profile (`development|test|staging|production`, unknown values reported); `src/index.ts` refuses to start in a strict profile unless KEYSTONE_ALLOW_DEV_DEFAULTS is set
+
+**Test.** `src/tests/deployment/configurationValidation.test.ts`
+
+**Documentation.** [docs/DEPLOYMENT.md](../DEPLOYMENT.md)
+
+### SEC-096 — A failed or half-applied migration was logged and the process served a schema it did not match, answering 500s while its probes reported healthy
+
+*Fixed in v3.11.0. Component: `deployment`.*
+
+**Issue.** `start()` wrapped `migrate()` in a try/catch that logged the error and continued to `listen()`. Nothing verified that the schema the database actually had was the schema the application expected: `drizzle-kit` reported what its journal applied, and no code read `information_schema`. An interrupted migration, a restore from an older dump, or a `search_path` resolving to another schema therefore produced a process that was live, ready, and failing every request that touched a missing table — with the failure visible only in the request log.
+
+**Fix.** src/db/verifySchema.ts — derives the expected table list from the Drizzle schema itself via `isTable`/`getTableName` and compares it with `information_schema.tables`; `src/index.ts` verifies after migrating and refuses to start in a production-like profile after a failed migration or a missing table; `src/cli.ts` adds `migrate --verify` and `schema:verify`, wrapped by `scripts/migrate.sh`
+
+**Test.** `src/tests/deployment/migrationSafety.test.ts`
+
+**Documentation.** [docs/OPERATIONS/migrations.md](../OPERATIONS/migrations.md)
+
 ## Low
 
 ### SEC-041 — A test fixture path was correct at only one directory depth
@@ -1607,3 +1633,17 @@ The absence of a failure record is the part that matters. A failed run is visibl
 **Documentation.** [docs/DEPLOYMENT.md](../DEPLOYMENT.md)
 
 **Attack classes.** `secret-disclosure`
+
+### SEC-097 — SIGTERM terminated the process immediately, severing in-flight requests and never running the teardown that already existed
+
+*Fixed in v3.11.0. Component: `deployment`.*
+
+**Issue.** There was no `process.on('SIGTERM'|'SIGINT')` anywhere in `src/`. Node's default disposition terminates immediately, so a deploy, `docker stop`, or pod eviction cut every in-flight request and every running job. The `onClose` hook that closes the queue and the cache never ran either, because nothing called `app.close()` in production — there was no stop path to call it from. The in-process queue's `close()` cleared its handler map without awaiting a running handler, and the database pool and the shared Redis connection had no server-side close path at all.
+
+**Low:** the exposure is availability and half-finished work, not a credential. It is recorded because a shutdown that leaves a transaction, a webhook delivery or an audit write in an unknown state is the kind of failure that is blamed on the database months later.
+
+**Fix.** src/services/shutdown.ts — ordered, deadline-bounded drain on SIGTERM/SIGINT (stop accepting, drain requests, stop workers, close PostgreSQL, close Redis), with a second signal exiting immediately; `src/services/queue/inProcess.ts` tracks in-flight jobs and retry timers so `close()` drains instead of clearing; `src/index.ts` installs the handlers before `listen()`; `Dockerfile` declares STOPSIGNAL
+
+**Test.** `src/tests/deployment/gracefulShutdown.test.ts`
+
+**Documentation.** [docs/OPERATIONS/backup-restore.md](../OPERATIONS/backup-restore.md)

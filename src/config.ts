@@ -307,6 +307,15 @@ export const config = {
   PRINT_SETUP_TOKEN: getEnv("KEYSTONE_PRINT_SETUP_TOKEN", "false") === "true",
   /** Where configuration is persisted: "json" or, when unset, the env file. */
   CONFIG_MODE: optionalString("KEYSTONE_CONFIG_MODE"),
+  /**
+   * §6.3. Deadline for the graceful-shutdown sequence.
+   *
+   * A dependency that never settles must not make a deploy hang until the
+   * orchestrator SIGKILLs it. On expiry the process exits non-zero and names the
+   * step it was on, so the next run has a diagnosis. Keep the orchestrator's grace
+   * period longer than this; Kubernetes defaults to 30s.
+   */
+  SHUTDOWN_TIMEOUT_MS: positiveInt("KEYSTONE_SHUTDOWN_TIMEOUT_MS", "10000"),
   // SCIM. `SCIM_BEARER_TOKEN` / `SCIM_ORG_ID` are legacy: they are read once at
   // startup to create a per-organization connection, then superseded by the
   // connection API. New deployments should use the connection API only.

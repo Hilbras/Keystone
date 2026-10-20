@@ -8,12 +8,21 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { config } from "./config.js";
+import { resolveProfile, securityDefaults } from "./config/profiles.js";
 import { loggerOptions } from "./lib/logger.js";
-import { db } from "./db/index.js";
+import { closeDb, db } from "./db/index.js";
+import { verifySchema } from "./db/verifySchema.js";
+import {
+  configValidationInput,
+  logConfigurationReport,
+  validateConfiguration,
+} from "./services/config-validation.js";
+import { installShutdownHandlers } from "./services/shutdown.js";
+import { runStartupRecovery } from "./services/startup-recovery.js";
 import { initializeContainer } from "./di.js";
 import { getContainer } from "./container.js";
 import { fastifyTrustProxySetting, isOriginAllowed } from "./services/trustedProxies.js";
-import { redis } from "./services/redis.js";
+import { closeRedis, redis } from "./services/redis.js";
 import { loadSigningKeys, getPublicJwks } from "./services/tokens.js";
 
 import { loadWorkflows } from "./services/workflows/engine.js";
@@ -142,17 +151,9 @@ export async function buildApp() {
     routePrefix: "/documentation",
   });
 
-  // Logged once at boot so a misconfiguration is visible before it matters,
-  // rather than only when a browser is refused.
-  if (config.ALLOWED_ORIGINS.length === 0) {
-    app.log.warn(
-      config.NODE_ENV === "production"
-        ? "ALLOWED_ORIGINS is empty in production: every cross-origin request will be refused. " +
-            "Set it to the exact origins that serve your frontend."
-        : "ALLOWED_ORIGINS is empty: any localhost origin is allowed in development."
-    );
-  }
-
+  // §6.1. The empty-ALLOWED_ORIGINS warning used to live here. It now belongs to
+  // the boot validator in `start()`, together with every other production
+  // posture check, so there is one place to read rather than one per symptom.
   await app.register(cors, {
     origin: (origin, cb) => {
       // Previously an empty ALLOWED_ORIGINS returned true here, which made an
@@ -410,12 +411,55 @@ async function start() {
   });
 
   const app = await buildApp();
+  const profileDefaults = securityDefaults(resolveProfile(config.NODE_ENV));
 
+  // §6.5. A failed migration used to be logged and then ignored: the process went
+  // on to `listen()` with a schema the application does not match. In a
+  // production-like profile that is a refusal to start — a process serving from an
+  // unknown schema answers 500s to every request while telling the orchestrator it
+  // is healthy. Development keeps the old behaviour so a half-built local database
+  // stays debuggable.
   try {
     await migrate(db, { migrationsFolder: path.resolve(__dirname, "./db/migrations") });
     app.log.info("Database migrations applied");
+
+    // The journal says what it applied; this says what is actually there. They
+    // disagree after an interrupted migration, a stale restore, or a `search_path`
+    // that resolves elsewhere — and only the second one matters to a request.
+    const schemaCheck = await verifySchema();
+    if (!schemaCheck.ok) {
+      app.log.error(
+        { missing: schemaCheck.missing },
+        `Schema verification failed: ${schemaCheck.missing.length} table(s) missing after migration`
+      );
+      if (profileDefaults.strict && !config.ALLOW_DEV_DEFAULTS) {
+        app.log.fatal(
+          "Refusing to start with an incomplete schema. Run `keystone migrate --verify`, or restore the database."
+        );
+        process.exit(1);
+      }
+    } else {
+      app.log.info({ tables: schemaCheck.expected.length }, "Schema verified");
+    }
   } catch (err) {
     app.log.error({ err }, "Database migration failed — the application may not work correctly");
+    if (profileDefaults.strict && !config.ALLOW_DEV_DEFAULTS) {
+      app.log.fatal(
+        "Refusing to start after a failed migration. Run `keystone migrate --verify`, or restore the database."
+      );
+      process.exit(1);
+    }
+  }
+
+  // §6.4. Collect what a previous instance left behind, before this one starts
+  // taking work. Placed after the migration because it queries the deliveries
+  // table, and before `listen()` so the first queued job cannot race the reclaim.
+  try {
+    await runStartupRecovery();
+  } catch (err) {
+    // `runStartupRecovery` is written not to throw; this is the belt for a
+    // dependency that surprises it. Recovery is never a reason to refuse to boot.
+    app.log.warn({ err }, "Startup recovery could not complete");
   }
 
   try {
@@ -459,50 +503,45 @@ async function start() {
     await stopTracing();
   });
 
-  // TOTP secrets (and backup-code peppers) are encrypted with a key derived
-  // from TOTP_ENCRYPTION_KEY, falling back to INTERNAL_API_KEY. Without a real
-  // key, production would encrypt every enrolled authenticator with a fallback
-  // any reader of the source can reconstruct from an empty database dump.
-  {
-    // Long enough to pass a length check but public: the value shipped in
-    // .env.example and k8s examples.
-    const PLACEHOLDER_SECRET = "change-me-to-a-random-32-char-secret";
-    const totpKey = config.TOTP_ENCRYPTION_KEY || config.INTERNAL_API_KEY;
-    const weakKey = !totpKey || totpKey.length < 32 || totpKey === PLACEHOLDER_SECRET;
-    if (config.NODE_ENV === "production" && weakKey) {
-      app.log.fatal(
-        "KEYSTONE_TOTP_ENCRYPTION_KEY (or KEYSTONE_INTERNAL_API_KEY) must be a real 32+ character secret — placeholder and default values are refused so TOTP secrets are not encrypted with a publicly known key. Set KEYSTONE_ALLOW_DEV_DEFAULTS=true to override."
-      );
-      if (!config.ALLOW_DEV_DEFAULTS) {
-        process.exit(1);
-      }
-      app.log.warn("Continuing with a weak TOTP key because KEYSTONE_ALLOW_DEV_DEFAULTS=true");
-    } else if (weakKey) {
-      app.log.warn(
-        "TOTP secrets are encrypted with the development default key — set KEYSTONE_TOTP_ENCRYPTION_KEY (or a 32+ char KEYSTONE_INTERNAL_API_KEY) before deploying this database."
-      );
-    }
-  }
-
-  // The JWT signing keypair is stored in `secrets`; without an environment
-  // wrap key its protection degrades to "whoever can read the database in
-  // plaintext" — the same trust the database connection already implies, but
-  // stated once so an operator knows a table dump is a token-forging dump.
-  if (config.NODE_ENV === "production" && !config.KEYSTONE_ENCRYPTION_KEY) {
-    app.log.warn(
-      "KEYSTONE_ENCRYPTION_KEY is not set: the JWT signing keypair in the secrets table is stored unwrapped. Set it so a database dump alone cannot mint tokens."
-    );
-  }
-
-  // A production boot carrying development cookie posture would send session
-  // cookies over plaintext. config already defaults COOKIE_SECURE to true when
-  // NODE_ENV=production, so reaching here means somebody set it to false.
-  if (config.NODE_ENV === "production" && !config.COOKIE_SECURE && !config.ALLOW_DEV_DEFAULTS) {
+  // §6.1. One report, one place to read. The three checks that used to live here —
+  // weak TOTP key, missing encryption key, insecure cookie — are now findings in a
+  // single report, alongside the conditions that previously had no check at all: an
+  // in-process queue in production, an insecure-webhook escape hatch left switched
+  // on, debug logging, an empty CORS list, unsigned webhooks, private-network
+  // allowlists.
+  //
+  // A finding at `error` level stops the process unless KEYSTONE_ALLOW_DEV_DEFAULTS
+  // is set — the same escape hatch the checks here always honoured.
+  const validation = validateConfiguration(configValidationInput());
+  logConfigurationReport(validation, app.log);
+  if (validation.fatal) {
     app.log.fatal(
-      "COOKIE_SECURE is false in production — sessions would travel in plaintext. Refusing to start: set COOKIE_SECURE=true, or KEYSTONE_ALLOW_DEV_DEFAULTS=true if this really is a development deployment."
+      `Refusing to start: ${validation.errors.length} unsafe setting(s) for profile ${validation.profile}. ` +
+        "Fix them, or set KEYSTONE_ALLOW_DEV_DEFAULTS=true for a deliberate development deployment."
     );
     process.exit(1);
   }
+  if (validation.errors.length > 0) {
+    app.log.warn(
+      `Continuing with ${validation.errors.length} unsafe setting(s) because KEYSTONE_ALLOW_DEV_DEFAULTS=true`
+    );
+  }
+
+  // §6.3. From this point on a deploy, `docker stop`, or pod eviction drains
+  // instead of severing every in-flight request. Installed before `listen()` so a
+  // signal arriving during the bind cannot skip the teardown.
+  installShutdownHandlers(
+    {
+      closeApp: () => app.close(),
+      closeDatabase: closeDb,
+      closeRedis,
+    },
+    {
+      timeoutMs: config.SHUTDOWN_TIMEOUT_MS,
+      log: (message) => app.log.info({}, message),
+      error: (message, err) => app.log.error({ err }, message),
+    }
+  );
 
   try {
     await app.listen({ port: config.PORT, host: config.HOST });

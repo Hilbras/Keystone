@@ -2,6 +2,8 @@ import { hostname } from "node:os";
 import { config } from "../config.js";
 import { buildReadinessReport, type ReadinessReport } from "./health.js";
 import { buildStartupReport } from "./startup.js";
+import { configValidationInput, validateConfiguration } from "./config-validation.js";
+import { getStartupRecoveryReport, type StartupRecoveryReport } from "./startup-recovery.js";
 import { WORKER_ID, HEARTBEAT_INTERVAL_MS, DEFAULT_CONCURRENCY } from "./queue/workerIdentity.js";
 import { getPublicJwks } from "./tokens.js";
 import { scrubDriverErrorText } from "../lib/logSanitizer.js";
@@ -70,7 +72,21 @@ export interface DiagnosticsReport {
     published: string[];
     error?: string;
   };
-  configuration: { environment: string; logLevel: string; warnings: string[] };
+  configuration: {
+    environment: string;
+    /** §6.2: the resolved security profile, which is what the checks below apply to. */
+    profile: string;
+    logLevel: string;
+    warnings: string[];
+  };
+  /**
+   * §6.4: what the boot-time recovery pass found, or `null` before it ran.
+   *
+   * Exposed because "this instance recovered 4 000 deliveries when it started" is
+   * the difference between a restart and an incident, and it was previously visible
+   * only as a log line that fired when the count was non-zero.
+   */
+  recovery: StartupRecoveryReport | null;
 }
 
 /**
@@ -80,31 +96,19 @@ export interface DiagnosticsReport {
  * "is this instance configured the way I think it is", and the answer is the
  * handful of settings that differ between a working deployment and a broken one.
  *
- * This is the read-only half of §6.1, which is where the same checks move to
- * startup and become fatal-or-loud. Doing it here first is deliberate: a validator
- * that refuses to boot is only trustworthy once the conditions it refuses on have
- * been visible in the running system for a release.
+ * §6.1 moved the checks into `services/config-validation.ts` and made the same
+ * report fatal at boot in a strict profile. This function now *renders* that
+ * report rather than re-deriving it, so the running instance and the startup gate
+ * cannot disagree about whether a setting is unsafe — the split that let the old
+ * version miss the in-process queue's half of the problem.
  */
 function configurationSummary(): DiagnosticsReport["configuration"] {
-  const warnings: string[] = [];
-
-  if (config.NODE_ENV === "production") {
-    if (!config.REDIS_URL) {
-      warnings.push(
-        "no REDIS_URL: the queue is in-process and the rate limiter is per-instance, so a second instance would not share either"
-      );
-    }
-    if (config.KEYSTONE_QUEUE_PROVIDER === "in-process") {
-      warnings.push(
-        "KEYSTONE_QUEUE_PROVIDER is in-process in production: background work does not survive a restart and is not shared between instances"
-      );
-    }
-  }
-
+  const report = validateConfiguration(configValidationInput());
   return {
     environment: config.NODE_ENV,
+    profile: report.profile,
     logLevel: config.LOG_LEVEL ?? (config.NODE_ENV === "production" ? "info" : "debug"),
-    warnings,
+    warnings: report.warnings.map((finding) => finding.message),
   };
 }
 
@@ -179,5 +183,6 @@ export async function buildDiagnosticsReport(
     queue: queueReport,
     keys: keysReport,
     configuration: configurationSummary(),
+    recovery: getStartupRecoveryReport(),
   };
 }

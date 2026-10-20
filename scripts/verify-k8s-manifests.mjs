@@ -174,7 +174,7 @@ function containersOf(doc) {
 
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const version = packageJson.version;
-const expectedImage = "ghcr.io/hilbras-dev/hilbras-keystone";
+const expectedImage = "ghcr.io/hilbras/keystone";
 
 const targets = ["base", "overlays/production", "overlays/dev", "overlays/ingress"];
 

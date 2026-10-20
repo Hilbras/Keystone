@@ -20,6 +20,13 @@ Complete documentation for the Hilbras Keystone identity platform.
 | [Codebase analysis](ANALYSIS-v3.0.1.md) | Measured assessment: layering, error handling, data layer, test shape |
 | [Roadmap v3.1.0 → v3.5.0](ROADMAP-v3.1.0-v3.5.0.md) | Five releases of measurement, correction and operability |
 
+## Operations
+
+| Document | Purpose |
+| --- | --- |
+| [Backup and restore](OPERATIONS/backup-restore.md) | `pg_dump`/`pg_restore`, key backup, RTO/RPO, disaster recovery, what cannot be recovered |
+| [Database migrations](OPERATIONS/migrations.md) | up/verify/rollback, expand/migrate/contract, the deploy order that survives a rolling rollout |
+
 ## Integrating
 
 | Document | Purpose |

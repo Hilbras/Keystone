@@ -1234,6 +1234,42 @@
       "test": "src/tests/observability/logging.test.ts",
       "documentation": "docs/security/monitoring.md",
       "covers": []
+    },
+    {
+      "id": "SEC-095",
+      "title": "A production boot accepted unsafe configuration, because the checks lived at three points of use and the unsafe conditions that mattered most had no check at all",
+      "severity": "medium",
+      "component": "deployment",
+      "release": "3.11.0",
+      "issue": "Production posture was enforced by four ad-hoc blocks: a fatal for a weak TOTP key and one for `COOKIE_SECURE=false` in `src/index.ts`, a warning for a missing encryption key, and two warnings in the diagnostics summary. Everything else that makes a deployment unsafe ran unchecked \u2014 an in-process queue in a multi-instance deployment (work lost on restart, limits not shared), `KEYSTONE_ALLOW_INSECURE_WEBHOOK` left set, debug logging, an empty CORS list behind a credentialed cookie, webhooks sent without a signature, and private-network allowlists. The checks that existed also keyed off `NODE_ENV === \"production\"` alone, so `staging` \u2014 the environment that exists to prove the production configuration \u2014 silently ran with development defaults, and a typo such as `prod` did the same with no warning.\n\n**Medium:** each condition is individually a deployment mistake rather than a remotely triggerable flaw. The reason it is a finding at all is that the set was invisible: nothing could be re-checked, nothing appeared in the operator-facing diagnostics consistently, and adding a new unsafe setting meant remembering to add a fourth check.",
+      "fix": "src/services/config-validation.ts \u2014 one pure validator over an explicit input struct, producing ERROR/WARNING/INFO findings with stable codes, logged once at boot and rendered by `services/diagnostics.ts` so a running instance cannot disagree with the gate; `src/config/profiles.ts` \u2014 explicit security defaults per profile (`development|test|staging|production`, unknown values reported); `src/index.ts` refuses to start in a strict profile unless KEYSTONE_ALLOW_DEV_DEFAULTS is set",
+      "test": "src/tests/deployment/configurationValidation.test.ts",
+      "documentation": "docs/DEPLOYMENT.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-096",
+      "title": "A failed or half-applied migration was logged and the process served a schema it did not match, answering 500s while its probes reported healthy",
+      "severity": "medium",
+      "component": "deployment",
+      "release": "3.11.0",
+      "issue": "`start()` wrapped `migrate()` in a try/catch that logged the error and continued to `listen()`. Nothing verified that the schema the database actually had was the schema the application expected: `drizzle-kit` reported what its journal applied, and no code read `information_schema`. An interrupted migration, a restore from an older dump, or a `search_path` resolving to another schema therefore produced a process that was live, ready, and failing every request that touched a missing table \u2014 with the failure visible only in the request log.",
+      "fix": "src/db/verifySchema.ts \u2014 derives the expected table list from the Drizzle schema itself via `isTable`/`getTableName` and compares it with `information_schema.tables`; `src/index.ts` verifies after migrating and refuses to start in a production-like profile after a failed migration or a missing table; `src/cli.ts` adds `migrate --verify` and `schema:verify`, wrapped by `scripts/migrate.sh`",
+      "test": "src/tests/deployment/migrationSafety.test.ts",
+      "documentation": "docs/OPERATIONS/migrations.md",
+      "covers": []
+    },
+    {
+      "id": "SEC-097",
+      "title": "SIGTERM terminated the process immediately, severing in-flight requests and never running the teardown that already existed",
+      "severity": "low",
+      "component": "deployment",
+      "release": "3.11.0",
+      "issue": "There was no `process.on('SIGTERM'|'SIGINT')` anywhere in `src/`. Node's default disposition terminates immediately, so a deploy, `docker stop`, or pod eviction cut every in-flight request and every running job. The `onClose` hook that closes the queue and the cache never ran either, because nothing called `app.close()` in production \u2014 there was no stop path to call it from. The in-process queue's `close()` cleared its handler map without awaiting a running handler, and the database pool and the shared Redis connection had no server-side close path at all.\n\n**Low:** the exposure is availability and half-finished work, not a credential. It is recorded because a shutdown that leaves a transaction, a webhook delivery or an audit write in an unknown state is the kind of failure that is blamed on the database months later.",
+      "fix": "src/services/shutdown.ts \u2014 ordered, deadline-bounded drain on SIGTERM/SIGINT (stop accepting, drain requests, stop workers, close PostgreSQL, close Redis), with a second signal exiting immediately; `src/services/queue/inProcess.ts` tracks in-flight jobs and retry timers so `close()` drains instead of clearing; `src/index.ts` installs the handlers before `listen()`; `Dockerfile` declares STOPSIGNAL",
+      "test": "src/tests/deployment/gracefulShutdown.test.ts",
+      "documentation": "docs/OPERATIONS/backup-restore.md",
+      "covers": []
     }
   ],
   "withdrawn": [

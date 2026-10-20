@@ -21,6 +21,21 @@ export class InProcessQueue implements Queue {
   readonly provider = PROVIDER;
   private handlers = new Map<string, JobHandler>();
   private stats = new Map<string, { count: number; failed: number }>();
+  /**
+   * §6.3. Work running right now, so `close()` can drain rather than clear.
+   *
+   * `close()` used to empty the handler map and return. A handler already running
+   * kept running against a map that no longer knew it, and a queued retry fired into
+   * a map with no handler and was silently dropped — logged as "no handler
+   * registered", which reads like a configuration bug rather than a shutdown.
+   *
+   * `closed` is cleared by `process()`, not by `enqueue()`. Registering a handler is
+   * what makes a queue live; that keeps `close()` a drain point rather than a
+   * tombstone that breaks a later test or a re-initialised container.
+   */
+  private inFlight = new Set<Promise<void>>();
+  private retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  private closed = false;
 
   async enqueue<T>(job: Job<T>): Promise<void> {
     // §2.5. The two ownership fields are filled in here so a handler written against
@@ -38,14 +53,18 @@ export class InProcessQueue implements Queue {
       traceId: job.traceId ?? currentTraceId(),
     };
     setImmediate(() => {
-      this.run(owned, 1).catch((err) => {
+      const running = this.run(owned, 1).catch((err) => {
         log.error({ err, jobType: owned.type }, "job failed permanently");
       });
+      this.inFlight.add(running);
+      void running.then(() => this.inFlight.delete(running));
     });
   }
 
   process(type: string, handler: JobHandler): void {
     this.handlers.set(type, handler);
+    // See the field comment: a registered handler is what makes the queue live.
+    this.closed = false;
   }
 
   async getStats(): Promise<QueueStats[]> {
@@ -69,6 +88,16 @@ export class InProcessQueue implements Queue {
   }
 
   async close(): Promise<void> {
+    // Stop scheduling new work first, then wait for what is already running. The
+    // order matters: clearing the timers after the drain would let a job that
+    // failed during the drain schedule a retry that fires after `close()` resolved.
+    this.closed = true;
+    for (const timer of this.retryTimers) clearTimeout(timer);
+    this.retryTimers.clear();
+    // `allSettled`, not `all`: one handler that throws must not leave the rest of
+    // the drain un-awaited, and every promise here has already been caught.
+    await Promise.allSettled(Array.from(this.inFlight));
+    this.inFlight.clear();
     this.handlers.clear();
     this.stats.clear();
   }
@@ -110,14 +139,22 @@ export class InProcessQueue implements Queue {
         // Node process by default. A single poison job took the server down
         // (SEC-053). The first attempt is covered by `enqueue`'s `.catch`; the
         // retries are covered here.
-        setTimeout(() => {
-          this.run(job, attempt + 1).catch((retryErr: unknown) => {
+        // §6.3. A retry scheduled after `close()` began would fire into a cleared
+        // handler map and be dropped with a misleading "no handler registered".
+        // This driver has no persistence, so a retry at shutdown has nowhere to go.
+        if (this.closed) return;
+        const timer = setTimeout(() => {
+          this.retryTimers.delete(timer);
+          const retried = this.run(job, attempt + 1).catch((retryErr: unknown) => {
             log.error(
               { err: retryErr, jobType: job.type, attempts: maxAttempts },
               "job failed permanently and was dropped"
             );
           });
+          this.inFlight.add(retried);
+          void retried.then(() => this.inFlight.delete(retried));
         }, delay);
+        this.retryTimers.add(timer);
         return;
       }
       this.increment(job.type, "failed");

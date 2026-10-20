@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { config } from "../config.js";
 import { redis } from "./redis.js";
 import { serviceLogger } from "../lib/logger.js";
 import { WORKER_ID } from "./queue/workerIdentity.js";
@@ -215,4 +216,80 @@ export async function withLock<T>(
   } finally {
     await releaseLock(handle);
   }
+}
+/**
+ * The namespace every lock lives under.
+ *
+ * `acquireLock` accepts any key, so before §6.4 there was no way to enumerate the
+ * locks this process could have left behind — recovery had no prefix to scan. New
+ * callers should build keys with `lockKey()`; the prefix is exported so a scan can
+ * find locks written by an older caller that hard-coded one.
+ */
+export const LOCK_KEY_PREFIX = `${config.CACHE_KEY_PREFIX}lock:`;
+
+/** Namespaced lock key. Use this rather than a literal. */
+export function lockKey(name: string): string {
+  return `${LOCK_KEY_PREFIX}${name}`;
+}
+
+export interface ScannedLock {
+  key: string;
+  workerId?: string;
+  ttlMs: number;
+}
+
+/**
+ * List the locks currently present.
+ *
+ * Bounded by `limit` because this runs at boot: an unbounded SCAN over a Redis
+ * instance shared with other applications is a startup that depends on the size of
+ * somebody else's keyspace. Cursor-based, so it never runs `KEYS` — which blocks
+ * the server for the whole scan.
+ */
+export async function scanLocks(limit = 1000): Promise<ScannedLock[]> {
+  const found: ScannedLock[] = [];
+  let cursor = "0";
+  do {
+    const [next, keys] = await redis.scan(
+      cursor,
+      "MATCH",
+      `${LOCK_KEY_PREFIX}*`,
+      "COUNT",
+      100
+    );
+    cursor = next;
+    for (const key of keys) {
+      if (found.length >= limit) return found;
+      const lock = await inspectLock(key);
+      if (lock) found.push({ key, workerId: lock.workerId, ttlMs: lock.ttlMs });
+    }
+  } while (cursor !== "0");
+  return found;
+}
+
+/**
+ * Delete lock keys that have no expiry.
+ *
+ * `acquireLock` always sets `PX`, so a key in this namespace without a TTL was not
+ * written by this module (or was written by a version that did not set one). It can
+ * never expire on its own, which makes it a permanent lockout for every future
+ * holder — the one case where deleting somebody else's key is the safe choice.
+ *
+ * A key *with* a TTL is never touched: it may belong to a live instance that is
+ * simply slow, and stealing it here would recreate the double-holder race the
+ * token exists to prevent.
+ */
+export async function releaseOrphanedLocks(limit = 1000): Promise<number> {
+  const locks = await scanLocks(limit);
+  let released = 0;
+  for (const lock of locks) {
+    if (lock.ttlMs !== 0) continue;
+    const deleted = await redis.del(lock.key);
+    released += deleted;
+    moduleLog.warn(
+      { key: lock.key, workerId: lock.workerId },
+      "released a lock with no expiry — it could never have been taken over"
+    );
+  }
+  return released;
 }
