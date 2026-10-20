@@ -210,8 +210,15 @@ const PROBES = [
     name: "the client retries unsafe writes by default",
     apply(dir) {
       const file = path.join(dir, "packages", "keystone-client", "dist", "http.js");
-      if (!existsSync(file)) return;
-      const text = readFileSync(file, "utf8");
+      // Read once and let a missing file be the error it is. Checking with
+      // `existsSync` and then reading is a race: the file can be gone between
+      // the two, and the probe would then fail for the wrong reason.
+      let text;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        return;
+      }
       writeFileSync(file, text.replace("const retryable = options.retry ?? SAFE_METHODS.has(method);", "const retryable = options.retry ?? true;"));
     },
   },

@@ -1,4 +1,4 @@
-import { HttpClient, type HttpClientOptions, type RequestOptions } from "./http.js";
+import { HttpClient, stripTrailingSlashes, type HttpClientOptions, type RequestOptions } from "./http.js";
 import type {
   ApiKey,
   Application,
@@ -564,7 +564,7 @@ export class KeystoneClient {
   constructor(options: KeystoneClientOptions) {
     this.options = options;
     this.http = new HttpClient(options);
-    const baseUrl = options.baseUrl.replace(/\/+$/, "");
+    const baseUrl = stripTrailingSlashes(options.baseUrl);
     this.auth = new AuthResource(this.http);
     this.sessions = new SessionsResource(this.http);
     this.apiKeys = new ApiKeysResource(this.http);

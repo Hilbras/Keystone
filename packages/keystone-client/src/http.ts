@@ -62,6 +62,21 @@ const RETRY_STATUS = new Set([429, 502, 503, 504]);
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Trailing slashes removed without a regular expression.
+ *
+ * `/\/+$/` looks harmless and is not: it is polynomial in the number of
+ * trailing slashes, so a `baseUrl` of a few thousand slashes takes a few
+ * thousand times the work of one. `baseUrl` is caller-supplied configuration, so
+ * the cost is not the caller's to decide. A single pass over the end of the
+ * string is linear and reads the same.
+ */
+export function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return value.slice(0, end);
+}
+
 export class HttpClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -76,7 +91,7 @@ export class HttpClient {
   private readonly credentials?: HttpClientOptions["credentials"];
 
   constructor(options: HttpClientOptions) {
-    const base = options.baseUrl.replace(/\/+$/, "");
+    const base = stripTrailingSlashes(options.baseUrl);
     // Fail here rather than on the first request: a base URL missing its scheme
     // is a configuration error, and the message a URL parse gives for it is not.
     const parsed = new URL(base);
