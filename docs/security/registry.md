@@ -4,13 +4,13 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**99 findings.**
+**100 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 7 |
 | high | 45 |
-| medium | 31 |
+| medium | 32 |
 | low | 16 |
 
 ## Scope
@@ -941,9 +941,9 @@ The consequences were not subtle. A schema violation — a missing email, a malf
 
 *Fixed in v2.8.0. Component: `tokens`.*
 
-**Issue.** Rotation consumes a refresh token, so a second presentation failed exactly as a token that never existed would. A leaked token used twice was therefore treated as a typo, and the account's other credentials stayed valid.
+**Issue.** Rotation consumes a refresh token, so a second presentation failed exactly as a token that never existed would. A leaked token used twice was therefore treated as a typo, and the account's other credentials stayed valid. The fix that followed revoked *every* credential the account had, and the detection was reached only from one route; 3.13.0 revokes the credential family instead, and reaches the decision from the rotation itself, so the OAuth grant path is covered too (SEC-098).
 
-**Fix.** src/services/refreshTokenState.ts — a spent token is identified and the account's credentials are revoked
+**Fix.** src/services/tokens.ts — a spent token is identified (`detectRefreshTokenReplay`) and the credential family it belongs to is revoked, with the sessions that hang off it (SEC-098)
 
 **Test.** `src/tests/security/authentication/login-abuse.test.ts`
 
@@ -1401,6 +1401,22 @@ No change to `signWebhookPayload`, so signatures this server produces are byte-i
 **Test.** `src/tests/deployment/migrationSafety.test.ts`
 
 **Documentation.** [docs/OPERATIONS/migrations.md](../OPERATIONS/migrations.md)
+
+### SEC-102 — Closing the application could wait forever for a Redis that was down
+
+*Fixed in v3.13.0. Component: `deployment`.*
+
+**Issue.** The cache's own Redis connection was closed with `quit()` and nothing else. `quit()` is the polite close: it sends QUIT and waits for the server's answer. When the server cannot be reached, the command sits in the client's offline queue until it reconnects — which may be never, because the reason it cannot be reached is that it is down.
+
+So `app.close()` — the call every probe, every test fixture and every consumer of `buildApp()` makes — could wait indefinitely. The server's own SIGTERM path was bounded (SEC-097 gave it a deadline), which is why this was not a production outage; everything else that closed the app was unbounded.
+
+It is recorded because the symptom is a process that never exits. A test that hangs is a test nobody can tell apart from a slow one, and a shutdown that hangs is a pod that takes its whole termination grace period to die.
+
+**Fix.** src/services/redis.ts — `closeRedisClient()` gives the polite close a deadline and drops the socket when it expires, because `disconnect()` is the close that always finishes. src/services/cache.ts — the cache's connection is closed through it, so the cache's own Redis cannot hold a shutdown open. src/services/redis.ts — `closeRedis()` uses it too.
+
+**Test.** `src/tests/chaos/redis-failure.test.ts`
+
+**Documentation.** [docs/security/configuration.md](configuration.md)
 
 ## Low
 

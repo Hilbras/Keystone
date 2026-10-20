@@ -564,8 +564,8 @@
       "severity": "medium",
       "component": "tokens",
       "release": "2.8.0",
-      "issue": "Rotation consumes a refresh token, so a second presentation failed exactly as a token that never existed would. A leaked token used twice was therefore treated as a typo, and the account's other credentials stayed valid.",
-      "fix": "src/services/refreshTokenState.ts — a spent token is identified and the account's credentials are revoked",
+      "issue": "Rotation consumes a refresh token, so a second presentation failed exactly as a token that never existed would. A leaked token used twice was therefore treated as a typo, and the account's other credentials stayed valid. The fix that followed revoked *every* credential the account had, and the detection was reached only from one route; 3.13.0 revokes the credential family instead, and reaches the decision from the rotation itself, so the OAuth grant path is covered too (SEC-098).",
+      "fix": "src/services/tokens.ts — a spent token is identified (`detectRefreshTokenReplay`) and the credential family it belongs to is revoked, with the sessions that hang off it (SEC-098)",
       "test": "src/tests/security/authentication/login-abuse.test.ts",
       "documentation": "docs/security/audit.md",
       "covers": [
