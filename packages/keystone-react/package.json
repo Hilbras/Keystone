@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone-react",
-  "version": "3.12.0",
+  "version": "3.13.0",
   "license": "MIT",
   "description": "React hooks for the Hilbras Keystone identity platform",
   "repository": {
@@ -28,6 +28,6 @@
     "typescript": "^5.4.0"
   },
   "keystonePeer": {
-    "server": ">=3.12.0 <3.13.0"
+    "server": ">=3.13.0 <3.14.0"
   }
 }
