@@ -126,8 +126,11 @@ if (process.argv.includes("--show")) {
 }
 
 const target = process.argv[2];
-if (!target || !/^\d+\.\d+\.\d+$/.test(target)) {
-  console.error("usage: node scripts/bump-version.mjs <major.minor.patch>   (or --show)");
+// A prerelease is a version: `3.14.1-rc.1` is what a release candidate is
+// published as, and the script that writes the version everywhere has to be
+// able to write it.
+if (!target || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(target)) {
+  console.error("usage: node scripts/bump-version.mjs <major.minor.patch>[-prerelease]   (or --show)");
   process.exit(2);
 }
 

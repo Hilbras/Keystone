@@ -79,6 +79,7 @@ Complete documentation for the Hilbras Keystone identity platform.
 | [v1.9](MIGRATION-1.9.md) | SCIM tenancy: per-organization credentials |
 | [v2.0](MIGRATION-2.0.md) | Trust boundaries, `KEYSTONE_TRUSTED_PROXIES`, encryption key |
 | [v2.4](MIGRATION-2.4.md) | OAuth client authentication, strict redirect URIs, scopes |
+| [v4.0](MIGRATION-4.0.md) | Every breaking change since 3.0.0, in the `BREAKING:` format, and the frozen contracts |
 
 `CHANGELOG.md` at the repository root carries the complete progression from 1.6.0.
 

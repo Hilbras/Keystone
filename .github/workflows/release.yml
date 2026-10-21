@@ -39,6 +39,15 @@ env:
   # Resolving once at the top means every later step reads the same value, and the
   # dispatch input is authoritative for a manual run rather than being decorative.
   RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  # The dist-tag a publish lands under.
+  #
+  # A release candidate must not become `latest`. `npm publish` without a tag uses
+  # `latest` whatever the version says, so a candidate published that way is the
+  # version every `npm install @hilbras/keystone` resolves to — the opposite of
+  # what a candidate is for. The same goes for the container image and for the
+  # GitHub release, which is marked a prerelease so the interface says so.
+  IS_PRERELEASE: ${{ contains(github.ref_name, '-') || contains(inputs.version, '-') }}
+  NPM_TAG: ${{ (contains(github.ref_name, '-') || contains(inputs.version, '-')) && 'next' || 'latest' }}
 
 jobs:
   verify:
@@ -252,6 +261,10 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
+          # A candidate is a prerelease, and the interface has to say so — a
+          # candidate presented as a finished release is how people end up
+          # depending on it.
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
           files: |
             hilbras-keystone-*.tar.gz
             SHA256SUMS.txt
@@ -302,7 +315,7 @@ jobs:
       - name: Publish npm package
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          if ! npm publish --provenance --access public; then
+          if ! npm publish --provenance --access public --tag "$NPM_TAG"; then
             if npm view "@hilbras/keystone@${VERSION}" version >/dev/null 2>&1; then
               echo "Package @hilbras/keystone@${VERSION} already published; treating as success."
             else
@@ -319,7 +332,7 @@ jobs:
           npm run build
           npm pack --dry-run
           VERSION="$(node -p "require('./package.json').version")"
-          if ! npm publish --provenance --access public; then
+          if ! npm publish --provenance --access public --tag "$NPM_TAG"; then
             if npm view "@hilbras/keystone-client@${VERSION}" version >/dev/null 2>&1; then
               echo "Package @hilbras/keystone-client@${VERSION} already published; treating as success."
             else
@@ -365,7 +378,10 @@ jobs:
             type=raw,value=${{ inputs.version }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            # `latest` is the version every `docker pull` resolves to, so a
+            # release candidate must not claim it. The candidate is still
+            # published, under its own version tag.
+            type=raw,value=latest,enable=${{ env.IS_PRERELEASE != 'true' }}
 
       - name: Build and push image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2

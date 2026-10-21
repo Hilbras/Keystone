@@ -1471,6 +1471,16 @@
       "test": "scripts/verify-release-artifacts.mjs",
       "covers": "§9.5 — that the published artifacts are right from the outside: both npm packages exist at the released version and contain what a consumer needs and not what it must not (the test tree); the migration files and their journal are in the published package; the container image for the version exists; the GitHub release is not a draft, is not a prerelease, carries its assets and is tagged with the released version; and the source archive for the tag points at a commit on the main line whose own manifest says the released version.",
       "why": "Not a numbered finding: the artifacts were correct. Registered because every one of these is invisible from inside the repository — inside the repository everything is correct by construction — and a tag on a branch or a package published without its migrations is only visible from the outside."
+    },
+    {
+      "test": "scripts/verify-release-candidate.mjs",
+      "covers": "The release-candidate gate: the whole matrix the release plan names, each item reported separately, plus the external-style validation — the published package installed into a clean directory, its migrations run against a fresh database and against one that already has the previous release's schema and data, and two instances brought up against one database and one Redis.",
+      "why": "Not a numbered finding: nothing was wrong. Registered because the point of a candidate is that the checks are run against the *release* rather than the working tree, and because a matrix whose items are each reported is a matrix whose gaps are visible — a single pass/fail over the whole suite hides which half ran."
+    },
+    {
+      "test": "docs/MIGRATION-4.0.md",
+      "covers": "Every breaking change between 3.0.0 and 4.0.0, in the `BREAKING:` / `Old behavior:` / `New behavior:` / `Migration:` / `Reason:` format, split into client-facing, deployment-facing and security-driven, with the migration steps at the end.",
+      "why": "Not a numbered finding: it is a document. Registered because the 3.x series contains **no** `BREAKING:` block anywhere in its changelog, while the range contains at least a dozen client-observable breaks. A v4 migration guide that lists only the changes the author remembered is not a record, and the audit that produced this one is the thing worth keeping."
     }
   ]
 }
