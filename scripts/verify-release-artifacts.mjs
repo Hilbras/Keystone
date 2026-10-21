@@ -60,18 +60,30 @@ async function tarballFiles(packageName, version) {
   try {
     // `npm pack` writes the tarball into the destination and names it on
     // stdout. The name is taken from stdout rather than assumed, because npm
-    // changes it for scoped packages.
+    // changes it for scoped packages — and stdout is *not* silenced, because
+    // `--silent` suppresses the filename along with the notices, and the
+    // filename is the one line that matters here.
     const { stdout } = await run(
       "npm",
-      ["pack", `${packageName}@${version}`, "--pack-destination", scratch, "--silent"],
+      ["pack", `${packageName}@${version}`, "--pack-destination", scratch],
       { maxBuffer: 8 * 1024 * 1024 }
     );
-    const name = stdout.trim().split("\n").pop();
-    const tarball = path.join(scratch, name);
-    if (!name || !existsSync(tarball)) {
+    const name = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      // A bare filename, not a notice: npm prints
+      // "npm notice filename: hilbras-keystone-3.14.0.tgz", which also ends in
+      // ".tgz" and is not a path.
+      .filter((line) => line.endsWith(".tgz") && !line.includes(" "))
+      .pop();
+    const tarball = name ? path.join(scratch, path.basename(name)) : undefined;
+    if (!tarball || !existsSync(tarball)) {
       throw new Error(`npm pack did not produce a tarball for ${packageName}@${version}`);
     }
-    return listTarball(scratch, tarball);
+    // Awaited, and the `finally` below removes the scratch directory. Returning
+    // the promise without awaiting it would run the `finally` first — deleting
+    // the directory the tarball is about to be read from.
+    return await listTarball(scratch, tarball);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -207,9 +219,11 @@ async function verifySourceArchive() {
     problem(`The tag ${TAG} points at ${commit}, which is not on main.`);
     return;
   }
-  const manifestAt = JSON.parse(
-    await run("git", ["show", `${commit}:package.json`], { cwd: ROOT, maxBuffer: 4 * 1024 * 1024 })
-  );
+  const shown = await run("git", ["show", `${commit}:package.json`], {
+    cwd: ROOT,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  const manifestAt = JSON.parse(shown.stdout);
   if (manifestAt.version !== VERSION) {
     problem(`The tag ${TAG} points at a commit whose package.json says ${manifestAt.version}.`);
     return;
