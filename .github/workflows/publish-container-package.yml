@@ -79,10 +79,16 @@ jobs:
           PACKAGE=$(printf '%s' "$PACKAGE" | tr '[:upper:]' '[:lower:]')
           succeeded=""
           for endpoint in "/orgs/${OWNER}/packages/container/${PACKAGE}" "/users/${OWNER}/packages/container/${PACKAGE}"; do
-            if RESULT=$(gh api --method PATCH -H "Accept: application/vnd.github+json" "$endpoint" -f "visibility=${VISIBILITY}" --jq '.visibility' 2>/dev/null); then
+            # The error is printed, not swallowed. A step that hides its own
+            # failure reports "could not set the visibility" and leaves the
+            # next reader with no way to tell a wrong endpoint from a token
+            # without permission — and those need different fixes.
+            if RESULT=$(gh api --method PATCH -H "Accept: application/vnd.github+json" "$endpoint" -f "visibility=${VISIBILITY}" --jq '.visibility' 2>&1); then
               echo "ghcr.io/${OWNER}/${PACKAGE} is now ${RESULT}."
               succeeded="yes"
               break
+            else
+              echo "::warning::${endpoint} refused: ${RESULT}"
             fi
           done
           if [ -z "$succeeded" ]; then
