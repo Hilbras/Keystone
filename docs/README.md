@@ -87,5 +87,6 @@ Complete documentation for the Hilbras Keystone identity platform.
 
 | Document | Purpose |
 | --- | --- |
+| [Keystone v4](V4.md) | What v4 guarantees, and where each guarantee is proven |
 | [Architecture decisions](adrs/) | Why the connectors, event bus, queue and hashing are what they are |
 | [v1.7 release checklist](RELEASE-1.7.md) | What a release has to satisfy |

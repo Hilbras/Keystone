@@ -5,6 +5,77 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-10-21
+
+*Plan PHASE 11: Keystone v4.0.0. The theme is that a version number is a promise about what will not change, and this one makes the promise explicit.*
+
+*This release changes what the server **says**, and what it does when things break. It does not change what it protects against.*
+
+### Added
+
+- **`docs/MIGRATION-4.0.md`** — every breaking change between 3.0.0 and
+  4.0.0, in the `BREAKING:` / `Old behavior:` / `New behavior:` /
+  `Migration:` / `Reason:` format, split into client-facing,
+  deployment-facing and security-driven, with the migration steps at the end.
+
+  The guide is long because **3.x changed a great deal and never wrote it
+  down.** Between 3.0.0 and 3.14.0 the changelog contains no `BREAKING:`
+  block at all, while the range contains at least a dozen client-observable
+  breaks — a status code here, a rate limit there, a payload that lost a
+  field. The v4 release policy says *"No undocumented breaking changes"*;
+  that is a promise about the future, and it says nothing about the twelve
+  breaks already shipped. This guide covers them retroactively, because a
+  consumer upgrading from 3.0.0 meets all of them.
+- **The frozen contracts, published.** Seven contracts a caller can depend on
+  — the REST API, the OAuth behaviour, the token format, the database
+  contracts, the webhook format, the SDK interfaces and the configuration —
+  are snapshotted in `docs/contract-freeze.json` and gated by
+  `npm run verify:contract`. A change to any of them fails the gate with the
+  exact difference, and the only way past it is to update the snapshot on
+  purpose, in the same commit, where a reviewer sees it.
+
+  This is what makes v4 a version number rather than a label. The snapshot is
+  the record of what v4 froze, and it is the answer to "what exactly changed
+  between these two versions" for the API, the token format and the
+  configuration.
+
+### Changed
+
+- **A schema violation answers 400, not 500.** The application's error
+  handler was installed after the routes, so it applied to none of them, and
+  every validation failure answered 500 with the raw validation issues in the
+  body. It now answers 400 with `VALIDATION_ERROR`, the failing fields under
+  `details`, and no raw text.
+- **A database that cannot be reached answers 503, not 500.** 500 says the
+  server is broken; 503 says it is temporarily unable, and the difference
+  decides whether a retry can ever work. The failed query is no longer in the
+  response — it was a schema disclosure, on two unauthenticated endpoints, at
+  exactly the moment the database was down.
+- **A replayed refresh token revokes the credential family, not the
+  account.** The family is the smallest set that certainly includes the
+  attacker's current token. Revoking more bought no security and handed the
+  attacker a denial of service for the price of one stolen token.
+
+### Security
+
+- The details are in the migration guide, and they are deliberate: the query
+  string is dropped rather than masked, the database parameters no longer
+  reach the logs or the responses, the IP allow/block is enforced before the
+  password check, and a login no longer short-circuits on an unknown user —
+  which means **a login is roughly two seconds of argon2id by design**, and a
+  timeout shorter than that will fail logins.
+
+### Compatibility
+
+- **This is a major release.** See `docs/MIGRATION-4.0.md` for every change
+  and what to do about it. The short version: handle 429 with `Retry-After`
+  on every route, distinguish 400 from 5xx, upgrade to Node 26, and — for a
+  production deployment — set `KEYSTONE_QUEUE_PROVIDER=bullmq`,
+  `COOKIE_SECURE=true`, a strong TOTP key and `KEYSTONE_ENCRYPTION_KEY`.
+
+  A migration runs automatically on boot. It is additive: no column is dropped
+  and no data is rewritten.
+
 ## [3.14.1] - 2026-10-21
 
 *The final 3.x release. It carries the same content as the release candidate
