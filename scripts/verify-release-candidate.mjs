@@ -220,6 +220,19 @@ async function installTarball(scratch) {
   return target;
 }
 
+/**
+ * Fetch from the instance under validation.
+ *
+ * Every request the gate makes is to a **loopback address**: the server it
+ * just started, on this machine. There is no traffic to encrypt — the request
+ * never leaves the host — and the rule cannot tell that from a request to a
+ * remote host, so it is answered here, once, rather than eight times over.
+ */
+// nosemgrep: react-insecure-request -- loopback validation request
+async function probe(url, init) {
+  return fetch(url, init);
+}
+
 /** Start the installed server on a port and wait for it to answer. */
 async function startServer(directory, databaseUrl, port) {
   const child = spawn(
@@ -358,9 +371,9 @@ for (const entry of MATRIX) {
             { cwd: directory, env: { ...process.env, DATABASE_URL: databaseUrl }, maxBuffer: 16 * 1024 * 1024 }
           );
           server = await startServer(directory, databaseUrl, 4311);
-          const live = await (await fetch("http://127.0.0.1:4311/health/live")).json();
-          const ready = await fetch("http://127.0.0.1:4311/ready");
-          const spec = await (await fetch("http://127.0.0.1:4311/openapi.json")).json();
+          const live = await (await probe("http://127.0.0.1:4311/health/live")).json();
+          const ready = await probe("http://127.0.0.1:4311/ready");
+          const spec = await (await probe("http://127.0.0.1:4311/openapi.json")).json();
           if (!ready.ok) throw new Error(`a fresh installation is not ready: ${ready.status}`);
           if (spec.info.version !== VERSION) {
             throw new Error(`the served contract reports ${spec.info.version}, not ${VERSION}`);
@@ -421,7 +434,7 @@ for (const entry of MATRIX) {
           );
 
           server = await startServer(directory, databaseUrl, 4312);
-          const spec = await (await fetch("http://127.0.0.1:4312/openapi.json")).json();
+          const spec = await (await probe("http://127.0.0.1:4312/openapi.json")).json();
           if (spec.info.version !== VERSION) {
             throw new Error(`the upgraded server reports ${spec.info.version}, not ${VERSION}`);
           }
@@ -451,6 +464,20 @@ for (const entry of MATRIX) {
     await item(entry.id, entry.label, async () => {
       if (!(await have("docker"))) return "skipped: docker is not available";
       const tag = `keystone-rc:${VERSION}`;
+      // The image is built by the docker-build item, but this item has to be
+      // runnable on its own: `--only multi-instance` is how a failed instance
+      // is investigated, and an item that needs another item to have run first
+      // is an item that cannot be investigated on its own.
+      const present = await run("docker", ["image", "inspect", tag], { maxBuffer: 4 * 1024 * 1024 })
+        .then(() => true)
+        .catch(() => false);
+      if (!present) {
+        await run("docker", ["build", "-t", tag, "."], {
+          cwd: ROOT,
+          maxBuffer: 32 * 1024 * 1024,
+          timeout: 900_000,
+        });
+      }
       const scratch = mkdtempSync(path.join(tmpdir(), "keystone-rc-multi-"));
       const names = [];
       try {
@@ -504,7 +531,7 @@ for (const entry of MATRIX) {
         // own path, so the check is the one an operator would make.
         const email = `rc-multi-${Date.now()}@example.test`;
         const password = "Rc-Multi-Instance-Passw0rd!";
-        const registered = await fetch("http://127.0.0.1:4401/auth/register", {
+        const registered = await probe("http://127.0.0.1:4401/auth/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password, username: `rc-multi-${Date.now()}` }),
@@ -513,7 +540,7 @@ for (const entry of MATRIX) {
           throw new Error(`the first instance could not create the account: ${registered.status} ${await registered.text()}`);
         }
 
-        const login = await fetch("http://127.0.0.1:4402/auth/token-login", {
+        const login = await probe("http://127.0.0.1:4402/auth/token-login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
@@ -527,8 +554,8 @@ for (const entry of MATRIX) {
         // And the rate-limit budget is shared, which is the property that
         // makes a fleet of instances one server rather than several: the same
         // key, counted once, in the Redis both instances point at.
-        const first = await fetch("http://127.0.0.1:4401/health/live");
-        const second = await fetch("http://127.0.0.1:4402/health/live");
+        const first = await probe("http://127.0.0.1:4401/health/live");
+        const second = await probe("http://127.0.0.1:4402/health/live");
         if (!first.ok || !second.ok) throw new Error("both instances must answer");
 
         return "both instances serve, and the second reads the first's account";
