@@ -18,11 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference the image with no `imagePullSecret` — so a cluster pulling it
   landed in `ImagePullBackOff`. The image was on the registry and invisible.
 
-  The release now publishes the package publicly **after** the image passes
-  its vulnerability gate — publishing first and scanning after would expose
-  the very image the scan exists to reject — and then gates on an anonymous
-  pull token, which is the request a user's `docker pull` makes. A public
-  package answers `200` with a token; a private one answers `401`.
+  The release now **verifies** that the image is publicly pullable, and fails
+  when it is not, using the same request an unauthenticated `docker pull`
+  makes: a public package answers `200` with a token, a private one answers
+  `401`. Visibility belongs to the package rather than to a version, so it is
+  set once and every later tag inherits it. The release also sets it itself
+  when a `GHCR_TOKEN` secret is configured — `GITHUB_TOKEN` cannot, because
+  the visibility endpoint needs a classic PAT with `write:packages`.
 
 - **`npm run verify:artifacts` no longer treats "could not look" as "fine".** It
   asked the registry the question a stranger asks, and a private image is now

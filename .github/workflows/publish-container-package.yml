@@ -64,13 +64,19 @@ jobs:
           PACKAGE: ${{ inputs.package }}
           OWNER: ${{ inputs.owner }}
           VISIBILITY: ${{ inputs.visibility }}
-          # `gh` reads `GH_TOKEN` first and `GITHUB_TOKEN` second, but the
-          # runner does not export either into a `run` step on its own — the
-          # token has to be named here, or the call is made anonymously and
-          # answers 404 for a package that exists.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `GITHUB_TOKEN` cannot change a package's visibility. The endpoint
+          # needs a classic PAT with `write:packages` — the workflow token
+          # answers 404 for a package it pushed itself, because it is not an
+          # admin of the package. So the PAT is a repository secret, named
+          # GHCR_TOKEN, and its absence is reported rather than hidden.
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -uo pipefail
+          if [ -z "${GHCR_TOKEN}" ]; then
+            echo "::error::No GHCR_TOKEN secret is configured, so the visibility cannot be changed from here."
+            echo "::error::Add a classic PAT with 'write:packages' and 'read:packages' as the GHCR_TOKEN repository secret, or set the visibility by hand at https://github.com/orgs/${OWNER}/packages/container/package/${PACKAGE}/settings — 'Change visibility' to Public."
+            exit 1
+          fi
           # GHCR paths are lowercase, and a scope with an uppercase package
           # name is refused outright with `NAME_INVALID` — a 400 that reads
           # like a malformed request rather than a case problem. The API
@@ -83,7 +89,7 @@ jobs:
             # failure reports "could not set the visibility" and leaves the
             # next reader with no way to tell a wrong endpoint from a token
             # without permission — and those need different fixes.
-            if RESULT=$(gh api --method PATCH -H "Accept: application/vnd.github+json" "$endpoint" -f "visibility=${VISIBILITY}" --jq '.visibility' 2>&1); then
+            if RESULT=$(GH_TOKEN="${GHCR_TOKEN}" gh api --method PATCH -H "Accept: application/vnd.github+json" "$endpoint" -f "visibility=${VISIBILITY}" --jq '.visibility' 2>&1); then
               echo "ghcr.io/${OWNER}/${PACKAGE} is now ${RESULT}."
               succeeded="yes"
               break
@@ -92,7 +98,7 @@ jobs:
             fi
           done
           if [ -z "$succeeded" ]; then
-            echo "::error::Could not set the visibility of ghcr.io/${OWNER}/${PACKAGE}. Neither the organization nor the user endpoint accepted the request. The package may not exist, or this workflow may lack 'packages: write' for it."
+            echo "::error::Could not set the visibility of ghcr.io/${OWNER}/${PACKAGE}. Neither the organization nor the user endpoint accepted the request. The package may not exist, or the token may not have 'packages: write' for it."
             exit 1
           fi
 

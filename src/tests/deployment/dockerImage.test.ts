@@ -153,6 +153,22 @@ describe("the published image is pullable without credentials", () => {
     assert.match(release, /401/);
   });
 
+  it("does not try to change the visibility with the workflow token", () => {
+    // `GITHUB_TOKEN` cannot change a package's visibility. The endpoint
+    // needs a classic PAT with `write:packages`, and the workflow token
+    // answers 404 for a package it pushed itself — so the release reported a
+    // package that was on the registry as not found.
+    assert.doesNotMatch(release, /GH_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/);
+    assert.match(release, /secrets\.GHCR_TOKEN/);
+  });
+
+  it("gates on the image rather than assuming the visibility held", () => {
+    // The visibility change is quiet when it does not take effect, so the
+    // gate is what decides — not the change.
+    const gate = release.slice(release.indexOf("can be pulled without credentials"));
+    assert.match(gate, /exit 1/);
+  });
+
   it("has a manual path to finish a release that stopped halfway", () => {
     // A tag push is not guaranteed to dispatch, and an unchanged tag cannot
     // be re-pushed, so a release that pushed the image and then failed before
