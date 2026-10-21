@@ -432,29 +432,42 @@ jobs:
       # ImagePullBackOff.
       #
       # The image is only useful if it can be pulled, and "can be pulled" is not
-      # the same as "exists". So the package is made public here.
+      # the same as "exists".
       #
-      # It runs *after* the vulnerability gate, not next to the push. Publishing
-      # first and scanning after would expose the very image the scan exists to
-      # reject, and the scan has to read the image — which it can, while the
-      # package is still private and the job is logged in.
+      # Visibility belongs to the *package*, not to a version, so it is set once
+      # and every later tag inherits it. That is why the step below verifies
+      # rather than assumes: a release that has not set it must not report the
+      # image as published, and a release that has must not need a credential
+      # to keep it that way.
       - name: Publish the image package publicly
-        # The endpoint differs for an organization and a user account, and the
-        # repository owner is an organization here. A wrong endpoint 404s, and
-        # a release that fails after the image is pushed leaves the image
-        # private with no record of why.
+        # `GITHUB_TOKEN` cannot do this. The visibility endpoint needs a
+        # classic PAT with `write:packages` — the workflow token answers 404
+        # for a package it pushed itself, because the token is not an admin of
+        # the package. So the PAT is a repository secret, and when it is
+        # absent the step says so instead of failing as though the registry
+        # were broken.
         #
-        # `gh` reads `GH_TOKEN` first and `GITHUB_TOKEN` second, but the
-        # runner does not export either into a `run` step on its own — the
-        # token has to be named here, or the call is made anonymously and
-        # answers 404 for a package that exists.
+        # The step is allowed to do nothing: the gate below is what decides.
+        # A missing secret is a missing capability, and the gate reports the
+        # consequence — the image not being pullable — in terms somebody can
+        # act on.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PACKAGE: keystone
         run: |
-          gh api \
+          set -uo pipefail
+          if [ -z "${GHCR_TOKEN}" ]; then
+            echo "No GHCR_TOKEN secret is configured, so the package visibility is not changed here."
+            echo "Add a classic PAT with 'write:packages' and 'read:packages' as the GHCR_TOKEN secret to let the release publish the image itself."
+            exit 0
+          fi
+          OWNER=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          PACKAGE=$(printf '%s' "$PACKAGE" | tr '[:upper:]' '[:lower:]')
+          GH_TOKEN="${GHCR_TOKEN}" gh api \
             --method PATCH \
             -H "Accept: application/vnd.github+json" \
-            "/orgs/${{ github.repository_owner }}/packages/container/keystone" \
+            "/orgs/${OWNER}/packages/container/${PACKAGE}" \
             -f visibility=public \
             --jq '.visibility'
 
@@ -482,6 +495,7 @@ jobs:
           fi
           if [ "$STATUS" = "401" ]; then
             echo "::error::ghcr.io/${PACKAGE} is still private — the registry refused an anonymous pull token (401). The image was pushed, but 'docker pull ghcr.io/${PACKAGE}' answers 403 for anyone without credentials."
+            echo "::error::Fix it once, here: https://github.com/orgs/${{ github.repository_owner }}/packages/container/package/keystone/settings — 'Change visibility' to Public. Visibility belongs to the package, so every later tag inherits it."
             exit 1
           fi
           echo "::error::Could not confirm that ghcr.io/${PACKAGE} is publicly pullable (HTTP ${STATUS})."

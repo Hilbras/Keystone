@@ -1430,7 +1430,11 @@ So the v4.0.0 image was on the registry and invisible. `docker pull ghcr.io/hilb
 
 **Medium**, and deliberately. No credential was exposed and no security boundary was crossed: the image was on the registry, scanned, and tagged correctly. What failed was the distribution — a release that announced an official image and shipped one that could not be fetched, behind a verification that reported success. The severity is the false assurance, not the impact on the server.
 
-**Fix.** `.github/workflows/release.yml` — the `docker` job publishes the package publicly with `PATCH /orgs/${{ github.repository_owner }}/packages/container/keystone`, **after** the vulnerability gate rather than next to the push. Publishing first and scanning after would expose the very image the scan exists to reject; the scan can still read the image while the package is private and the job is logged in. The release then **gates** on an anonymous pull token — the same request an unauthenticated `docker pull` makes. A public package answers `200` with a token; a private one answers `401`.
+**Fix.** `.github/workflows/release.yml` — the `docker` job **verifies** that the published image is publicly pullable, and **fails the release** when it is not. The check is an anonymous pull token: the same request an unauthenticated `docker pull` makes. A public package answers `200` with a token; a private one answers `401`. The failure message names the fix and the URL.
+
+**Visibility belongs to the package, not to a version**, so it is set once and every later tag inherits it. That is why the gate is the load-bearing part: the release must not report an image as published when it is invisible, and it must not need a credential to keep it that way.
+
+The release also publishes the package publicly when it can, using a classic PAT from the `GHCR_TOKEN` repository secret. **`GITHUB_TOKEN` cannot do this** — the visibility endpoint needs a PAT with `write:packages`, and the workflow token answers `404` for a package it pushed itself, because it is not an admin of the package. The first version of this step used `GITHUB_TOKEN` and failed on a package that was demonstrably on the registry, which is how the distinction was learned.
 
 `scripts/verify-release-artifacts.mjs` — the image check asks the registry that same question instead of calling `docker manifest inspect`. A `401` is a **failed release artifact**, not a note. A network failure is still a note, because a verification that cannot reach the registry says so rather than guessing.
 

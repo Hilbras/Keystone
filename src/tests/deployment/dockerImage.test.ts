@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -153,6 +153,22 @@ describe("the published image is pullable without credentials", () => {
     assert.match(release, /401/);
   });
 
+  it("does not try to change the visibility with the workflow token", () => {
+    // `GITHUB_TOKEN` cannot change a package's visibility. The endpoint
+    // needs a classic PAT with `write:packages`, and the workflow token
+    // answers 404 for a package it pushed itself — so the release reported a
+    // package that was on the registry as not found.
+    assert.doesNotMatch(release, /GH_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/);
+    assert.match(release, /secrets\.GHCR_TOKEN/);
+  });
+
+  it("gates on the image rather than assuming the visibility held", () => {
+    // The visibility change is quiet when it does not take effect, so the
+    // gate is what decides — not the change.
+    const gate = release.slice(release.indexOf("can be pulled without credentials"));
+    assert.match(gate, /exit 1/);
+  });
+
   it("has a manual path to finish a release that stopped halfway", () => {
     // A tag push is not guaranteed to dispatch, and an unchanged tag cannot
     // be re-pushed, so a release that pushed the image and then failed before
@@ -169,5 +185,29 @@ describe("the published image is pullable without credentials", () => {
     const script = read("scripts/verify-release-artifacts.mjs");
     assert.match(script, /status === 401/);
     assert.match(script, /is not publicly pullable/);
+  });
+
+  it("has no context expression in a workflow_dispatch input default", () => {
+    // The `github` context is not available in a `workflow_dispatch` input
+    // default. The workflow file does not parse, and GitHub cannot read the
+    // `on:` section either — so the workflow runs on *every* push and fails
+    // each time, filling the run list with failures nobody started.
+    //
+    // That is what the first version of this workflow did, and it was
+    // merged before anyone dispatched it.
+    const workflows = path.join(root, ".github", "workflows");
+    for (const file of readdirSync(workflows).filter((f) => f.endsWith(".yml"))) {
+      const text = readFileSync(path.join(workflows, file), "utf8");
+      const offending = text
+        .split("\n")
+        .map((line, index) => ({ line, number: index + 1 }))
+        .filter(({ line }) => /^\s*default:\s*\$\{\{/.test(line));
+      assert.deepEqual(
+        offending,
+        [],
+        `${file} must not use a context expression in an input default: ` +
+          offending.map((o) => `line ${o.number}: ${o.line.trim()}`).join("; ")
+      );
+    }
   });
 });
