@@ -65,6 +65,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which means **a login is roughly two seconds of argon2id by design**, and a
   timeout shorter than that will fail logins.
 
+### Fixed
+
+- **The published image is now publicly pullable.** GHCR creates every
+  container package private, and the release path pushed the image and stopped
+  there: `docker pull ghcr.io/hilbras/keystone:4.0.0` answered 403 for anyone
+  without registry credentials, and the k8s manifests in this repository
+  reference the image with no `imagePullSecret` — so a cluster pulling it
+  landed in `ImagePullBackOff`. The image was on the registry and invisible.
+
+  The release now publishes the package publicly **after** the image passes
+  its vulnerability gate — publishing first and scanning after would expose
+  the very image the scan exists to reject — and then gates on an anonymous
+  pull token, which is the request a user's `docker pull` makes. A public
+  package answers `200` with a token; a private one answers `401`.
+
+  `npm run verify:artifacts` no longer treats "could not look" as "fine": it
+  asks the registry the question a stranger asks, and a private image is now
+  a failed release artifact. The previous check used
+  `docker manifest inspect`, which fails for a public image too on a machine
+  without credentials — the one way it failed was indistinguishable from the
+  one way that mattered, and the private image passed as published.
+
+  A `workflow_dispatch` path
+  (`.github/workflows/publish-container-package.yml`) finishes a release that
+  pushed its image and then stopped, since a tag push is not guaranteed to
+  dispatch and an unchanged tag cannot be re-pushed.
+
 ### Compatibility
 
 - **This is a major release.** See `docs/MIGRATION-4.0.md` for every change

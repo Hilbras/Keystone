@@ -364,10 +364,22 @@ docker build -t keystone .
 docker run -p 3000:3000 --env-file .env keystone
 ```
 
+Or pull the published image — it is public, so no registry login is needed:
+
+```bash
+docker pull ghcr.io/hilbras/keystone:4.0.0
+docker run -p 3000:3000 --env-file .env ghcr.io/hilbras/keystone:4.0.0
+```
+
 The runtime image does **not** bundle npm — including it shipped eight
 high-severity advisories that no lockfile-based scanner could see, because those
 scanners read `package.json`, not the image. Published as
 `ghcr.io/hilbras/keystone` with a build provenance attestation.
+
+The image is published publicly *after* it passes its vulnerability gate, so a
+version with a HIGH advisory in the base image is never published to the
+registry. `npm run verify:artifacts` checks that the published image can still
+be pulled without credentials.
 
 ## Development
 
