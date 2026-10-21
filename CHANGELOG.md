@@ -5,6 +5,91 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.0] - 2026-10-21
+
+*Plan §9.1–§9.5: final v4 preparation. The theme is that a freeze is not a promise, it is a mechanism that makes a change visible.*
+
+### Added
+
+- **A contract freeze** — `docs/contract-freeze.json` and
+  `npm run verify:contract`. Seven contracts a caller can depend on: the REST
+  API, the OAuth behaviour, the token format, the database contracts, the
+  webhook format, the SDK interfaces, and the configuration. Each is **read
+  from the running code** and compared with a committed snapshot, so a change
+  fails the gate with the exact difference:
+
+  ```
+  The configuration contract changed:
+    - removed configuration: "GLOBAL_RATE_LIMIT_MAX"
+    - added configuration: "GLOBAL_RATE_LIMIT_MAXIMUM"
+  ```
+
+  The only way past it is to update the snapshot on purpose, in the same
+  commit as the code, so a reviewer sees the difference rather than inferring
+  it. A contract that "must not change" and fails only when somebody remembers
+  to check is a contract that changes; one that fails on every change, and is
+  updated deliberately, is a contract that is *managed*.
+
+  The readings are behavioural where they can be: the REST API comes from the
+  OpenAPI document the server serves, the OAuth metadata from the discovery
+  document over HTTP, and the token format from **a token the server actually
+  mints**, decoded. A list of claim names written by hand drifts from the
+  signer; a decoded token cannot.
+- **`docs/CONTRACTS.md`** — what is frozen, what is not, and how to change a
+  frozen thing on purpose.
+- **`docs/multi-instance.md`** — running Keystone on more than one instance:
+  what has to be shared (the database, the encryption key, the signing keys,
+  Redis), what the queue does, how the bootstrap stays single, and how to tell
+  which of those is broken from a symptom.
+- **`docs/OPERATIONS/redis.md`** — what Redis holds, the degraded mode when it
+  is unavailable, why it does not need to be persisted, and how to recover from
+  an outage.
+- **A documentation coverage gate** — `npm run verify:doc-coverage`. Fifteen
+  topics, each covered by a document with a heading naming it, and the set
+  reviewable in `docs/doc-coverage.json`.
+- **A migration audit** — `src/tests/deployment/migrationAudit.test.ts`. Every
+  migration is a valid starting point: applied to an empty database, upgraded
+  to head, and the resulting schema compared column-for-column and
+  index-for-index with a fresh install's.
+- **A release artifact verification** — `npm run verify:artifacts`. Both npm
+  packages at the released version with the right contents and without the test
+  tree; the migrations and their journal in the published package; the image;
+  the GitHub release; and the tag pointing at a commit on the main line whose
+  own manifest says the released version.
+
+### Changed
+
+- **The migration guarantee is now a comparison, not a presence check.** The
+  repository's own `schema:verify` checks that the tables the schema declares
+  exist, and its documentation is honest about the bound: "a column missing
+  from an existing table still passes." A column that a fresh install has and
+  an upgraded database does not would pass every gate in the repository. The
+  audit is the comparison that was missing.
+- **The start points are every migration, not the published versions.** The
+  published versions are a subset of the states a database can be in: a
+  deployment that failed halfway through, a restore from a dump, a branch that
+  shipped a migration before the release that carried it — each is a state no
+  published version ever described.
+
+### Fixed
+
+- **A failed migration is proven to change nothing.** The migrator runs every
+  pending migration in one transaction and Postgres DDL is transactional, so a
+  failure cannot leave a half-applied schema — which is the property that
+  makes "run the migration again" a safe instruction to give an operator. That
+  is now asserted rather than assumed, with a deliberately broken migration.
+
+### Security
+
+- Nothing in this release changes what the server does. It is a preparation
+  phase: the point is that v4's breaking changes can be *listed*, with a diff
+  to point at, rather than written from memory.
+
+### Compatibility
+
+- No breaking changes. The frozen contracts are frozen from this release
+  onwards, and the snapshot is the record of what was frozen.
+
 ## [3.13.0] - 2026-10-20
 
 *Plan §8.1–§8.8: failure and chaos testing. The theme is that a system is only as good as its behaviour when something breaks, and most of what breaks is not the thing the tests were written about.*

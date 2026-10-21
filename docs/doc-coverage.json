@@ -1,0 +1,95 @@
+{
+  "$comment": "§9.4 — the documentation freeze. Every topic a reader needs must be covered by a document that actually covers it, not by a passing mention. The gate checks that the file exists and that it has a heading naming the topic; the heading text is matched as a substring, so a document may rename its section without the coverage silently disappearing.",
+  "topics": [
+    {
+      "id": "installation",
+      "label": "Installation",
+      "file": "README.md",
+      "heading": "Installation"
+    },
+    {
+      "id": "configuration",
+      "label": "Configuration",
+      "file": "README.md",
+      "heading": "Configuration"
+    },
+    {
+      "id": "security",
+      "label": "Security",
+      "file": "docs/SECURITY.md",
+      "heading": "Keystone Security"
+    },
+    {
+      "id": "oauth",
+      "label": "OAuth",
+      "file": "docs/API.md",
+      "heading": "OAuth 2.0 provider"
+    },
+    {
+      "id": "mfa",
+      "label": "Multi-factor authentication",
+      "file": "docs/API.md",
+      "heading": "Multi-factor authentication"
+    },
+    {
+      "id": "webhooks",
+      "label": "Webhooks",
+      "file": "docs/security/webhooks.md",
+      "heading": "Webhooks"
+    },
+    {
+      "id": "queues",
+      "label": "Background queues",
+      "file": "docs/ARCHITECTURE.md",
+      "heading": "Background queue"
+    },
+    {
+      "id": "redis",
+      "label": "Redis",
+      "file": "docs/OPERATIONS/redis.md",
+      "heading": "Redis"
+    },
+    {
+      "id": "multi-instance",
+      "label": "Running more than one instance",
+      "file": "docs/multi-instance.md",
+      "heading": "Running Keystone"
+    },
+    {
+      "id": "docker",
+      "label": "Docker",
+      "file": "README.md",
+      "heading": "Docker"
+    },
+    {
+      "id": "production",
+      "label": "Production deployment",
+      "file": "docs/DEPLOYMENT.md",
+      "heading": "Important production checklist"
+    },
+    {
+      "id": "migration",
+      "label": "Migration",
+      "file": "docs/OPERATIONS/migrations.md",
+      "heading": "Database migrations"
+    },
+    {
+      "id": "sdk",
+      "label": "SDK",
+      "file": "docs/SDK.md",
+      "heading": "SDK"
+    },
+    {
+      "id": "troubleshooting",
+      "label": "Troubleshooting",
+      "file": "docs/TROUBLESHOOTING.md",
+      "heading": "Troubleshooting"
+    },
+    {
+      "id": "disaster-recovery",
+      "label": "Disaster recovery",
+      "file": "docs/OPERATIONS/backup-restore.md",
+      "heading": "Backup and restore"
+    }
+  ]
+}

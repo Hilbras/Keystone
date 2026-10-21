@@ -1451,6 +1451,26 @@
       "test": "src/tests/chaos/fuzz.test.ts",
       "covers": "§8.7 — that a malformed bearer token is refused and never accepted, that a malformed body is refused without a server error, that a malformed OAuth parameter is refused with an error body, that a malformed webhook URL is refused before anything is sent to it, and that a malformed header or query parameter is ignored rather than fatal.",
       "why": "Not a numbered finding: the repository had no fuzzing at all, so there was nothing to have been wrong. Registered because a 500 in a fuzz run is a place where a crafted input reached code that assumes the world is well formed, and the seeded generator is what makes a failure reproducible — which is the difference between a bug report and a shrug."
+    },
+    {
+      "test": "src/tests/deployment/migrationAudit.test.ts",
+      "covers": "§9.2 and §9.3 — that the migration journal is whole, that a fresh install produces a schema, and that **every** migration is a valid starting point: each one is applied to an empty database, the upgrade runs, and the resulting schema is compared column-for-column and index-for-index with a fresh install's. Also that a failed migration leaves the schema byte-identical to what it was and the next run succeeds, that data written before the upgrade survives it, and that the documented rollback — a dump and a restore, because there is no down migration — removes what the dump did not contain.",
+      "why": "Not a numbered finding: the migrations are correct. Registered because the repository's own `schema:verify` is a *presence* check and says so — \"a column missing from an existing table still passes\" — so a column that a fresh install has and an upgraded database does not would pass every gate in the repository. The comparison is the part that was missing, and the start points are every migration rather than the published versions, because a database that failed halfway through a deployment is in a state no published version ever described."
+    },
+    {
+      "test": "scripts/verify-contract-freeze.mjs",
+      "covers": "§9.1 — that the seven contracts a caller can depend on have not changed: the REST API (every path, method and tag, read from the OpenAPI document the server serves), the OAuth behaviour (the discovery metadata over HTTP, and the error codes the routes send and the allowlist that preserves RFC envelopes), the token format (the claims and the algorithm, read from a token the server actually mints and decoded), the database contracts (the tables, their columns, their nullability and defaults, and the migration set), the webhook format (the headers and the body), the SDK interfaces (each package's manifest and exported names), and the configuration (the environment variables the server reads).",
+      "why": "Not a numbered finding: nothing was wrong. Registered because a contract that \"must not change\" and fails only when somebody remembers to check is a contract that changes. The gate fails on every change and the snapshot is updated on purpose, in the same commit, so a reviewer sees the difference rather than inferring it."
+    },
+    {
+      "test": "scripts/verify-doc-coverage.mjs",
+      "covers": "§9.4 — that each of the fifteen topics a reader needs is covered by a document that has a heading naming it: installation, configuration, security, OAuth, MFA, webhooks, queues, Redis, running more than one instance, Docker, production, migration, the SDK, troubleshooting and disaster recovery.",
+      "why": "Not a numbered finding: thirteen of the fifteen were already covered. Registered because the two that were not — multi-instance and Redis — were gaps in exactly the topics an operator needs at three in the morning, and because a coverage set that lives in a reviewed table is a set somebody can check."
+    },
+    {
+      "test": "scripts/verify-release-artifacts.mjs",
+      "covers": "§9.5 — that the published artifacts are right from the outside: both npm packages exist at the released version and contain what a consumer needs and not what it must not (the test tree); the migration files and their journal are in the published package; the container image for the version exists; the GitHub release is not a draft, is not a prerelease, carries its assets and is tagged with the released version; and the source archive for the tag points at a commit on the main line whose own manifest says the released version.",
+      "why": "Not a numbered finding: the artifacts were correct. Registered because every one of these is invisible from inside the repository — inside the repository everything is correct by construction — and a tag on a branch or a package published without its migrations is only visible from the outside."
     }
   ]
 }

@@ -26,6 +26,9 @@ Complete documentation for the Hilbras Keystone identity platform.
 | --- | --- |
 | [Backup and restore](OPERATIONS/backup-restore.md) | `pg_dump`/`pg_restore`, key backup, RTO/RPO, disaster recovery, what cannot be recovered |
 | [Database migrations](OPERATIONS/migrations.md) | up/verify/rollback, expand/migrate/contract, the deploy order that survives a rolling rollout |
+| [Redis](OPERATIONS/redis.md) | what Redis holds, the degraded mode when it is unavailable, and how to recover from an outage |
+| [Running more than one instance](multi-instance.md) | what has to be shared between instances, the queue, the bootstrap lock, and what breaks when it is not |
+| [The frozen contracts](CONTRACTS.md) | the seven contracts a caller can depend on, and how a change to one is made visible |
 
 ## Integrating
 

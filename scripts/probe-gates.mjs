@@ -4,7 +4,7 @@
  *
  * The session's recurring defect is a control that reports success for something
  * other than what it measures — a check that cannot fail. This probe answers the
- * cheapest version of that question for the 18 gate steps in ci.yml: break the
+ * cheapest version of that question for the 20 gate steps in ci.yml: break the
  * repository in a way each gate is *supposed* to notice, and record whether the
  * gate noticed.
  *
@@ -223,6 +223,28 @@ const PROBES = [
     },
   },
   {
+    gate: "verify-contract-freeze.mjs",
+    name: "a published contract changes without the snapshot being updated",
+    apply(dir) {
+      const file = path.join(dir, "packages", "keystone-client", "package.json");
+      const manifest = JSON.parse(readFileSync(file, "utf8"));
+      manifest.main = "dist/elsewhere.js";
+      writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+    },
+  },
+  {
+    gate: "verify-doc-coverage.mjs",
+    name: "a documented topic loses the heading that covers it",
+    apply(dir) {
+      const file = path.join(dir, "docs", "multi-instance.md");
+      const text = readFileSync(file, "utf8");
+      writeFileSync(
+        file,
+        text.replace("# Running Keystone on more than one instance", "# Scaling out")
+      );
+    },
+  },
+  {
     gate: "verify-action-pins.mjs",
     name: "an action pin is a tag rather than a commit SHA",
     apply(dir) {
@@ -236,7 +258,12 @@ const PROBES = [
 ];
 
 /** Gates that need more than a file copy — they read the compiled output. */
-const NEEDS_BUILD = new Set(["generate-auth-dashboard.mjs", "verify-doc-samples.mjs", "verify-openapi-version.mjs"]);
+const NEEDS_BUILD = new Set([
+  "generate-auth-dashboard.mjs",
+  "verify-doc-samples.mjs",
+  "verify-openapi-version.mjs",
+  "verify-contract-freeze.mjs",
+]);
 
 /**
  * The four steps of the `gates` job this does not yet cover, named rather than
@@ -249,7 +276,7 @@ const NEEDS_BUILD = new Set(["generate-auth-dashboard.mjs", "verify-doc-samples.
  * `src/tests/security/reviewApiSurface.test.ts`, and lint is covered by
  * `--deny-warnings` failing CI. Both are known-good, so they are the lowest
  * priority to add here; the list exists so that "fifteen" is not mistaken for
- * "all sixteen".
+ * "all twenty".
  */
 const NOT_YET_PROBED = [
   "generate-auth-dashboard.mjs — needs dist/",
@@ -275,7 +302,7 @@ for (const probe of PROBES) {
     // A **symlink**, not a copy. The gates import nothing from node_modules at
     // all — they read files as text — but `verify-doc-samples.mjs` resolves
     // against the project, so a tree without it looks broken in a way that has
-    // nothing to do with the mutation. Copying it fifteen times is 3GB of I/O
+    // nothing to do with the mutation. Copying it seventeen times is 3GB of I/O
     // for a link; the first version of this probe took long enough that it was
     // interrupted twice.
     symlinkSync(path.join(root, "node_modules"), path.join(scratch, "node_modules"), "dir");
@@ -361,6 +388,6 @@ console.log(
       ? `Not caught: ${notCaught.map((r) => r.gate).join(", ")}`
       : "Every gate noticed its own mutation.")
 );
-console.log(`\nNot probed (${NOT_YET_PROBED.length} of the 18 gate steps):`);
+console.log(`\nNot probed (${NOT_YET_PROBED.length} of the 20 gate steps):`);
 for (const line of NOT_YET_PROBED) console.log(`  - ${line}`);
 process.exit(notCaught.length > 0 ? 1 : 0);
