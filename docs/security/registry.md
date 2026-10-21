@@ -4,13 +4,13 @@
 
 Every vulnerability found in Keystone, the fix, the test that would fail without it, and where it is documented. The registry is validated by `npm run registry:check`, which fails if an entry names a test that does not exist, if a security suite is claimed by no entry, or if a mandatory attack class is uncovered.
 
-**100 findings.**
+**101 findings.**
 
 | Severity | Count |
 | --- | --- |
 | critical | 7 |
 | high | 45 |
-| medium | 32 |
+| medium | 33 |
 | low | 16 |
 
 ## Scope
@@ -1417,6 +1417,30 @@ It is recorded because the symptom is a process that never exits. A test that ha
 **Test.** `src/tests/chaos/redis-failure.test.ts`
 
 **Documentation.** [docs/security/configuration.md](configuration.md)
+
+### SEC-103 — The release published a container image that nobody could pull
+
+*Fixed in v4.0.1. Component: `supply-chain`.*
+
+**Issue.** GHCR creates every container package **private**, and the release path pushed the image and stopped there. The `docker` job ended at the push and the Trivy gate; nothing ever made the package public.
+
+So the v4.0.0 image was on the registry and invisible. `docker pull ghcr.io/hilbras/keystone:4.0.0` answered **403** for anyone without registry credentials, and `k8s/base/deployment.yaml` references the image with **no `imagePullSecret`** — it assumes a public image — so a cluster deploying the shipped manifests landed in `ImagePullBackOff`.
+
+**Nothing caught it, and that is the part worth recording.** `scripts/verify-release-artifacts.mjs` checked the image with `docker manifest inspect` and treated a failure to look as "fine" — the check reported "Could not inspect … (no registry credentials, or no docker)" and the verification passed. But that command fails for a **public** image too, on a machine without credentials. The one way it failed was indistinguishable from the one way that mattered, and the private image passed as published. A check that cannot tell "absent" from "invisible" does not check.
+
+**Medium**, and deliberately. No credential was exposed and no security boundary was crossed: the image was on the registry, scanned, and tagged correctly. What failed was the distribution — a release that announced an official image and shipped one that could not be fetched, behind a verification that reported success. The severity is the false assurance, not the impact on the server.
+
+**Fix.** `.github/workflows/release.yml` — the `docker` job publishes the package publicly with `PATCH /orgs/${{ github.repository_owner }}/packages/container/keystone`, **after** the vulnerability gate rather than next to the push. Publishing first and scanning after would expose the very image the scan exists to reject; the scan can still read the image while the package is private and the job is logged in. The release then **gates** on an anonymous pull token — the same request an unauthenticated `docker pull` makes. A public package answers `200` with a token; a private one answers `401`.
+
+`scripts/verify-release-artifacts.mjs` — the image check asks the registry that same question instead of calling `docker manifest inspect`. A `401` is a **failed release artifact**, not a note. A network failure is still a note, because a verification that cannot reach the registry says so rather than guessing.
+
+`.github/workflows/publish-container-package.yml` (new) — a `workflow_dispatch` path that finishes a release which pushed its image and then stopped. A tag push is not guaranteed to dispatch (SEC-085) and an unchanged tag cannot be re-pushed, so without it a half-finished release has no lever. It tries the organization endpoint and then the user endpoint, because the wrong one 404s and leaves a release with no record of why.
+
+The GHCR scope is lowercased in both paths: a scope with an uppercase package name is refused with `NAME_INVALID` (400), which reads like a malformed request rather than a case problem.
+
+**Test.** `src/tests/deployment/dockerImage.test.ts`
+
+**Documentation.** [docs/DEPLOYMENT.md](../DEPLOYMENT.md)
 
 ## Low
 
