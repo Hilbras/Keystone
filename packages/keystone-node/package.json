@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/keystone-node",
-  "version": "3.13.0",
+  "version": "3.14.0",
   "license": "MIT",
   "description": "Server-side SDK for the Hilbras Keystone identity platform — JWT verification, user management",
   "repository": {
@@ -27,6 +27,6 @@
     "typescript": "^5.4.0"
   },
   "keystonePeer": {
-    "server": ">=3.13.0 <3.14.0"
+    "server": ">=3.14.0 <3.15.0"
   }
 }
