@@ -1,0 +1,2345 @@
+{
+  "restApi": {
+    "operations": [
+      "DELETE /auth/api-keys/{id} [Auth]",
+      "DELETE /auth/sessions/{id} [Auth]",
+      "DELETE /scim/v2/Groups/{groupId} [SCIM]",
+      "DELETE /scim/v2/Groups/{groupId}/members/{userId} [SCIM]",
+      "DELETE /scim/v2/Users/{userId} [SCIM]",
+      "DELETE /v1/admin/organizations/{id}/api-keys/{keyId} [Admin]",
+      "DELETE /v1/admin/organizations/{id}/members/{userId} [Admin]",
+      "DELETE /v1/admin/organizations/{id}/oidc-connections/{connectionId} [Admin]",
+      "DELETE /v1/admin/organizations/{id}/saml-connections/{connectionId} [Admin]",
+      "DELETE /v1/admin/organizations/{id}/scim-connections/{connectionId} [Admin]",
+      "DELETE /v1/admin/organizations/{id}/users/{userId} [Admin]",
+      "DELETE /v1/admin/permissions/{id} [Admin]",
+      "DELETE /v1/admin/platform/feature-flags/{key} [Admin]",
+      "DELETE /v1/admin/platform/plugins/{name} [Admin]",
+      "DELETE /v1/admin/platform/users/{id} [Admin]",
+      "DELETE /v1/admin/platform/webhooks/{id} [Admin]",
+      "DELETE /v1/admin/roles/{role}/permissions/{permissionId} [Admin]",
+      "DELETE /v1/admin/workflows/{id} [Admin]",
+      "GET /.well-known/jwks.json [Discovery]",
+      "GET /.well-known/openid-configuration [Discovery]",
+      "GET /auth/api-keys [Auth]",
+      "GET /auth/callback/{provider} [Auth]",
+      "GET /auth/email-verification/verify [Auth]",
+      "GET /auth/magic-link/verify [Auth]",
+      "GET /auth/me [Auth]",
+      "GET /auth/oauth/{provider} [Auth]",
+      "GET /auth/profile [Auth]",
+      "GET /auth/sessions [Auth]",
+      "GET /auth/validate [Auth]",
+      "GET /auth/webauthn/register/options [Auth]",
+      "GET /federation/identities [Federation]",
+      "GET /federation/providers [Federation]",
+      "GET /federation/{provider}/callback [Federation]",
+      "GET /federation/{provider}/start [Federation]",
+      "GET /health [Discovery]",
+      "GET /health/live [Discovery]",
+      "GET /health/ready [Discovery]",
+      "GET /health/startup [Discovery]",
+      "GET /metrics [API]",
+      "GET /oauth2/authorize [OAuth]",
+      "GET /oauth2/userinfo [OAuth]",
+      "GET /ready [Discovery]",
+      "GET /scim/v2/Groups [SCIM]",
+      "GET /scim/v2/Groups/{groupId} [SCIM]",
+      "GET /scim/v2/Groups/{groupId}/members [SCIM]",
+      "GET /scim/v2/ResourceTypes [SCIM]",
+      "GET /scim/v2/ServiceProviderConfig [SCIM]",
+      "GET /scim/v2/Users [SCIM]",
+      "GET /scim/v2/Users/{userId} [SCIM]",
+      "GET /sdk/branding/{clientId} [SDK]",
+      "GET /sdk/keystone-dropin.js [SDK]",
+      "GET /sdk/keystone-dropin.js.sri [SDK]",
+      "GET /setup/diagnostics [Setup]",
+      "GET /setup/status [Setup]",
+      "GET /sso/oidc/{connectionId} [SSO]",
+      "GET /sso/oidc/{connectionId}/callback [SSO]",
+      "GET /sso/saml/{connectionId} [SSO]",
+      "GET /sso/saml/{connectionId}/metadata [SSO]",
+      "GET /sso/sso/oidc/{connectionId} [SSO]",
+      "GET /sso/sso/oidc/{connectionId}/callback [SSO]",
+      "GET /v1/admin/billing/plans [Admin]",
+      "GET /v1/admin/config/ [Admin]",
+      "GET /v1/admin/organizations [Admin]",
+      "GET /v1/admin/organizations/{id} [Admin]",
+      "GET /v1/admin/organizations/{id}/api-keys [Admin]",
+      "GET /v1/admin/organizations/{id}/applications [Admin]",
+      "GET /v1/admin/organizations/{id}/audit-logs [Admin]",
+      "GET /v1/admin/organizations/{id}/billing [Admin]",
+      "GET /v1/admin/organizations/{id}/members [Admin]",
+      "GET /v1/admin/organizations/{id}/oidc-connections [Admin]",
+      "GET /v1/admin/organizations/{id}/saml-connections [Admin]",
+      "GET /v1/admin/organizations/{id}/saml-connections/{connectionId}/metadata [Admin]",
+      "GET /v1/admin/organizations/{id}/scim-config [Admin]",
+      "GET /v1/admin/organizations/{id}/scim-connections [Admin]",
+      "GET /v1/admin/organizations/{id}/service-accounts [Admin]",
+      "GET /v1/admin/organizations/{id}/service-accounts/{accountId} [Admin]",
+      "GET /v1/admin/organizations/{id}/users [Admin]",
+      "GET /v1/admin/organizations/{id}/users/{userId} [Admin]",
+      "GET /v1/admin/permissions [Admin]",
+      "GET /v1/admin/platform/applications [Admin]",
+      "GET /v1/admin/platform/audit-logs [Admin]",
+      "GET /v1/admin/platform/audit-logs/export [Admin]",
+      "GET /v1/admin/platform/configuration-profiles [Admin]",
+      "GET /v1/admin/platform/configuration-profiles/{id} [Admin]",
+      "GET /v1/admin/platform/diagnostics [Admin]",
+      "GET /v1/admin/platform/feature-flags [Admin]",
+      "GET /v1/admin/platform/feature-flags/{key} [Admin]",
+      "GET /v1/admin/platform/keys [Admin]",
+      "GET /v1/admin/platform/metrics/usage [Admin]",
+      "GET /v1/admin/platform/organizations [Admin]",
+      "GET /v1/admin/platform/plugins [Admin]",
+      "GET /v1/admin/platform/plugins/extensions [Admin]",
+      "GET /v1/admin/platform/queue [Admin]",
+      "GET /v1/admin/platform/queue/failed [Admin]",
+      "GET /v1/admin/platform/security-summary [Admin]",
+      "GET /v1/admin/platform/users [Admin]",
+      "GET /v1/admin/platform/webhooks [Admin]",
+      "GET /v1/admin/platform/webhooks/{id}/deliveries [Admin]",
+      "GET /v1/admin/roles [Admin]",
+      "GET /v1/admin/roles/{role}/permissions [Admin]",
+      "GET /v1/admin/workflows [Admin]",
+      "GET /v1/admin/workflows/{id} [Admin]",
+      "GET /v1/admin/workflows/{id}/runs [Admin]",
+      "PATCH /auth/profile [Auth]",
+      "PATCH /scim/v2/Groups/{groupId} [SCIM]",
+      "PATCH /scim/v2/Users/{userId} [SCIM]",
+      "PATCH /v1/admin/organizations/{id} [Admin]",
+      "PATCH /v1/admin/organizations/{id}/applications/{appId} [Admin]",
+      "PATCH /v1/admin/organizations/{id}/members/{userId} [Admin]",
+      "PATCH /v1/admin/organizations/{id}/plan [Admin]",
+      "PATCH /v1/admin/organizations/{id}/service-accounts/{accountId} [Admin]",
+      "PATCH /v1/admin/organizations/{id}/users/{userId} [Admin]",
+      "PATCH /v1/admin/platform/users/{id} [Admin]",
+      "PATCH /v1/admin/platform/users/{id}/role [Admin]",
+      "PATCH /v1/admin/platform/webhooks/{id} [Admin]",
+      "POST /auth/api-keys [Auth]",
+      "POST /auth/email-verification/request [Auth]",
+      "POST /auth/email-verification/send [Auth]",
+      "POST /auth/forgot-password [Auth]",
+      "POST /auth/login [Auth]",
+      "POST /auth/logout [Auth]",
+      "POST /auth/magic-link/send [Auth]",
+      "POST /auth/mfa/verify [Auth]",
+      "POST /auth/refresh [Auth]",
+      "POST /auth/register [Auth]",
+      "POST /auth/reset-password [Auth]",
+      "POST /auth/sessions/revoke-all [Auth]",
+      "POST /auth/sms-otp/send [Auth]",
+      "POST /auth/sms-otp/verify [Auth]",
+      "POST /auth/token-login [Auth]",
+      "POST /auth/totp/backup [Auth]",
+      "POST /auth/totp/backup/verify [Auth]",
+      "POST /auth/totp/disable [Auth]",
+      "POST /auth/totp/enroll [Auth]",
+      "POST /auth/totp/verify [Auth]",
+      "POST /auth/webauthn/authenticate/options [Auth]",
+      "POST /auth/webauthn/authenticate/verify [Auth]",
+      "POST /auth/webauthn/register/verify [Auth]",
+      "POST /federation/link [Federation]",
+      "POST /oauth2/consent [OAuth]",
+      "POST /oauth2/revoke [OAuth]",
+      "POST /oauth2/token [OAuth]",
+      "POST /scim/v2/Groups [SCIM]",
+      "POST /scim/v2/Groups/{groupId}/members [SCIM]",
+      "POST /scim/v2/Users [SCIM]",
+      "POST /scim/v2/Users/.search [SCIM]",
+      "POST /sdk/connect [SDK]",
+      "POST /setup/config [Setup]",
+      "POST /setup/config/dry-run [Setup]",
+      "POST /setup/init [Setup]",
+      "POST /setup/migrate [Setup]",
+      "POST /setup/restart [Setup]",
+      "POST /setup/validate/db [Setup]",
+      "POST /setup/validate/email [Setup]",
+      "POST /setup/validate/redis [Setup]",
+      "POST /setup/validate/sms [Setup]",
+      "POST /sso/saml/acs [SSO]",
+      "POST /v1/admin/config/restart [Admin]",
+      "POST /v1/admin/organizations [Admin]",
+      "POST /v1/admin/organizations/{id}/applications [Admin]",
+      "POST /v1/admin/organizations/{id}/billing/customer [Admin]",
+      "POST /v1/admin/organizations/{id}/invites [Admin]",
+      "POST /v1/admin/organizations/{id}/oidc-connections [Admin]",
+      "POST /v1/admin/organizations/{id}/saml-connections [Admin]",
+      "POST /v1/admin/organizations/{id}/scim-connections [Admin]",
+      "POST /v1/admin/organizations/{id}/scim-connections/{connectionId}/rotate [Admin]",
+      "POST /v1/admin/organizations/{id}/service-accounts [Admin]",
+      "POST /v1/admin/organizations/{id}/service-accounts/{accountId}/api-keys [Admin]",
+      "POST /v1/admin/organizations/{id}/service-accounts/{accountId}/revoke [Admin]",
+      "POST /v1/admin/permissions [Admin]",
+      "POST /v1/admin/platform/keys/rotate [Admin]",
+      "POST /v1/admin/platform/queue/failed/{id}/retry [Admin]",
+      "POST /v1/admin/platform/queue/retry-all [Admin]",
+      "POST /v1/admin/platform/users/{id}/account-review [Admin]",
+      "POST /v1/admin/platform/webhook-deliveries/{id}/retry [Admin]",
+      "POST /v1/admin/platform/webhooks [Admin]",
+      "POST /v1/admin/platform/webhooks/{id}/rotate-secret [Admin]",
+      "POST /v1/admin/roles/{role}/permissions [Admin]",
+      "POST /v1/admin/workflows [Admin]",
+      "POST /v1/authz/check [Authorization]",
+      "PUT /scim/v2/Groups/{groupId} [SCIM]",
+      "PUT /scim/v2/Users/{userId} [SCIM]",
+      "PUT /v1/admin/config/ [Admin]",
+      "PUT /v1/admin/organizations/{id}/service-accounts/{accountId}/certificate [Admin]",
+      "PUT /v1/admin/platform/feature-flags/{key} [Admin]"
+    ],
+    "discovery": {
+      "issuer": "http://localhost:4001",
+      "authorization_endpoint": "http://localhost:4001/oauth2/authorize",
+      "token_endpoint": "http://localhost:4001/oauth2/token",
+      "userinfo_endpoint": "http://localhost:4001/oauth2/userinfo",
+      "revocation_endpoint": "http://localhost:4001/oauth2/revoke",
+      "jwks_uri": "http://localhost:4001/.well-known/jwks.json",
+      "response_types_supported": [
+        "code"
+      ],
+      "grant_types_supported": [
+        "authorization_code",
+        "refresh_token",
+        "client_credentials"
+      ],
+      "subject_types_supported": [
+        "public"
+      ],
+      "id_token_signing_alg_values_supported": [
+        "RS256"
+      ],
+      "scopes_supported": [
+        "openid",
+        "profile",
+        "email"
+      ],
+      "token_endpoint_auth_methods_supported": [
+        "client_secret_post",
+        "client_secret_basic"
+      ],
+      "code_challenge_methods_supported": [
+        "S256"
+      ]
+    }
+  },
+  "oauth": {
+    "sentByRoutes": [
+      "consent_required",
+      "invalid_client",
+      "invalid_grant",
+      "invalid_redirect_uri",
+      "invalid_request",
+      "mfa_required",
+      "not_member",
+      "unsupported_grant_type"
+    ],
+    "declaredType": [
+      "access_denied",
+      "identity_broker_failure",
+      "invalid_client",
+      "invalid_grant",
+      "invalid_request",
+      "mfa_required",
+      "server_error"
+    ],
+    "preservedEnvelopes": []
+  },
+  "tokenFormat": {
+    "algorithm": "RS256",
+    "typ": "JWT",
+    "hasKid": true,
+    "accessTokenClaims": [
+      "aud",
+      "client_id",
+      "email",
+      "exp",
+      "iat",
+      "iss",
+      "name",
+      "org_id",
+      "plan",
+      "provider",
+      "role",
+      "sub",
+      "username"
+    ],
+    "accessTokenAudience": "hilbras",
+    "accessTokenIssuer": "http://localhost:4001",
+    "idTokenClaims": [
+      "aud",
+      "azp",
+      "email",
+      "exp",
+      "iat",
+      "iss",
+      "name",
+      "nonce",
+      "sub",
+      "username"
+    ]
+  },
+  "database": {
+    "tables": {
+      "api_keys": {
+        "appId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "keyHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "lastUsedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "name": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "prefix": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "revokedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "scopes": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "serviceAccountId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        }
+      },
+      "applications": {
+        "allowedIps": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "allowedOrigins": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "allowedScopes": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "blockedIps": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "branding": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "clientId": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "clientSecretHash": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "clientType": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "redirectUris": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "audit_log": {
+        "appId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "event": {
+          "type": "varchar(64)",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "ipAddress": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "metadata": {
+          "type": "jsonb",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "requestId": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userAgent": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        }
+      },
+      "email_verification_tokens": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "tokenHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "usedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "feature_flags": {
+        "description": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "enabled": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "key": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "identity_providers": {
+        "attributeMapping": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "authorizationEndpoint": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "clientId": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "clientSecretEncrypted": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isFederation": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "issuer": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "jwksUri": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "providerType": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "scopes": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "tokenEndpoint": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userinfoEndpoint": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        }
+      },
+      "magic_links": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "tokenHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "usedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "mfa_challenges": {
+        "attempts": {
+          "type": "integer",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "challengeHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "clientId": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "consumedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "flow": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "ipAddress": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "status": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userAgent": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "oauth2_authorization_codes": {
+        "appId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "challenge": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "challengeMethod": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "codeHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "mfaFactor": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "nonce": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "redirectUri": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "scopes": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "usedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "oauth2_consents": {
+        "appId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "grantedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "revokedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "scopes": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "oidc_connections": {
+        "attributeMapping": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "authorizationEndpoint": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "clientId": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "clientSecret": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "issuer": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "jwksUri": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "scopes": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "tokenEndpoint": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userinfoEndpoint": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        }
+      },
+      "org_memberships": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "role": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "organizations": {
+        "branding": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "plan": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "slug": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "password_reset_tokens": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "tokenHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "usedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "permissions": {
+        "action": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "description": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "resource": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "refresh_tokens": {
+        "appId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "consumedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "deviceFingerprint": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "familyId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "ipAddress": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "mfaFactor": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "revokedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "scopes": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "tokenHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "userAgent": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "role_permissions": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "permissionId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "role": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "saml_connections": {
+        "attributeMapping": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "idpCertificate": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "idpEntityId": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "idpSsoUrl": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "spAcsUrl": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "spEntityId": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "scim_connections": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "createdByUserId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "lastRotatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "lastUsedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "previousTokenHash": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "previousTokenValidUntil": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "revokedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "tokenHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "tokenHint": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "scim_group_members": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "groupId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "scim_groups": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "description": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "displayName": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "externalId": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "secrets": {
+        "algorithm": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "keyId": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "rotatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "type": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "value": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "service_accounts": {
+        "certFingerprint": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "description": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "revokedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "sms_otp_codes": {
+        "codeHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "phoneNumber": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "usedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "sso_identity_links": {
+        "connectionId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "connectionType": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "externalSub": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "totp_backup_codes": {
+        "codeHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "usedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "user_devices": {
+        "fingerprintHash": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "firstSeenAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "ipAddress": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "lastSeenAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "newDeviceAlertSent": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "trustScore": {
+          "type": "smallint",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userAgent": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "user_identities": {
+        "email": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "externalSub": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "linkedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "profile": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "providerId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "providerType": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "user_sessions": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "deviceFingerprint": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "expiresAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "ipAddress": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "lastSeenAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "refreshTokenId": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "revokedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userAgent": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "users": {
+        "accountReviewRequired": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "avatarUrl": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "defaultOrgId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "email": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "emailVerified": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "emailVerifiedToken": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "failedLoginAttempts": {
+          "type": "integer",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "lockedUntil": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "metadata": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "name": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "passwordHash": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "phoneNumber": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "phoneVerified": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "plan": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "provider": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "role": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "totpEnabled": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "totpLastStep": {
+          "type": "bigint",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "totpSecret": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "totpVerifiedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "username": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "zitadelUserId": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        }
+      },
+      "webauthn_credentials": {
+        "aaguid": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "counter": {
+          "type": "integer",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "credentialId": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "deviceName": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "lastUsedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "publicKey": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "transports": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "userId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "webhook_deliveries": {
+        "attempts": {
+          "type": "integer",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "endpointId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "eventType": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "lastAttemptAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "lockedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "lockedBy": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "payload": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "responseBody": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "responseStatus": {
+          "type": "integer",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "status": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        }
+      },
+      "webhook_endpoints": {
+        "appId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "description": {
+          "type": "text",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "events": {
+          "type": "text[]",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "secret": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "url": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "workflow_runs": {
+        "finishedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "log": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "payload": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "startedAt": {
+          "type": "timestamp with time zone",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "status": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "triggerEvent": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "workflowId": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": false
+        }
+      },
+      "workflows": {
+        "createdAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "definition": {
+          "type": "jsonb",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "id": {
+          "type": "uuid",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "isActive": {
+          "type": "boolean",
+          "notNull": true,
+          "hasDefault": true
+        },
+        "name": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "orgId": {
+          "type": "uuid",
+          "notNull": false,
+          "hasDefault": false
+        },
+        "trigger": {
+          "type": "text",
+          "notNull": true,
+          "hasDefault": false
+        },
+        "updatedAt": {
+          "type": "timestamp with time zone",
+          "notNull": true,
+          "hasDefault": true
+        }
+      }
+    },
+    "migrations": [
+      "0000_skinny_ben_parker",
+      "0001_brief_joseph",
+      "0002_add_account_lockout",
+      "0003_steep_rachel_grey",
+      "0004_clever_bill_hollister",
+      "0005_steep_the_call",
+      "0006_ambitious_boomer",
+      "0007_greedy_vindicator",
+      "0008_flashy_firestar",
+      "0009_daffy_changeling",
+      "0010_wealthy_shadow_king",
+      "0011_overrated_vector",
+      "0012_brave_darkhawk",
+      "0013_wonderful_chimera",
+      "0014_magical_morph",
+      "0015_chief_vargas",
+      "0016_gorgeous_charles_xavier",
+      "0017_flashy_nekra",
+      "0018_cute_rage",
+      "0019_refresh_token_consumed_at",
+      "0020_perf_indexes_and_dead_dups",
+      "0021_refresh_token_family"
+    ]
+  },
+  "webhookFormat": {
+    "headers": [
+      "X-Keystone-Attempt",
+      "X-Keystone-Delivery",
+      "X-Keystone-Event",
+      "X-Keystone-Event-ID",
+      "X-Keystone-Signature",
+      "X-Keystone-Trace-ID"
+    ],
+    "bodyKeys": [
+      "id",
+      "payload",
+      "timestamp",
+      "type",
+      "version"
+    ]
+  },
+  "sdkInterfaces": {
+    "keystone-cli": {
+      "name": "@hilbras/keystone-cli",
+      "main": "dist/index.js",
+      "exports": null,
+      "bin": {
+        "keystone-cli": "dist/index.js"
+      },
+      "files": [
+        "dist"
+      ],
+      "dependencies": [],
+      "peerDependencies": [],
+      "exported": []
+    },
+    "keystone-client": {
+      "name": "@hilbras/keystone-client",
+      "main": "dist/index.js",
+      "types": "dist/index.d.ts",
+      "exports": null,
+      "bin": null,
+      "files": [
+        "dist"
+      ],
+      "dependencies": [],
+      "peerDependencies": [],
+      "exported": [
+        "AdminResource",
+        "ApiKeysResource",
+        "AuthResource",
+        "AuthenticationError",
+        "AuthorizationError",
+        "ConflictError",
+        "FetchInit",
+        "FetchLike",
+        "FetchResponse",
+        "HealthResource",
+        "HttpClientOptions",
+        "HttpMethod",
+        "KeystoneClient",
+        "KeystoneClientOptions",
+        "KeystoneError",
+        "KeystoneErrorOptions",
+        "NetworkError",
+        "NotFoundError",
+        "OAuthResource",
+        "OrganizationsResource",
+        "QueryValue",
+        "RateLimitError",
+        "RequestOptions",
+        "ServerError",
+        "SessionsResource",
+        "TokensResource",
+        "ValidationError",
+        "WebhooksResource"
+      ]
+    },
+    "keystone-node": {
+      "name": "@hilbras/keystone-node",
+      "main": "dist/index.js",
+      "types": "dist/index.d.ts",
+      "exports": null,
+      "bin": null,
+      "files": [
+        "dist"
+      ],
+      "dependencies": [
+        "jose"
+      ],
+      "peerDependencies": [],
+      "exported": [
+        "KeystoneNodeClient",
+        "KeystoneNodeConfig",
+        "KeystoneTokenClaims",
+        "VerifiedToken",
+        "createKeystoneNodeClient"
+      ]
+    },
+    "keystone-react": {
+      "name": "@hilbras/keystone-react",
+      "main": "dist/index.js",
+      "types": "dist/index.d.ts",
+      "exports": null,
+      "bin": null,
+      "files": [
+        "dist"
+      ],
+      "dependencies": [],
+      "peerDependencies": [
+        "react"
+      ],
+      "exported": [
+        "KeystoneClientConfig",
+        "KeystoneProvider",
+        "KeystoneUser",
+        "useKeystone",
+        "useUser"
+      ]
+    },
+    "keystone-sdk": {
+      "name": "@hilbras/keystone-sdk",
+      "main": "dist/keystone-sdk.cjs",
+      "types": "dist/index.d.ts",
+      "exports": null,
+      "bin": null,
+      "files": [
+        "dist"
+      ],
+      "dependencies": [],
+      "peerDependencies": [],
+      "exported": [
+        "Keystone",
+        "KeystoneSdkConfig"
+      ]
+    },
+    "keystone-vue": {
+      "name": "@hilbras/keystone-vue",
+      "main": "dist/index.js",
+      "types": "dist/index.d.ts",
+      "exports": null,
+      "bin": null,
+      "files": [
+        "dist"
+      ],
+      "dependencies": [],
+      "peerDependencies": [
+        "vue"
+      ],
+      "exported": [
+        "KeystoneClientConfig",
+        "KeystoneState",
+        "KeystoneUser",
+        "provideKeystone",
+        "useKeystone",
+        "useUser"
+      ]
+    }
+  },
+  "configuration": [
+    "ACCOUNT_LOCKOUT_DURATION_SECONDS",
+    "ACCOUNT_LOCKOUT_THRESHOLD",
+    "AI_APP_URL",
+    "ALLOW_PRIVATE_SSO_ENDPOINTS",
+    "ALLOW_PRIVATE_WEBHOOK_TARGETS",
+    "AUDIT_CONSOLE_EXPORT",
+    "AUDIT_WEBHOOK_URL",
+    "AUTH_API_PUBLIC_URL",
+    "AZURE_AUTHORIZATION_ENDPOINT",
+    "AZURE_CLIENT_ID",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_ISSUER",
+    "AZURE_JWKS_URI",
+    "AZURE_KEY_VAULT_URL",
+    "AZURE_TENANT_ID",
+    "AZURE_TOKEN_ENDPOINT",
+    "AZURE_USERINFO_ENDPOINT",
+    "CACHE_KEY_PREFIX",
+    "CLIENT_APP_URL",
+    "COOKIE_DOMAIN",
+    "COOKIE_NAME",
+    "COOKIE_SAME_SITE",
+    "COOKIE_SECURE",
+    "EMAIL_FROM",
+    "EMAIL_PROVIDER",
+    "EMAIL_VERIFICATION_REQUIRED",
+    "GITHUB_AUTHORIZATION_ENDPOINT",
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "GITHUB_ISSUER",
+    "GITHUB_JWKS_URI",
+    "GITHUB_TOKEN_ENDPOINT",
+    "GITHUB_USERINFO_ENDPOINT",
+    "GLOBAL_RATE_LIMIT_MAX",
+    "GLOBAL_RATE_LIMIT_WINDOW",
+    "GOOGLE_AUTHORIZATION_ENDPOINT",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_ISSUER",
+    "GOOGLE_JWKS_URI",
+    "GOOGLE_TOKEN_ENDPOINT",
+    "GOOGLE_USERINFO_ENDPOINT",
+    "HIBP_CHECK_ENABLED",
+    "HILBRAS_INTERNAL_API_KEY",
+    "HOST",
+    "HOSTNAME",
+    "JWT_ACCESS_TOKEN_TTL",
+    "JWT_PRIVATE_KEY",
+    "JWT_PUBLIC_KEY",
+    "JWT_REFRESH_TOKEN_TTL",
+    "KEYCLOAK_AUTHORIZATION_ENDPOINT",
+    "KEYCLOAK_CLIENT_ID",
+    "KEYCLOAK_CLIENT_SECRET",
+    "KEYCLOAK_ISSUER",
+    "KEYCLOAK_JWKS_URI",
+    "KEYCLOAK_TOKEN_ENDPOINT",
+    "KEYCLOAK_USERINFO_ENDPOINT",
+    "KEYSTONE_ALLOW_DEV_DEFAULTS",
+    "KEYSTONE_ALLOW_INSECURE_WEBHOOK",
+    "KEYSTONE_BILLING_PROVIDER",
+    "KEYSTONE_ENCRYPTION_KEY",
+    "KEYSTONE_FEATURE_FLAGS",
+    "KEYSTONE_INTERNAL_API_KEY",
+    "KEYSTONE_LOG_LEVEL",
+    "KEYSTONE_PLUGINS",
+    "KEYSTONE_PRINT_SETUP_TOKEN",
+    "KEYSTONE_QUEUE_CONCURRENCY",
+    "KEYSTONE_QUEUE_PROVIDER",
+    "KEYSTONE_REDIS_COMMAND_TIMEOUT_MS",
+    "KEYSTONE_SECRETS_PROVIDER",
+    "KEYSTONE_SEED_OWNER_EMAIL",
+    "KEYSTONE_SEED_OWNER_PASSWORD",
+    "KEYSTONE_SETUP_HOST",
+    "KEYSTONE_SETUP_MODE",
+    "KEYSTONE_SETUP_TOKEN",
+    "KEYSTONE_TOTP_ENCRYPTION_KEY",
+    "KEYSTONE_TRUSTED_PROXIES",
+    "KEYSTONE_WEBHOOK_SIGNING_SECRET",
+    "LANDING_APP_URL",
+    "MAGIC_LINK_TTL_SECONDS",
+    "MAILGUN_API_KEY",
+    "MAILGUN_DOMAIN",
+    "NODE_ENV",
+    "OAUTH_CODE_TTL_SECONDS",
+    "OKTA_AUTHORIZATION_ENDPOINT",
+    "OKTA_CLIENT_ID",
+    "OKTA_CLIENT_SECRET",
+    "OKTA_ISSUER",
+    "OKTA_JWKS_URI",
+    "OKTA_TOKEN_ENDPOINT",
+    "OKTA_USERINFO_ENDPOINT",
+    "ORG_CREATE_MAX_ATTEMPTS",
+    "ORG_CREATE_WINDOW_SECONDS",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "PORT",
+    "RATE_LIMIT_ATTEMPTS",
+    "RATE_LIMIT_WINDOW_SECONDS",
+    "REDIS_URL",
+    "RESET_PASSWORD_URL",
+    "SCIM_BEARER_TOKEN",
+    "SCIM_ORG_ID",
+    "SENDGRID_API_KEY",
+    "SMS_PROVIDER",
+    "SMTP_HOST",
+    "SMTP_PASS",
+    "SMTP_PORT",
+    "SMTP_SECURE",
+    "SMTP_USER",
+    "TOTP_ISSUER",
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_FROM_NUMBER",
+    "TWILIO_MESSAGING_SERVICE_SID",
+    "VAULT_ADDR",
+    "VAULT_MOUNT_PATH",
+    "VAULT_TOKEN",
+    "WEBHOOK_DEBUG_CAPTURE_BODY",
+    "WEBHOOK_SIGNING_SECRET",
+    "ZITADEL_CLIENT_ID",
+    "ZITADEL_CLIENT_SECRET",
+    "ZITADEL_DOMAIN",
+    "ZITADEL_GITHUB_IDP_ID",
+    "ZITADEL_GOOGLE_IDP_ID",
+    "ZITADEL_ORG_ID",
+    "ZITADEL_PROJECT_ID",
+    "ZITADEL_SERVICE_CLIENT_ID",
+    "ZITADEL_SERVICE_CLIENT_SECRET",
+    "ZITADEL_SERVICE_PAT"
+  ],
+  "frozenAt": "2026-10-21"
+}

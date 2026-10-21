@@ -230,6 +230,21 @@ jobs:
       - name: Gate — the re-audit matrix regenerates and every claim verifies
         run: npm run reaudit:check
 
+      - name: Gate — the frozen contracts have not changed
+        # §9.1. Seven contracts a caller can depend on: the REST API, the
+        # OAuth behaviour, the token format, the database, the webhook format,
+        # the SDK interfaces and the configuration. Each is read from the
+        # running code and compared with a committed snapshot, so a change to
+        # any of them fails here with the exact difference, and the only way
+        # past it is to update the snapshot on purpose.
+        run: npm run verify:contract
+
+      - name: Gate — every documented topic is actually documented
+        # §9.4. Fifteen topics, each covered by a document with a heading that
+        # names it. A reader who needs to know how to run two instances and
+        # finds nothing finds it at three in the morning.
+        run: npm run verify:doc-coverage
+
       - name: Gate — every route has an authentication guard, and every guard name resolves
         # A misspelled guard is skipped at request time rather than rejected at
         # load, so the route ships unauthenticated and every test that does not
