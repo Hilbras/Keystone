@@ -29,10 +29,15 @@ on:
         required: true
         type: string
       owner:
-        description: "Owner of the package (an organization or a user account)"
-        required: false
+        # No default. The `github` context is not available in a
+        # `workflow_dispatch` input default — the workflow file fails to parse
+        # with "Unrecognized named-value: 'github'", and a workflow whose file
+        # does not parse is worse than no workflow: GitHub cannot read the
+        # `on:` section either, so it runs on *every* push and fails each time,
+        # filling the run list with failures nobody started.
+        description: "Owner of the package — an organization or a user account (e.g. Hilbras)"
+        required: true
         type: string
-        default: ${{ github.repository_owner }}
       visibility:
         description: "Visibility to set"
         required: false
