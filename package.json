@@ -66,6 +66,7 @@
     "verify:contract": "node scripts/verify-contract-freeze.mjs",
     "verify:doc-coverage": "node scripts/verify-doc-coverage.mjs",
     "verify:artifacts": "node scripts/verify-release-artifacts.mjs",
+    "verify:rc": "node scripts/verify-release-candidate.mjs",
     "verify:doc-scripts": "node scripts/verify-doc-scripts.mjs",
     "verify:secrets-cipher": "node scripts/verify-secrets-cipher.mjs",
     "verify:sdk": "node scripts/verify-sdk-packages.mjs",

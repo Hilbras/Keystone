@@ -71,7 +71,12 @@ const rootTypeScript = await readFile(
 
 /** A range like `3.4.0` or `>=3.0.0 <4.0.0`, checked for whether it admits a version. */
 function admits(range, version) {
-  const [major, minor, patch] = version.split(".").map(Number);
+  // A prerelease is compared as the release it precedes. `3.14.1-rc.1` is
+  // within `>=3.14.0 <3.15.0`, because that is the release it is a candidate
+  // for — and reading the numbers out of a version with a suffix in it gives
+  // `NaN`, which every comparison below then treats as "not less than", so
+  // the range would quietly admit anything.
+  const [major, minor, patch] = version.split("-")[0].split(".").map(Number);
   const v = (t) => {
     const m = /(\d+)\.(\d+)\.(\d+)/.exec(t);
     return m ? m.slice(1).map(Number) : null;

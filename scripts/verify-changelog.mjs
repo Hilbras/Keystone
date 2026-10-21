@@ -41,8 +41,16 @@ if (!existsSync(changelogPath)) {
 }
 const text = await readFile(changelogPath, "utf8");
 
-/** `## [3.4.0] - 2026-09-28` and the variants people actually write. */
-const headings = [...text.matchAll(/^##\s*\[?v?(\d+\.\d+\.\d+)\]?(?:\s*[-–]\s*(.+))?$/gm)].map(
+/**
+ * `## [3.4.0] - 2026-09-28` and the variants people actually write.
+ *
+ * A prerelease — `## [3.14.1-rc.1] - 2026-10-21` — is one of those variants
+ * now: a release candidate is a version, it has a heading, and the gate has to
+ * be able to name it. The prerelease part is part of the version, not part of
+ * the date, so the version group takes it and the date group still gets the
+ * date.
+ */
+const headings = [...text.matchAll(/^##\s*\[?v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\]?(?:\s*[-–]\s*(.+))?$/gm)].map(
   (m) => ({ version: m[1], date: (m[2] ?? "").trim(), line: text.slice(0, m.index).split("\n").length })
 );
 
@@ -67,10 +75,34 @@ if (!headings.some((h) => h.version === pkg.version)) {
 
 /* --- 2. descending --------------------------------------------------------- */
 
+/**
+ * Order two versions, with a prerelease sorting *before* the release it
+ * precedes.
+ *
+ * `3.14.1-rc.1` is earlier than `3.14.1`, and `3.14.1-rc.2` is later than
+ * `3.14.1-rc.1`. Reading the numbers out of a split and subtracting them
+ * cannot express either: the numbers compare equal, so the order was decided
+ * by which heading happened to be written first, and a candidate published
+ * after its release looked like it was in the wrong place.
+ */
 const compare = (a, b) => {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  return pa[0] - pb[0] || pa[1] - pb[1] || pa[2] - pb[2];
+  const parse = (version) => {
+    const [core, prerelease] = version.split("-");
+    const parts = core.split(".").map(Number);
+    return { parts, prerelease: prerelease ?? null };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let index = 0; index < 3; index += 1) {
+    const left = pa.parts[index] ?? 0;
+    const right = pb.parts[index] ?? 0;
+    if (left !== right) return left - right;
+  }
+  if (pa.prerelease === pb.prerelease) return 0;
+  // A release comes after its own prereleases.
+  if (pa.prerelease === null) return 1;
+  if (pb.prerelease === null) return -1;
+  return pa.prerelease < pb.prerelease ? -1 : 1;
 };
 for (let i = 1; i < headings.length; i++) {
   if (compare(headings[i - 1].version, headings[i].version) < 0) {
