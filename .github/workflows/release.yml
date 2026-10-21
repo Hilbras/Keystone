@@ -423,3 +423,66 @@ jobs:
         # on exit code 2 (scan could not be trusted). Scan a single, concrete,
         # pushed reference instead; every tag points at the same image.
         run: REF="ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}" && node scripts/verify-image-vulnerabilities.mjs "${REF,,}"
+
+      # GHCR creates every container package private. Nothing in the release
+      # path changed that, so the image the release published was on the
+      # registry and invisible: `docker pull ghcr.io/hilbras/keystone:4.0.0`
+      # answered 403, and the k8s manifests in this repository reference the
+      # image with no imagePullSecret, so a cluster pulling it landed in
+      # ImagePullBackOff.
+      #
+      # The image is only useful if it can be pulled, and "can be pulled" is not
+      # the same as "exists". So the package is made public here.
+      #
+      # It runs *after* the vulnerability gate, not next to the push. Publishing
+      # first and scanning after would expose the very image the scan exists to
+      # reject, and the scan has to read the image — which it can, while the
+      # package is still private and the job is logged in.
+      - name: Publish the image package publicly
+        # The endpoint differs for an organization and a user account, and the
+        # repository owner is an organization here. A wrong endpoint 404s, and
+        # a release that fails after the image is pushed leaves the image
+        # private with no record of why.
+        #
+        # `gh` reads `GH_TOKEN` first and `GITHUB_TOKEN` second, but the
+        # runner does not export either into a `run` step on its own — the
+        # token has to be named here, or the call is made anonymously and
+        # answers 404 for a package that exists.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/orgs/${{ github.repository_owner }}/packages/container/keystone" \
+            -f visibility=public \
+            --jq '.visibility'
+
+      - name: Gate — the published image can be pulled without credentials
+        # The visibility change above is quiet when it does not take effect:
+        # the API answers 200 and the package stays private, and the only
+        # symptom is a user's `docker pull` failing much later, with nothing
+        # pointing back at the release.
+        #
+        # So this asks the registry for an *anonymous* pull token — the same
+        # request an unauthenticated `docker pull` makes. A public package
+        # answers with a token; a private one answers "authentication
+        # required". No credentials are involved, so a pass here means a
+        # stranger can pull it.
+        run: |
+          # GHCR paths are lowercase, and a scope with an uppercase package
+          # name is refused outright with `NAME_INVALID` — a 400 that reads
+          # like a malformed request rather than a case problem.
+          PACKAGE=$(printf '%s' "${{ github.repository_owner }}/keystone" | tr '[:upper:]' '[:lower:]')
+          STATUS=$(curl -s -o /tmp/grant.json -w "%{http_code}" \
+            "https://ghcr.io/token?scope=repository:${PACKAGE}:pull&service=ghcr.io" 2>/dev/null) || STATUS="000"
+          if [ "$STATUS" = "200" ] && jq -e '.token' /tmp/grant.json >/dev/null 2>&1; then
+            echo "ghcr.io/${PACKAGE} grants an anonymous pull token."
+            exit 0
+          fi
+          if [ "$STATUS" = "401" ]; then
+            echo "::error::ghcr.io/${PACKAGE} is still private — the registry refused an anonymous pull token (401). The image was pushed, but 'docker pull ghcr.io/${PACKAGE}' answers 403 for anyone without credentials."
+            exit 1
+          fi
+          echo "::error::Could not confirm that ghcr.io/${PACKAGE} is publicly pullable (HTTP ${STATUS})."
+          exit 1

@@ -16,7 +16,8 @@
  *   - the OpenAPI document the published package serves reports the published
  *     version, not the version it was built from;
  *   - the migrations are in the published package, and the journal is whole;
- *   - the container image for the version exists, when it can be reached;
+ *   - the container image for the version exists, and can be pulled without
+ *     credentials — an image on a private registry is not a published image;
  *   - the GitHub release exists, is not a draft, and carries its assets;
  *   - the source archive for the tag is the commit that was released.
  *
@@ -165,16 +166,61 @@ async function verifyMigrationsArePublished(serverFiles) {
 
 async function verifyImage() {
   const image = `ghcr.io/hilbras/keystone:${VERSION}`;
-  const inspected = await run("docker", ["manifest", "inspect", image], {
-    maxBuffer: 4 * 1024 * 1024,
-  }).catch(() => null);
-  if (!inspected) {
-    // Not a failure: a machine without registry credentials cannot see a
-    // private registry, and the release workflow has already pushed the image.
-    notes.push(`Could not inspect ${image} from here (no registry credentials, or no docker).`);
+  const packagePath = "hilbras/keystone";
+
+  // The anonymous pull token.
+  //
+  // This is the request an unauthenticated `docker pull` makes, and it is the
+  // only check that can tell a public image from a private one without
+  // credentials. A public package answers with a token; a private one answers
+  // "authentication required".
+  //
+  // `docker manifest inspect` cannot make that distinction. On a machine
+  // without registry credentials it fails for a public image too, and the
+  // check this replaces treated that failure as "could not look, carry on" —
+  // which is exactly how a private image passed as published. GHCR creates
+  // every container package private, so that was not a hypothetical: the
+  // image the v4.0.0 release published was on the registry and unpullable,
+  // and every check said it was fine.
+  const grant = await fetch(
+    `https://ghcr.io/token?scope=repository:${packagePath}:pull&service=ghcr.io`
+  ).catch(() => null);
+
+  if (!grant) {
+    // The registry could not be reached. That is not a verdict on the image,
+    // so it is a note and not a failure — a verification that cannot reach
+    // the network says so rather than guessing.
+    notes.push(`Could not ask ghcr.io about ${packagePath} (registry unreachable).`);
     return;
   }
-  notes.push(`${image} exists.`);
+
+  if (grant.status === 401) {
+    // The registry answered, and the answer was "authentication required" —
+    // the exact answer it gives for a private package when no credentials are
+    // offered. A public package answers 200 with a pull token instead.
+    problem(
+      `${image} is not publicly pullable. The package is on the registry, but it is ` +
+        `private, so every 'docker pull ghcr.io/${packagePath}' answers 403 for ` +
+        `anyone without credentials.`
+    );
+    return;
+  }
+
+  if (!grant.ok) {
+    notes.push(`ghcr.io answered ${grant.status} for ${packagePath}; the image was not checked.`);
+    return;
+  }
+
+  const body = await grant.json().catch(() => null);
+  if (!body?.token) {
+    problem(
+      `${image} is not publicly pullable. ghcr.io granted no pull token for ` +
+        `${packagePath} without credentials.`
+    );
+    return;
+  }
+
+  notes.push(`${image} is publicly pullable.`);
 }
 
 async function verifyGitHubRelease() {

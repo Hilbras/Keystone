@@ -118,3 +118,56 @@ describe("deployment descriptors", () => {
     assert.match(compose, /no-new-privileges:true/);
   });
 });
+
+/**
+ * An image on the registry is not the same as an image anyone can pull.
+ *
+ * GHCR creates every container package private, and the release path pushed
+ * the image and stopped there: `docker pull ghcr.io/hilbras/keystone:4.0.0`
+ * answered 403, and the k8s manifests in this repository reference the image
+ * with no imagePullSecret, so a cluster pulling it landed in
+ * ImagePullBackOff. Every check said the image was published, because none of
+ * them asked the registry the question a user's `docker pull` asks.
+ */
+describe("the published image is pullable without credentials", () => {
+  const release = read(".github/workflows/release.yml");
+
+  it("publishes the container package publicly", () => {
+    assert.match(release, /visibility=public/);
+  });
+
+  it("publishes it after the vulnerability gate, not before", () => {
+    // Publishing first and scanning after would expose the very image the
+    // scan exists to reject. The scan can still read the image while the
+    // package is private and the job is logged in.
+    const scan = release.indexOf("verify-image-vulnerabilities");
+    const publish = release.indexOf("visibility=public");
+    assert.ok(scan > 0, "the release must scan the image it pushed");
+    assert.ok(publish > scan, "the package must be published after the scan");
+  });
+
+  it("gates the image on an anonymous pull, which is what a stranger does", () => {
+    // The same request an unauthenticated `docker pull` makes. A public
+    // package answers 200 with a token; a private one answers 401.
+    assert.match(release, /ghcr\.io\/token\?scope=repository:/);
+    assert.match(release, /401/);
+  });
+
+  it("has a manual path to finish a release that stopped halfway", () => {
+    // A tag push is not guaranteed to dispatch, and an unchanged tag cannot
+    // be re-pushed, so a release that pushed the image and then failed before
+    // the visibility step has no other way back.
+    const workflow = read(".github/workflows/publish-container-package.yml");
+    assert.match(workflow, /workflow_dispatch:/);
+    assert.match(workflow, /packages: write/);
+  });
+
+  it("treats a private image as a failed release artifact", () => {
+    // The old check could not tell a private image from one it could not
+    // reach, and treated "could not look" as "fine" — which is how a private
+    // image passed as published.
+    const script = read("scripts/verify-release-artifacts.mjs");
+    assert.match(script, /status === 401/);
+    assert.match(script, /is not publicly pullable/);
+  });
+});

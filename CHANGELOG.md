@@ -5,6 +5,40 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-10-21
+
+*Patch release. The runtime is unchanged: this fixes how the container image is published, and it makes the v4.0.0 image pullable.*
+
+### Fixed
+
+- **The published image is now publicly pullable.** GHCR creates every
+  container package private, and the release path pushed the image and stopped
+  there: `docker pull ghcr.io/hilbras/keystone:4.0.0` answered 403 for anyone
+  without registry credentials, and the k8s manifests in this repository
+  reference the image with no `imagePullSecret` — so a cluster pulling it
+  landed in `ImagePullBackOff`. The image was on the registry and invisible.
+
+  The release now publishes the package publicly **after** the image passes
+  its vulnerability gate — publishing first and scanning after would expose
+  the very image the scan exists to reject — and then gates on an anonymous
+  pull token, which is the request a user's `docker pull` makes. A public
+  package answers `200` with a token; a private one answers `401`.
+
+- **`npm run verify:artifacts` no longer treats "could not look" as "fine".** It
+  asked the registry the question a stranger asks, and a private image is now
+  a failed release artifact. The previous check used
+  `docker manifest inspect`, which fails for a public image too on a machine
+  without credentials — the one way it failed was indistinguishable from the
+  one way that mattered, and the private image passed as published.
+
+### Added
+
+- **A manual path to finish a release that stopped halfway**
+  (`.github/workflows/publish-container-package.yml`). A tag push is not
+  guaranteed to dispatch, and an unchanged tag cannot be re-pushed, so a
+  release that pushed its image and then failed before the visibility step had
+  no way back.
+
 ## [4.0.0] - 2026-10-21
 
 *Plan PHASE 11: Keystone v4.0.0. The theme is that a version number is a promise about what will not change, and this one makes the promise explicit.*

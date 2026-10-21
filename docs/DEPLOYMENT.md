@@ -132,6 +132,23 @@ KEYSTONE_SETUP_MODE=true docker compose up -d
 
 Then open the setup UI (port 5173 if exposed, or use the backend setup endpoints) and complete setup.
 
+### Or deploy the published image
+
+The release image is on GitHub Container Registry and is **public** — no registry
+login is needed:
+
+```bash
+docker pull ghcr.io/hilbras/keystone:4.0.0
+```
+
+Pin the version. `:latest` is a moving target, and a rollback needs something to
+roll back to.
+
+The package is made public *after* the image passes its vulnerability gate, so a
+version carrying a HIGH advisory in the base image is never published to the
+registry. `npm run verify:artifacts` checks that the published image is still
+pullable without credentials.
+
 ---
 
 ## Step 4 — Put Keystone behind HTTPS

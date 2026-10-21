@@ -1,0 +1,106 @@
+# Publish a container package publicly.
+#
+# GHCR creates every container package private, and the release workflow
+# flips the visibility to public after the image has passed its vulnerability
+# gate. That is the normal path.
+#
+# This workflow exists for the case the normal path cannot reach: a release
+# that pushed the image and then failed before the visibility step, or a
+# package whose visibility was changed by hand afterwards. A tag push is not
+# guaranteed to dispatch — six annotated tags pushed in one command on
+# 2026-10-06 produced zero workflow runs — and an unchanged tag cannot be
+# re-pushed, so there has to be a manual way to finish a release that stopped
+# halfway.
+#
+# It only changes visibility. It does not build, push, or publish anything:
+# the image is already on the registry, and this makes it pullable.
+#
+# The same check the release runs is the one that decides whether it worked:
+# an anonymous pull token. No credentials are involved, so a pass means a
+# stranger can pull the image.
+
+name: Publish Container Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package name under the owner (e.g. keystone)"
+        required: true
+        type: string
+      owner:
+        description: "Owner of the package (an organization or a user account)"
+        required: false
+        type: string
+        default: ${{ github.repository_owner }}
+      visibility:
+        description: "Visibility to set"
+        required: false
+        type: choice
+        options:
+          - public
+          - private
+        default: public
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set the package visibility
+        # The endpoint differs for an organization and a user account. A
+        # release that guesses wrong fails after the image is on the registry
+        # and nobody knows why, so both are tried and the one that works
+        # wins.
+        env:
+          PACKAGE: ${{ inputs.package }}
+          OWNER: ${{ inputs.owner }}
+          VISIBILITY: ${{ inputs.visibility }}
+          # `gh` reads `GH_TOKEN` first and `GITHUB_TOKEN` second, but the
+          # runner does not export either into a `run` step on its own — the
+          # token has to be named here, or the call is made anonymously and
+          # answers 404 for a package that exists.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # GHCR paths are lowercase, and a scope with an uppercase package
+          # name is refused outright with `NAME_INVALID` — a 400 that reads
+          # like a malformed request rather than a case problem. The API
+          # wants the package name as it is registered, which is lowercase.
+          OWNER=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          PACKAGE=$(printf '%s' "$PACKAGE" | tr '[:upper:]' '[:lower:]')
+          succeeded=""
+          for endpoint in "/orgs/${OWNER}/packages/container/${PACKAGE}" "/users/${OWNER}/packages/container/${PACKAGE}"; do
+            if RESULT=$(gh api --method PATCH -H "Accept: application/vnd.github+json" "$endpoint" -f "visibility=${VISIBILITY}" --jq '.visibility' 2>/dev/null); then
+              echo "ghcr.io/${OWNER}/${PACKAGE} is now ${RESULT}."
+              succeeded="yes"
+              break
+            fi
+          done
+          if [ -z "$succeeded" ]; then
+            echo "::error::Could not set the visibility of ghcr.io/${OWNER}/${PACKAGE}. Neither the organization nor the user endpoint accepted the request. The package may not exist, or this workflow may lack 'packages: write' for it."
+            exit 1
+          fi
+
+      - name: Gate — the package can be pulled without credentials
+        env:
+          OWNER: ${{ inputs.owner }}
+          PACKAGE_NAME: ${{ inputs.package }}
+        run: |
+          set -uo pipefail
+          PACKAGE=$(printf '%s/%s' "$OWNER" "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')
+          STATUS=$(curl -s -o /tmp/grant.json -w "%{http_code}" \
+            "https://ghcr.io/token?scope=repository:${PACKAGE}:pull&service=ghcr.io" 2>/dev/null) || STATUS="000"
+          if [ "$STATUS" = "200" ] && jq -e '.token' /tmp/grant.json >/dev/null 2>&1; then
+            echo "ghcr.io/${PACKAGE} grants an anonymous pull token."
+            exit 0
+          fi
+          if [ "$STATUS" = "401" ]; then
+            echo "::error::ghcr.io/${PACKAGE} is still private — the registry refused an anonymous pull token (401). 'docker pull ghcr.io/${PACKAGE}' answers 403 for anyone without credentials."
+            exit 1
+          fi
+          echo "::error::Could not confirm that ghcr.io/${PACKAGE} is publicly pullable (HTTP ${STATUS})."
+          exit 1
