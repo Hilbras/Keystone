@@ -5,6 +5,52 @@ All notable changes to Hilbras Keystone are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.1] - 2026-10-21
+
+*The final 3.x release. It carries the same content as the release candidate
+`3.14.1-rc.1`, which was validated by the release-candidate gate.*
+
+*Plan PHASE 10: the release candidate gate, and the release path that can carry
+one.*
+
+### Added
+
+- **`npm run verify:rc`** — the release-candidate gate: the twenty-three
+  items the release plan names, each reported separately, and then the
+  external-style validation. The external part is the one that matters:
+  - the **published package** installed into a clean directory, not the working
+    tree — because a check against the working tree proves the working tree is
+    fine, and the tarball can be missing a file the repository has;
+  - its **migrations run from the installed package's own CLI** against a fresh
+    database, so a package published without its migrations is caught here
+    rather than by a user;
+  - the same migrations against a database that **already has the previous
+    release's schema and data**, with the data checked afterwards;
+  - **two instances** against one database and one Redis, with the second
+    instance reading an account the first created.
+
+### Fixed
+
+- **The release path did not know what a candidate is.** `npm publish` without a
+  tag uses `latest` whatever the version says, so a candidate published that way
+  became the version every `npm install @hilbras/keystone` resolves to. A
+  candidate now publishes under `next`, the image does not claim `latest`, and
+  the GitHub release is marked a prerelease.
+- **Two gates could not read a prerelease version.** The changelog gate's
+  heading pattern stopped at the third number, so `## [3.14.1-rc.1]` was read as
+  version `3.14.1` with the date `rc.1] - 2026-10-21` — and the ordering check could
+  not tell a candidate from its release, because reading the numbers out of a
+  version with a suffix in them gives `NaN`, which every comparison then treats
+  as "not less than". The SDK range check had the same `NaN`, and quietly
+  admitted anything. Both now parse the version properly, and a prerelease sorts
+  before the release it precedes.
+- **`scripts/bump-version.mjs` refused a prerelease version**, so the script
+  that writes the version everywhere could not write a candidate's.
+
+### Compatibility
+
+- No behaviour change. 3.14.1 carries the same content as 3.14.0.
+
 ## [3.14.1-rc.1] - 2026-10-21
 
 *The release candidate for 3.14.1. It is published under the `next` dist-tag
